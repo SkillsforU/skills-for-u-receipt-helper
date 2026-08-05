@@ -10,7 +10,7 @@
  *    這會依 PROJECT_APPROVERS 幫每個專案建立獨立的審核用試算表、設好權限、並分享給審核人。
  * 5. 點「② 設定自動排程」，安裝兩個定時任務：
  *      - 每 15 分鐘把各專案的審核結果同步回總表
- *      - 每週一早上把待審清單發到 Slack
+ *      - 每月 13 號早上把待審清單發到 Slack（@channel 通知頻道所有人）
  *
  * ── 權限模型 ───────────────────────────────────────────────
  * 每個專案有自己獨立的試算表，只分享給該專案的審核人（編輯者）。
@@ -50,10 +50,10 @@ const PROJECT_APPROVERS = {
 // 各專案的 email → Slack 個人 ID（用於發訊息時 @ 到正確的人）。
 // 抓法：Slack 點開那個人的個人檔案卡片 → 「⋯ 更多」→「複製會員 ID」。沒填的人就只會用純文字顯示名字，不會真的 tag 到。
 const SLACK_USER_IDS = {
-  'ceo@skillsforu.org': '',
-  'rosyhu@skillsforu.org': '',
-  'rein@skillsforu.org': '',
-  'daphnekuo@skillsforu.org': '',
+  'ceo@skillsforu.org': 'U03KJN0VBL3',       // 偉翔
+  'rosyhu@skillsforu.org': 'U0B56HTQFSR',    // 琬茜
+  'rein@skillsforu.org': 'U0AKP8GT3B3',      // 梓豪
+  'daphnekuo@skillsforu.org': 'U07GAACQALW', // Daphne
 };
 
 // 各專案憑證要存進哪個 Google Drive 資料夾。留空 = 自動在主資料夾（見上面 DRIVE_FOLDER_ID）底下
@@ -562,9 +562,9 @@ function sendPendingDigestToSlack() {
     return;
   }
 
-  // 一般彙總只列出名字（純文字），刻意不用真的 @ 提及，避免每週都打擾到審核人；
-  // 只有緊急單據（notifyUrgentToSlack_）才會真的 tag 人跳通知。
-  const lines = ['📋 *單據待審核提醒* — 目前共 ' + total + ' 筆待審核'];
+  // 定期彙總用 <!channel> 通知頻道裡所有人（等於 Slack 的「@all」），
+  // 不用一個一個 tag 個人；各專案後面仍附上審核人名字方便對照。
+  const lines = ['📋 *單據待審核提醒* <!channel> — 目前共 ' + total + ' 筆待審核'];
   Object.keys(pendingByProject).forEach(function (project) {
     const fileId = getProjectFileId_(project);
     let url = '';
@@ -586,14 +586,16 @@ function setupTriggers() {
   });
 
   ScriptApp.newTrigger('syncApprovalsToMaster').timeBased().everyMinutes(15).create();
+  // 每月 13 號上午 10 點發送彙總（Apps Script 的月觸發沒有「兩週一次」的選項，
+  // 要改成別的日期／改回每週，直接調整這裡的 onMonthDay(13) 或改用 onWeekDay(...)）。
   ScriptApp.newTrigger('sendPendingDigestToSlack').timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(10).create();
+    .onMonthDay(13).atHour(10).create();
 
   SpreadsheetApp.getUi().alert(
     '已設定自動排程：\n\n' +
     '• 每 15 分鐘把各專案審核結果同步回總表\n' +
-    '• 每週一上午 10 點發送待審核彙總到 Slack\n\n' +
-    '想改成兩週或每月一次，可到左側「觸發條件」頁面調整 sendPendingDigestToSlack 的頻率。'
+    '• 每月 13 號上午 10 點發送待審核彙總到 Slack（會 @channel 通知頻道所有人）\n\n' +
+    '想改頻率或日期，可到左側「觸發條件」頁面調整 sendPendingDigestToSlack，或改 Code.gs 裡 setupTriggers() 的設定後重新執行這個選單。'
   );
 }
 
