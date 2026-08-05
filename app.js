@@ -463,11 +463,13 @@ document.getElementById("submitRecordBtn").addEventListener("click", submitRecor
 
 // 檔名規則：{專案名}_{日期}_{金額}元，例如「臺灣技職教育年會_15_64元」。
 // 年月不放進檔名，因為 Google Drive 那邊會依「年月」開子資料夾（見 google-sync/Code.gs 的 getFolder_），檔名裡重複標年月沒意義。
+// 檔名規則：{日期}_{金額}元，例如「15_64元」。專案名稱不放進檔名，
+// 因為 Google Drive 那邊現在會先依專案分資料夾、資料夾裡再依年月分子資料夾（見 google-sync/Code.gs 的 getProjectFolder_/getMonthFolder_），
+// 檔名裡重複標專案跟年月沒意義。
 function suggestFileName(record, originalName) {
   const ext = (originalName.match(/\.[a-zA-Z0-9]+$/) || [".jpg"])[0];
   const day = record.invoiceDate ? record.invoiceDate.slice(-2) : "未知日";
-  const safe = (s) => (s || "未指定").replace(/[\\/:*?"<>|]/g, "");
-  return `${safe(record.project)}_${day}_${record.amount || 0}元${ext}`;
+  return `${day}_${record.amount || 0}元${ext}`;
 }
 
 function submitRecord() {

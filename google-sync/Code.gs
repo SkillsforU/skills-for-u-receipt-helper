@@ -47,6 +47,26 @@ const PROJECT_APPROVERS = {
   '人才培育中心':     ['ceo@skillsforu.org'],
 };
 
+// 各專案的 email → Slack 個人 ID（用於發訊息時 @ 到正確的人）。
+// 抓法：Slack 點開那個人的個人檔案卡片 → 「⋯ 更多」→「複製會員 ID」。沒填的人就只會用純文字顯示名字，不會真的 tag 到。
+const SLACK_USER_IDS = {
+  'ceo@skillsforu.org': '',
+  'rosyhu@skillsforu.org': '',
+  'rein@skillsforu.org': '',
+  'daphnekuo@skillsforu.org': '',
+};
+
+// 各專案憑證要存進哪個 Google Drive 資料夾。留空 = 自動在主資料夾（見上面 DRIVE_FOLDER_ID）底下
+// 建立一個同名資料夾；填了資料夾 ID 就直接用你指定的現成資料夾。
+// 資料夾 ID 取法：打開資料夾，網址列 https://drive.google.com/drive/folders/「這一串」就是 ID。
+const PROJECT_FOLDER_IDS = {
+  '組織發展中心':     '',
+  '高雄技職年會':     '',
+  '臺灣技職教育年會': '',
+  '組織行銷中心':     '',
+  '人才培育中心':     '',
+};
+
 // email → 顯示名稱，用於審核人下拉選單與 Slack 訊息
 const APPROVER_NAMES = {
   'ceo@skillsforu.org': '偉翔',
@@ -191,13 +211,25 @@ function getRootFolder_() {
   return DriveApp.createFolder(name);
 }
 
-// 依「所屬期間」（YYYY-MM）在主資料夾下開 YYYYMM 子資料夾，找不到期間就歸到「未分類」
-function getMonthFolder_(period) {
-  const root = getRootFolder_();
-  const folderName = period ? String(period).replace(/-/g, '') : '未分類';
-  const it = root.getFoldersByName(folderName);
+function findOrCreateSubfolder_(parent, name) {
+  const it = parent.getFoldersByName(name);
   if (it.hasNext()) return it.next();
-  return root.createFolder(folderName);
+  return parent.createFolder(name);
+}
+
+// 依專案找資料夾：PROJECT_FOLDER_IDS 有指定就直接用那個現成資料夾，
+// 沒指定就在主資料夾底下自動建立/沿用一個同名資料夾。
+function getProjectFolder_(project) {
+  const explicitId = PROJECT_FOLDER_IDS[project];
+  if (explicitId) return DriveApp.getFolderById(explicitId);
+  return findOrCreateSubfolder_(getRootFolder_(), project || '未分類專案');
+}
+
+// 專案資料夾底下再依「所屬期間」（YYYY-MM）開 YYYYMM 子資料夾，找不到期間就歸到「未分類」
+function getMonthFolder_(project, period) {
+  const projectFolder = getProjectFolder_(project);
+  const folderName = period ? String(period).replace(/-/g, '') : '未分類';
+  return findOrCreateSubfolder_(projectFolder, folderName);
 }
 
 function saveFile_(record) {
@@ -205,7 +237,7 @@ function saveFile_(record) {
   const match = String(record.fileDataUrl).match(/^data:(.+);base64,(.*)$/);
   if (!match) return '';
   const blob = Utilities.newBlob(Utilities.base64Decode(match[2]), match[1], record.fileName || 'receipt.jpg');
-  return getMonthFolder_(record.period).createFile(blob).getUrl();
+  return getMonthFolder_(record.project, record.period).createFile(blob).getUrl();
 }
 
 function createRow_(sheet, record) {
@@ -475,17 +507,29 @@ function postToSlack_(text) {
   });
 }
 
+// 純文字顯示用（例如「審核人：偉翔、琬茜」這種描述句），不會真的觸發通知
 function projectApproverMentionText_(project) {
   const approvers = (PROJECT_APPROVERS[project] || []).map(function (e) { return APPROVER_NAMES[e] || e; });
   return approvers.length ? approvers.join('、') : '（未設定審核人）';
+}
+
+// 真正會 tag 到人、讓對方跳出通知的版本。SLACK_USER_IDS 有填該人的 Slack ID 才會是真的 @提及，
+// 沒填的人就退回顯示純文字名字（不會通知到他，但訊息還是看得懂是誰）。
+function projectApproverPingText_(project) {
+  const approvers = PROJECT_APPROVERS[project] || [];
+  if (approvers.length === 0) return '（未設定審核人）';
+  return approvers.map(function (email) {
+    const slackId = SLACK_USER_IDS[email];
+    return slackId ? '<@' + slackId + '>' : (APPROVER_NAMES[email] || email) + '（尚未設定 Slack ID，不會跳通知）';
+  }).join(' ');
 }
 
 function notifyUrgentToSlack_(record, fileUrl) {
   const reviewUrl = getProjectFileId_(record.project)
     ? SpreadsheetApp.openById(getProjectFileId_(record.project)).getUrl() : '';
   const lines = [
-    '🚨 *有一筆緊急單據待審核*',
-    '專案：' + record.project + '（審核人：' + projectApproverMentionText_(record.project) + '）',
+    '🚨 *有一筆緊急單據待審核*　' + projectApproverPingText_(record.project),
+    '專案：' + record.project,
     '上傳者：' + record.uploader,
     '金額：NT$ ' + (record.amount || 0),
     '用途：' + (record.purpose || record.items || '—'),
@@ -522,8 +566,8 @@ function sendPendingDigestToSlack() {
     const fileId = getProjectFileId_(project);
     let url = '';
     try { url = fileId ? SpreadsheetApp.openById(fileId).getUrl() : ''; } catch (e) {}
-    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆（' +
-      projectApproverMentionText_(project) + '）' + (url ? ' → ' + url : ''));
+    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆　' +
+      projectApproverPingText_(project) + (url ? ' → ' + url : ''));
   });
   postToSlack_(lines.join('\n'));
 }
