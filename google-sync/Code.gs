@@ -540,37 +540,15 @@ function notifyUrgentToSlack_(record, fileUrl) {
   postToSlack_(lines.filter(Boolean).join('\n'));
 }
 
-// 定期彙總：把所有專案還沒審核的件數整理成一則訊息
+// 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel>（等於「@all」）發一句提醒，
+// 附上每個專案審核表的連結，養成大家固定日子進去看一輪的習慣。
 function sendPendingDigestToSlack() {
-  const master = getSheet_();
-  const lastRow = master.getLastRow();
-  if (lastRow < 2) return;
-
-  const values = master.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
-  const pendingByProject = {};
-  let total = 0;
-  values.forEach(function (row) {
-    const project = row[2];
-    const status = row[MASTER_STATUS_COL - 1];
-    if (status && status !== '待審核') return;
-    pendingByProject[project] = (pendingByProject[project] || 0) + 1;
-    total++;
-  });
-
-  if (total === 0) {
-    postToSlack_('✅ 目前沒有待審核的單據，感謝大家！');
-    return;
-  }
-
-  // 定期彙總用 <!channel> 通知頻道裡所有人（等於 Slack 的「@all」），
-  // 不用一個一個 tag 個人；各專案後面仍附上審核人名字方便對照。
-  const lines = ['📋 *單據待審核提醒* <!channel> — 目前共 ' + total + ' 筆待審核'];
-  Object.keys(pendingByProject).forEach(function (project) {
+  const lines = ['📋 <!channel> 今天是各位主管的審核日，請記得審核喔！', ''];
+  Object.keys(PROJECT_APPROVERS).forEach(function (project) {
     const fileId = getProjectFileId_(project);
     let url = '';
     try { url = fileId ? SpreadsheetApp.openById(fileId).getUrl() : ''; } catch (e) {}
-    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆（審核人：' +
-      projectApproverMentionText_(project) + '）' + (url ? ' → ' + url : ''));
+    lines.push('• ' + project + (url ? ' → ' + url : '（尚未建立審核表，先執行選單「① 建立/更新各專案審核表」）'));
   });
   postToSlack_(lines.join('\n'));
 }
