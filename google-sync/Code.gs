@@ -513,8 +513,9 @@ function projectApproverMentionText_(project) {
   return approvers.length ? approvers.join('、') : '（未設定審核人）';
 }
 
-// 真正會 tag 到人、讓對方跳出通知的版本。SLACK_USER_IDS 有填該人的 Slack ID 才會是真的 @提及，
-// 沒填的人就退回顯示純文字名字（不會通知到他，但訊息還是看得懂是誰）。
+// 真正會 tag 到人、讓對方跳出通知的版本，只用在「緊急」單據（notifyUrgentToSlack_）。
+// 一般彙總刻意不用這個，避免每週都用真的 @ 打擾審核人。
+// SLACK_USER_IDS 有填該人的 Slack ID 才會是真的 @提及；沒填的人就退回顯示純文字名字。
 function projectApproverPingText_(project) {
   const approvers = PROJECT_APPROVERS[project] || [];
   if (approvers.length === 0) return '（未設定審核人）';
@@ -561,13 +562,15 @@ function sendPendingDigestToSlack() {
     return;
   }
 
+  // 一般彙總只列出名字（純文字），刻意不用真的 @ 提及，避免每週都打擾到審核人；
+  // 只有緊急單據（notifyUrgentToSlack_）才會真的 tag 人跳通知。
   const lines = ['📋 *單據待審核提醒* — 目前共 ' + total + ' 筆待審核'];
   Object.keys(pendingByProject).forEach(function (project) {
     const fileId = getProjectFileId_(project);
     let url = '';
     try { url = fileId ? SpreadsheetApp.openById(fileId).getUrl() : ''; } catch (e) {}
-    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆　' +
-      projectApproverPingText_(project) + (url ? ' → ' + url : ''));
+    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆（審核人：' +
+      projectApproverMentionText_(project) + '）' + (url ? ' → ' + url : ''));
   });
   postToSlack_(lines.join('\n'));
 }
