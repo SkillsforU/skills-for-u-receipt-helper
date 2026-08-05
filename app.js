@@ -1,0 +1,1007 @@
+/* ============================================================
+   Skills for U｜單據小幫手
+   純瀏覽器端單據上傳、OCR 辨識（Tesseract.js）與審核小工具。
+   資料儲存在 localStorage，沒有後端伺服器；OCR 完全離線執行。
+   ============================================================ */
+
+const STORAGE_KEY = "skillsForU_receipts_v1";
+const CONFIDENCE_THRESHOLD = 80; // 低於此門檻於畫面上醒目標示，需人工複核（規格書第5節）
+
+const UPLOADERS_KEY = "skillsForU_uploaders_v1";
+const PROJECTS_KEY = "skillsForU_projects_v1";
+const DEFAULT_UPLOADERS = ["黃偉翔", "胡琬茜", "鐘梓豪", "林新樺", "張晏瑄", "王嘉麗", "羅禎瑩", "李唐", "郭采媛"];
+const DEFAULT_PROJECTS = ["組織發展中心", "高雄技職年會", "臺灣技職教育年會", "組織行銷中心", "人才培育中心"];
+
+/* ---------------- 資料存取 ---------------- */
+function loadRecords() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error("讀取本機紀錄失敗", e);
+    return [];
+  }
+}
+function saveRecords(records) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+}
+function upsertRecord(record) {
+  const records = loadRecords();
+  const idx = records.findIndex(r => r.id === record.id);
+  if (idx >= 0) records[idx] = record; else records.unshift(record);
+  saveRecords(records);
+}
+
+/* ---------------- 上傳人 / 專案名單 ---------------- */
+function loadUploaders() {
+  try {
+    const raw = localStorage.getItem(UPLOADERS_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_UPLOADERS.slice();
+  } catch (e) {
+    return DEFAULT_UPLOADERS.slice();
+  }
+}
+function saveUploaders(list) {
+  localStorage.setItem(UPLOADERS_KEY, JSON.stringify(list));
+}
+function loadProjects() {
+  try {
+    const raw = localStorage.getItem(PROJECTS_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_PROJECTS.slice();
+  } catch (e) {
+    return DEFAULT_PROJECTS.slice();
+  }
+}
+function saveProjects(list) {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+}
+
+function populateUploaderAndProjectSelects() {
+  const currentUploader = uploaderSelect.value;
+  const currentProject = projectSelect.value;
+  uploaderSelect.innerHTML = '<option value="">請選擇上傳人</option>' +
+    loadUploaders().map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  projectSelect.innerHTML = '<option value="">請選擇專案</option>' +
+    loadProjects().map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  if (loadUploaders().includes(currentUploader)) uploaderSelect.value = currentUploader;
+  if (loadProjects().includes(currentProject)) projectSelect.value = currentProject;
+}
+
+/* ---------------- 小工具 ---------------- */
+function uid() {
+  return "R" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+function showToast(msg, ms = 2600) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => { t.hidden = true; }, ms);
+}
+function fmtMoney(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return "NT$ " + Number(n).toLocaleString("zh-TW");
+}
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+/* 對齊 google-sync/Code.gs 的 formatDateTime_：GMT+8、精確到分鐘、"yyyy-MM-dd HH:mm" */
+function fmtDateTimeForSheet(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ============================================================
+   分頁切換
+   ============================================================ */
+const views = {
+  upload: document.getElementById("view-upload"),
+  mine: document.getElementById("view-mine"),
+  review: document.getElementById("view-review"),
+  lists: document.getElementById("view-lists"),
+  sync: document.getElementById("view-sync"),
+};
+document.getElementById("tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest(".tab-btn");
+  if (!btn) return;
+  switchView(btn.dataset.view);
+});
+function switchView(name) {
+  Object.entries(views).forEach(([key, el]) => { el.hidden = key !== name; });
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+  if (name === "mine") renderMineView();
+  if (name === "review") renderReviewView();
+  if (name === "lists") renderListsView();
+  if (name === "sync") renderSyncView();
+}
+
+/* ============================================================
+   上傳單據 — 檔案選取 / 拍照
+   ============================================================ */
+const dropzone = document.getElementById("dropzone");
+const dropzoneInner = document.getElementById("dropzoneInner");
+const fileInput = document.getElementById("fileInput");
+const dzPreview = document.getElementById("dzPreview");
+const dzPreviewImg = document.getElementById("dzPreviewImg");
+const dzFilename = document.getElementById("dzFilename");
+const dzRemoveBtn = document.getElementById("dzRemoveBtn");
+const startOcrBtn = document.getElementById("startOcrBtn");
+const uploaderSelect = document.getElementById("uploaderSelect");
+const projectSelect = document.getElementById("projectSelect");
+
+let selectedFile = null;      // 原始 File
+let selectedImageDataUrl = null; // 壓縮後 dataURL（供預覽 / 離線與雲端 OCR / 儲存）
+let selectedPdfDataUrl = null;   // PDF 原始 dataURL（離線 OCR 無法處理，僅雲端 OCR／儲存用）
+
+dropzone.addEventListener("click", () => { if (!selectedFile) fileInput.click(); });
+["dragenter", "dragover"].forEach(evt => dropzone.addEventListener(evt, (e) => {
+  e.preventDefault(); dropzone.classList.add("dragover");
+}));
+["dragleave", "drop"].forEach(evt => dropzone.addEventListener(evt, (e) => {
+  e.preventDefault(); dropzone.classList.remove("dragover");
+}));
+dropzone.addEventListener("drop", (e) => {
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) handleFileSelected(f);
+});
+fileInput.addEventListener("change", () => {
+  if (fileInput.files[0]) handleFileSelected(fileInput.files[0]);
+});
+dzRemoveBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  resetFileSelection();
+});
+
+function resetFileSelection() {
+  selectedFile = null;
+  selectedImageDataUrl = null;
+  selectedPdfDataUrl = null;
+  fileInput.value = "";
+  dzPreview.hidden = true;
+  dropzoneInner.hidden = false;
+  updateStartButtonState();
+}
+
+function handleFileSelected(file) {
+  selectedFile = file;
+  const isPdf = file.type === "application/pdf";
+  if (isPdf) {
+    selectedImageDataUrl = null;
+    selectedPdfDataUrl = null;
+    dzPreviewImg.hidden = true;
+    const cloudOcrReady = loadSyncConfig().cloudOcrEnabled;
+    dzFilename.textContent = "📄 " + file.name + (cloudOcrReady
+      ? "（PDF 檔，將使用雲端 OCR 辨識）"
+      : "（PDF 檔，離線辨識不支援 PDF，請於下一步手動輸入欄位，或到「雲端同步設定」開啟雲端 OCR）");
+    dropzoneInner.hidden = true;
+    dzPreview.hidden = false;
+    const reader = new FileReader();
+    reader.onload = () => { selectedPdfDataUrl = reader.result; };
+    reader.readAsDataURL(file);
+    updateStartButtonState();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    downscaleImage(reader.result, 1400).then(dataUrl => {
+      selectedImageDataUrl = dataUrl;
+      dzPreviewImg.hidden = false;
+      dzPreviewImg.src = dataUrl;
+      dzFilename.textContent = file.name;
+      dropzoneInner.hidden = true;
+      dzPreview.hidden = false;
+      updateStartButtonState();
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+function downscaleImage(dataUrl, maxDim) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", 0.88));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+uploaderSelect.addEventListener("change", updateStartButtonState);
+projectSelect.addEventListener("change", updateStartButtonState);
+function updateStartButtonState() {
+  startOcrBtn.disabled = !(selectedFile && uploaderSelect.value && projectSelect.value);
+}
+
+/* ============================================================
+   OCR 辨識（Tesseract.js，繁體中文 + 英文）
+   ============================================================ */
+const ocrProgress = document.getElementById("ocrProgress");
+const ocrProgressFill = document.getElementById("ocrProgressFill");
+const ocrProgressLabel = document.getElementById("ocrProgressLabel");
+
+startOcrBtn.addEventListener("click", runOcr);
+
+function cloudFieldsToConfirmForm(fields) {
+  const f = fields || {};
+  const guesses = {
+    date: f.invoiceDate || null,
+    amount: f.amount ? Number(f.amount) : null,
+    vendor: f.vendor || null,
+  };
+  const rawText = f.items ? `（雲端 OCR 品項摘要）${f.items}` : "（雲端 OCR，未提供原始文字）";
+  openConfirmForm({ rawText, confidenceMean: Number(f.confidence) || 0, guesses });
+}
+
+async function runOcr() {
+  const isPdf = selectedFile && selectedFile.type === "application/pdf";
+  const syncConfig = loadSyncConfig();
+  const cloudOcrReady = syncConfig.enabled && syncConfig.url && syncConfig.cloudOcrEnabled;
+
+  if (isPdf) {
+    // 離線辨識（Tesseract）不支援 PDF，只有雲端 OCR（Gemini）能處理
+    if (!cloudOcrReady || !selectedPdfDataUrl) {
+      showToast(cloudOcrReady ? "PDF 檔案讀取中，請稍後再試一次" : "PDF 檔案僅支援雲端 OCR，請於「雲端同步設定」開啟後再試，或直接手動輸入欄位");
+      openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} });
+      return;
+    }
+    startOcrBtn.disabled = true;
+    ocrProgress.hidden = false;
+    ocrProgressFill.style.width = "50%";
+    ocrProgressLabel.textContent = "雲端辨識中（Gemini，PDF）…";
+    const cloud = await cloudOcrRecognize(selectedPdfDataUrl);
+    ocrProgress.hidden = true;
+    startOcrBtn.disabled = false;
+    if (cloud.ok) {
+      cloudFieldsToConfirmForm(cloud.fields);
+    } else {
+      showToast("雲端辨識失敗，PDF 無法離線辨識，請手動輸入欄位：" + (cloud.error || "未知錯誤"));
+      openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} });
+    }
+    return;
+  }
+
+  if (!selectedImageDataUrl) {
+    openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} });
+    return;
+  }
+  startOcrBtn.disabled = true;
+  ocrProgress.hidden = false;
+  ocrProgressFill.style.width = "0%";
+  ocrProgressLabel.textContent = "辨識引擎準備中…";
+
+  if (cloudOcrReady) {
+    ocrProgressFill.style.width = "50%";
+    ocrProgressLabel.textContent = "雲端辨識中（Gemini）…";
+    const cloud = await cloudOcrRecognize(selectedImageDataUrl);
+    if (cloud.ok) {
+      ocrProgressFill.style.width = "100%";
+      cloudFieldsToConfirmForm(cloud.fields);
+      ocrProgress.hidden = true;
+      startOcrBtn.disabled = false;
+      return;
+    }
+    showToast("雲端辨識失敗，改用本機離線辨識：" + (cloud.error || "未知錯誤"));
+    ocrProgressFill.style.width = "0%";
+    ocrProgressLabel.textContent = "改用本機離線辨識…";
+  }
+
+  try {
+    const result = await Tesseract.recognize(selectedImageDataUrl, "chi_tra+eng", {
+      logger: (m) => {
+        if (m.status && typeof m.progress === "number") {
+          const pct = Math.round(m.progress * 100);
+          ocrProgressFill.style.width = pct + "%";
+          const labelMap = {
+            "loading tesseract core": "載入辨識引擎…",
+            "initializing tesseract": "初始化中…",
+            "loading language traineddata": "載入中文語言模型…",
+            "initializing api": "準備中…",
+            "recognizing text": "辨識文字中…",
+          };
+          ocrProgressLabel.textContent = (labelMap[m.status] || m.status) + `（${pct}%）`;
+        }
+      },
+    });
+
+    const rawText = normalizeCjkSpacing(result.data.text || "");
+    const confidenceMean = Math.round(result.data.confidence || 0);
+    const guesses = extractFieldsFromText(rawText);
+    openConfirmForm({ rawText, confidenceMean, guesses });
+  } catch (err) {
+    console.error(err);
+    showToast("辨識發生錯誤，請手動輸入欄位");
+    openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} });
+  } finally {
+    ocrProgress.hidden = true;
+    startOcrBtn.disabled = false;
+  }
+}
+
+/* Tesseract 對中文逐字辨識時常在字元間插入空白，導致關鍵字比對失敗，先收斂掉 */
+function normalizeCjkSpacing(text) {
+  return text.replace(/([一-鿿])[ \t]+(?=[一-鿿])/g, "$1");
+}
+
+/* ---------------- OCR 文字 → 欄位判讀（規則式，供人工確認用） ---------------- */
+function extractFieldsFromText(text) {
+  const guesses = { date: null, amount: null, vendor: null };
+
+  // 日期：民國年（3碼，加1911換算西元）或西元年
+  const dateRe = /(\d{2,4})[年./-](\d{1,2})[月./-](\d{1,2})日?/g;
+  let m, bestDate = null;
+  while ((m = dateRe.exec(text)) !== null) {
+    let [, y, mo, d] = m;
+    y = parseInt(y, 10); mo = parseInt(mo, 10); d = parseInt(d, 10);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) continue;
+    if (y < 200) y += 1911; // 民國年換算
+    if (y < 2015 || y > 2100) continue;
+    bestDate = `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  guesses.date = bestDate;
+
+  // 金額：優先找「合計/總計/應付/應收/金額」附近的數字，否則取文字中最大的貨幣數字
+  const amountKeywordRe = /(合計|總計|應付金額|應收金額|總金額|金額|small\s*total|total)\D{0,6}?(\d[\d,]*)/gi;
+  let amounts = [];
+  while ((m = amountKeywordRe.exec(text)) !== null) {
+    const v = parseInt(m[2].replace(/,/g, ""), 10);
+    if (!isNaN(v) && v > 0) amounts.push(v);
+  }
+  if (amounts.length === 0) {
+    const genericAmountRe = /[$＄]\s?(\d[\d,]{1,8})/g;
+    while ((m = genericAmountRe.exec(text)) !== null) {
+      const v = parseInt(m[1].replace(/,/g, ""), 10);
+      if (!isNaN(v) && v > 0) amounts.push(v);
+    }
+  }
+  guesses.amount = amounts.length ? Math.max(...amounts) : null;
+
+  // 店家：取第一行非空白、非純數字/符號的文字
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  guesses.vendor = lines.find(l => l.replace(/[\d\s\-./:*]/g, "").length >= 2) || null;
+
+  return guesses;
+}
+
+/* ============================================================
+   確認表單
+   ============================================================ */
+const confirmCard = document.getElementById("confirmCard");
+const confidenceBanner = document.getElementById("confidenceBanner");
+const rawOcrText = document.getElementById("rawOcrText");
+let currentOcrRawText = "";
+
+const f_date = document.getElementById("f_date");
+const f_period = document.getElementById("f_period");
+const f_amount = document.getElementById("f_amount");
+const f_vendor = document.getElementById("f_vendor");
+const f_items = document.getElementById("f_items");
+const f_purpose = document.getElementById("f_purpose");
+
+f_date.addEventListener("change", updatePeriodField);
+function updatePeriodField() {
+  f_period.value = f_date.value ? f_date.value.slice(0, 7) : "";
+}
+
+function openConfirmForm({ rawText, confidenceMean, guesses }) {
+  currentOcrRawText = rawText;
+  rawOcrText.textContent = rawText || "（此檔案未執行文字辨識，請手動輸入欄位）";
+
+  f_date.value = guesses.date || "";
+  updatePeriodField();
+  f_amount.value = guesses.amount || "";
+  f_vendor.value = guesses.vendor || "";
+  f_items.value = "";
+  f_purpose.value = "";
+
+  setFlag("flag-date", !!guesses.date);
+  setFlag("flag-amount", !!guesses.amount);
+
+  if (!rawText) {
+    confidenceBanner.className = "confidence-banner mid";
+    confidenceBanner.textContent = "此檔案未執行自動辨識，請手動填寫以下欄位";
+  } else if (confidenceMean >= CONFIDENCE_THRESHOLD) {
+    confidenceBanner.className = "confidence-banner high";
+    confidenceBanner.textContent = `辨識信心分數 ${confidenceMean}%，看起來不錯，請再核對一次金額與日期`;
+  } else if (confidenceMean >= 50) {
+    confidenceBanner.className = "confidence-banner mid";
+    confidenceBanner.textContent = `辨識信心分數 ${confidenceMean}%，部分欄位可能不準確，請仔細核對`;
+  } else {
+    confidenceBanner.className = "confidence-banner low";
+    confidenceBanner.textContent = `辨識信心分數 ${confidenceMean}%，偏低，建議重新拍攝或手動輸入`;
+  }
+  confirmCard.dataset.confidence = confidenceMean;
+
+  confirmCard.hidden = false;
+  confirmCard.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function setFlag(id, ok) {
+  const el = document.getElementById(id);
+  el.className = "field-flag " + (ok ? "ok" : "low");
+  el.textContent = "";
+}
+
+document.getElementById("cancelConfirmBtn").addEventListener("click", () => {
+  confirmCard.hidden = true;
+  resetFileSelection();
+});
+
+document.getElementById("submitRecordBtn").addEventListener("click", submitRecord);
+
+// 檔名規則：{專案名}_{日期}_{金額}元，例如「臺灣技職教育年會_15_64元」。
+// 年月不放進檔名，因為 Google Drive 那邊會依「年月」開子資料夾（見 google-sync/Code.gs 的 getFolder_），檔名裡重複標年月沒意義。
+function suggestFileName(record, originalName) {
+  const ext = (originalName.match(/\.[a-zA-Z0-9]+$/) || [".jpg"])[0];
+  const day = record.invoiceDate ? record.invoiceDate.slice(-2) : "未知日";
+  const safe = (s) => (s || "未指定").replace(/[\\/:*?"<>|]/g, "");
+  return `${safe(record.project)}_${day}_${record.amount || 0}元${ext}`;
+}
+
+function submitRecord() {
+  if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
+  if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
+
+  const now = new Date().toISOString();
+  const record = {
+    id: uid(),
+    uploader: uploaderSelect.value,
+    project: projectSelect.value,
+    uploadedAt: now,
+    fileDataUrl: selectedImageDataUrl || selectedPdfDataUrl,
+    originalFileName: selectedFile ? selectedFile.name : "",
+    invoiceDate: f_date.value,
+    period: f_period.value,
+    amount: Number(f_amount.value),
+    vendor: f_vendor.value.trim(),
+    items: f_items.value.trim(),
+    purpose: f_purpose.value.trim(),
+    confidence: Number(confirmCard.dataset.confidence || 0),
+    rawOcrText: currentOcrRawText,
+    status: "pending",
+    reviewer: "",
+    reviewedAt: "",
+    rejectReason: "",
+  };
+  record.fileName = suggestFileName(record, record.originalFileName || "receipt.jpg");
+
+  upsertRecord(record);
+  showToast("已送出，等待主管審核");
+
+  confirmCard.hidden = true;
+  resetFileSelection();
+  uploaderSelect.value = uploaderSelect.value; // 保留上傳人，方便連續上傳
+
+  syncRecordToCloud(record, "create");
+}
+
+/* ============================================================
+   我的紀錄
+   ============================================================ */
+function populateUploaderFilterOptions() {
+  const uploaders = [...new Set(loadRecords().map(r => r.uploader).filter(Boolean))];
+  const sel = document.getElementById("mineUploaderFilter");
+  const current = sel.value;
+  sel.innerHTML = '<option value="">全部上傳人</option>' + uploaders.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  sel.value = current;
+}
+document.getElementById("mineUploaderFilter").addEventListener("change", renderMineView);
+
+function renderMineView() {
+  populateUploaderFilterOptions();
+  const filterUploader = document.getElementById("mineUploaderFilter").value;
+  const records = loadRecords().filter(r => !filterUploader || r.uploader === filterUploader);
+  const listEl = document.getElementById("mineList");
+  const emptyEl = document.getElementById("mineEmpty");
+
+  if (records.length === 0) {
+    listEl.innerHTML = "";
+    emptyEl.hidden = false;
+    return;
+  }
+  emptyEl.hidden = true;
+  listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: !filterUploader })).join("");
+  listEl.querySelectorAll(".record-item").forEach(el => {
+    el.addEventListener("click", () => openDetailModal(el.dataset.id, { mode: "view" }));
+  });
+}
+
+/* ============================================================
+   主管審核
+   ============================================================ */
+function populateProjectFilterOptions() {
+  const projects = [...new Set(loadRecords().map(r => r.project).filter(Boolean))];
+  const sel = document.getElementById("reviewProjectFilter");
+  const current = sel.value;
+  sel.innerHTML = '<option value="">全部專案</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  sel.value = current;
+}
+document.getElementById("reviewStatusFilter").addEventListener("change", renderReviewView);
+document.getElementById("reviewProjectFilter").addEventListener("change", renderReviewView);
+document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+
+function renderReviewView() {
+  populateProjectFilterOptions();
+  const all = loadRecords();
+
+  document.getElementById("statPending").textContent = all.filter(r => r.status === "pending").length;
+  document.getElementById("statApproved").textContent = all.filter(r => r.status === "approved").length;
+  document.getElementById("statRejected").textContent = all.filter(r => r.status === "rejected").length;
+
+  const statusFilter = document.getElementById("reviewStatusFilter").value;
+  const projectFilter = document.getElementById("reviewProjectFilter").value;
+  let records = all;
+  if (statusFilter !== "all") records = records.filter(r => r.status === statusFilter);
+  if (projectFilter) records = records.filter(r => r.project === projectFilter);
+
+  const listEl = document.getElementById("reviewList");
+  const emptyEl = document.getElementById("reviewEmpty");
+  if (records.length === 0) {
+    listEl.innerHTML = "";
+    emptyEl.hidden = false;
+    return;
+  }
+  emptyEl.hidden = true;
+  listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: true })).join("");
+  listEl.querySelectorAll(".record-item").forEach(el => {
+    el.addEventListener("click", () => openDetailModal(el.dataset.id, { mode: "review" }));
+  });
+}
+
+function statusLabel(status) {
+  return { pending: "待審核", approved: "已核准", rejected: "已退回" }[status] || status;
+}
+
+function recordItemHtml(r, { showUploader }) {
+  const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
+  const syncConfigured = !!loadSyncConfig().enabled;
+  const cloudBadge = syncConfigured
+    ? `<span class="cloud-badge ${r.cloudSynced ? "synced" : "unsynced"}">${r.cloudSynced ? "☁ 已同步" : "☁ 未同步"}</span>`
+    : "";
+  return `
+    <div class="record-item" data-id="${r.id}">
+      <div class="record-main">
+        <div class="record-title">${escapeHtml(r.vendor || r.items || "未命名單據")}</div>
+        <div class="record-meta">
+          ${showUploader ? `<span>${escapeHtml(r.uploader)}</span>` : ""}
+          <span>${escapeHtml(r.project)}</span>
+          <span>${escapeHtml(r.invoiceDate || "無日期")}</span>
+          ${lowConfidence ? `<span style="color:var(--warn)">⚠ 信心分數偏低</span>` : ""}
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div class="record-amount">${fmtMoney(r.amount)}</div>
+        <div><span class="status-badge ${r.status}">${statusLabel(r.status)}</span> ${cloudBadge}</div>
+      </div>
+    </div>`;
+}
+
+/* ============================================================
+   詳情 / 審核 Modal
+   ============================================================ */
+const detailModal = document.getElementById("detailModal");
+const modalBody = document.getElementById("modalBody");
+document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
+detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeModal(); });
+function closeModal() { detailModal.hidden = true; modalBody.innerHTML = ""; }
+
+function openDetailModal(id, { mode }) {
+  const records = loadRecords();
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+
+  const imgHtml = r.fileDataUrl ? `<img class="detail-img" src="${r.fileDataUrl}" alt="憑證預覽">` : "";
+  const reviewInfo = r.status !== "pending"
+    ? `<div class="detail-grid">
+         <dt>審核狀態</dt><dd><span class="status-badge ${r.status}">${statusLabel(r.status)}</span></dd>
+         <dt>審核人</dt><dd>${escapeHtml(r.reviewer || "—")}</dd>
+         <dt>審核時間</dt><dd>${fmtDateTime(r.reviewedAt)}</dd>
+         ${r.status === "rejected" ? `<dt>退回原因</dt><dd>${escapeHtml(r.rejectReason || "—")}</dd>` : ""}
+       </div>`
+    : "";
+
+  modalBody.innerHTML = `
+    ${imgHtml}
+    <div class="detail-title">${escapeHtml(r.vendor || r.items || "未命名單據")}</div>
+    <div class="detail-sub">建議檔名：${escapeHtml(r.fileName || "—")}</div>
+    <div class="detail-grid">
+      <dt>上傳人</dt><dd>${escapeHtml(r.uploader)}</dd>
+      <dt>所屬專案</dt><dd>${escapeHtml(r.project)}</dd>
+      <dt>發票日期</dt><dd>${escapeHtml(r.invoiceDate || "—")}</dd>
+      <dt>所屬期間</dt><dd>${escapeHtml(r.period || "—")}</dd>
+      <dt>金額</dt><dd>${fmtMoney(r.amount)}</dd>
+      <dt>發票內容</dt><dd>${escapeHtml(r.items || "—")}</dd>
+      <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
+      <dt>辨識信心</dt><dd>${r.confidence ? r.confidence + "%" : "—"}</dd>
+      <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
+    </div>
+    ${reviewInfo}
+    ${cloudStatusHtml(r)}
+    <div id="modalActions"></div>
+  `;
+
+  const retryBtn = document.getElementById("btnRetrySync");
+  if (retryBtn) retryBtn.addEventListener("click", async () => {
+    retryBtn.disabled = true;
+    retryBtn.textContent = "同步中…";
+    await syncRecordToCloud(r, r.cloudSynced ? "update" : "create");
+    openDetailModal(id, { mode }); // 重新整理畫面顯示最新同步狀態
+  });
+
+  const actions = document.getElementById("modalActions");
+  if (mode === "review" && r.status === "pending") {
+    actions.innerHTML = `
+      <div class="reject-reason-box" id="rejectBox" hidden>
+        <label class="field-label">退回原因</label>
+        <textarea id="rejectReasonInput" class="textarea-input" rows="2" placeholder="請說明退回原因，將通知申請人"></textarea>
+      </div>
+      <div class="btn-row" id="initialActionsRow">
+        <button class="ghost-btn" id="btnReject">不同意 / 退回</button>
+        <button class="primary-btn" id="btnApprove">同意核准</button>
+      </div>
+      <div class="btn-row" id="confirmRejectRow" hidden>
+        <button class="ghost-btn" id="btnCancelReject">取消</button>
+        <button class="primary-btn" id="btnConfirmReject">確認退回</button>
+      </div>
+    `;
+    document.getElementById("btnApprove").addEventListener("click", () => decideRecord(r.id, "approved"));
+    document.getElementById("btnReject").addEventListener("click", () => {
+      document.getElementById("rejectBox").hidden = false;
+      document.getElementById("initialActionsRow").hidden = true;
+      document.getElementById("confirmRejectRow").hidden = false;
+      document.getElementById("rejectReasonInput").focus();
+    });
+    document.getElementById("btnConfirmReject").addEventListener("click", () => {
+      const reason = document.getElementById("rejectReasonInput").value.trim();
+      if (!reason) { showToast("請填寫退回原因"); return; }
+      decideRecord(r.id, "rejected", reason);
+    });
+    document.getElementById("btnCancelReject").addEventListener("click", () => {
+      document.getElementById("rejectBox").hidden = true;
+      document.getElementById("initialActionsRow").hidden = false;
+      document.getElementById("confirmRejectRow").hidden = true;
+    });
+  } else if (r.fileDataUrl) {
+    actions.innerHTML = `<div class="btn-row"><button class="ghost-btn" id="btnDownload" style="flex:1;">下載憑證檔案（依命名規則）</button></div>`;
+    document.getElementById("btnDownload").addEventListener("click", () => downloadRecordFile(r));
+  }
+
+  detailModal.hidden = false;
+}
+
+function decideRecord(id, status, reason = "") {
+  const records = loadRecords();
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+  r.status = status;
+  r.reviewer = "主管"; // 示範用；正式版可接入登入身份
+  r.reviewedAt = new Date().toISOString();
+  r.rejectReason = reason;
+  saveRecords(records);
+  closeModal();
+  renderReviewView();
+  showToast(status === "approved" ? "已核准" : "已退回，將通知申請人");
+
+  syncRecordToCloud(r, "update");
+}
+
+function downloadRecordFile(r) {
+  if (!r.fileDataUrl) { showToast("此紀錄沒有可下載的檔案"); return; }
+  const a = document.createElement("a");
+  a.href = r.fileDataUrl;
+  a.download = r.fileName || "receipt.jpg";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* ============================================================
+   CSV 匯出（可貼上 Google 試算表收支表）
+   ============================================================ */
+function exportCsv() {
+  const records = loadRecords();
+  if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
+  // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
+  const rows = records.map(r => [
+    fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
+    r.items, r.vendor, r.purpose, r.period, statusLabel(r.status),
+    r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.fileName, r.id,
+  ]);
+  const csv = [headers, ...rows]
+    .map(row => row.map(cellToCsv).join(","))
+    .join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `單據收支表_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast("已匯出 CSV，可直接匯入 / 貼上 Google 試算表");
+}
+function cellToCsv(v) {
+  const s = String(v ?? "");
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+/* ============================================================
+   雲端同步（Google Apps Script → Google 試算表 / Drive）
+   ============================================================ */
+const SYNC_CONFIG_KEY = "skillsForU_sync_config_v1";
+
+function loadSyncConfig() {
+  try {
+    const raw = localStorage.getItem(SYNC_CONFIG_KEY);
+    return raw ? JSON.parse(raw) : { enabled: false, url: "", token: "", cloudOcrEnabled: false };
+  } catch (e) {
+    return { enabled: false, url: "", token: "", cloudOcrEnabled: false };
+  }
+}
+function saveSyncConfig(config) {
+  localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(config));
+}
+
+function renderSyncView() {
+  const config = loadSyncConfig();
+  document.getElementById("syncEnabled").checked = !!config.enabled;
+  document.getElementById("syncUrl").value = config.url || "";
+  document.getElementById("syncToken").value = config.token || "";
+  document.getElementById("cloudOcrEnabled").checked = !!config.cloudOcrEnabled;
+  document.getElementById("syncStatusBanner").hidden = true;
+  document.getElementById("setupLinkBox").hidden = true;
+}
+
+/* 一次性設定連結：把目前已儲存的同步設定編碼進網址參數，同事點開一次就自動套用，
+   不用手動貼網址跟密碼。連結本身含密碼，只能私下傳給要用的人，不能公開分享。 */
+document.getElementById("generateSetupLinkBtn").addEventListener("click", () => {
+  const config = loadSyncConfig();
+  if (!config.url) { showToast("請先填寫並儲存雲端同步網址，才能產生設定連結"); return; }
+  const params = new URLSearchParams();
+  params.set("setup", "1");
+  params.set("url", config.url);
+  params.set("token", config.token || "");
+  if (config.cloudOcrEnabled) params.set("ocr", "1");
+  const link = window.location.origin + window.location.pathname + "?" + params.toString();
+  const output = document.getElementById("setupLinkOutput");
+  output.value = link;
+  document.getElementById("setupLinkBox").hidden = false;
+});
+
+document.getElementById("copySetupLinkBtn").addEventListener("click", async () => {
+  const output = document.getElementById("setupLinkOutput");
+  try {
+    await navigator.clipboard.writeText(output.value);
+    showToast("已複製連結");
+  } catch (e) {
+    output.focus();
+    output.select();
+    showToast("無法自動複製，已選取文字，請手動 Cmd/Ctrl+C");
+  }
+});
+
+/* 頁面載入時檢查網址參數，若是同事點開的一次性設定連結，自動套用並清掉網址列上的密碼 */
+function applySetupLinkIfPresent() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("setup") !== "1") return;
+  const url = params.get("url") || "";
+  if (!url) return;
+  saveSyncConfig({
+    enabled: true,
+    url: url,
+    token: params.get("token") || "",
+    cloudOcrEnabled: params.get("ocr") === "1",
+  });
+  showToast("已自動套用雲端同步設定，之後上傳會自動同步");
+  window.history.replaceState({}, document.title, window.location.origin + window.location.pathname);
+}
+
+document.getElementById("saveSyncBtn").addEventListener("click", () => {
+  const config = {
+    enabled: document.getElementById("syncEnabled").checked,
+    url: document.getElementById("syncUrl").value.trim(),
+    token: document.getElementById("syncToken").value,
+    cloudOcrEnabled: document.getElementById("cloudOcrEnabled").checked,
+  };
+  saveSyncConfig(config);
+  showToast("已儲存雲端同步設定");
+});
+
+document.getElementById("testSyncBtn").addEventListener("click", async () => {
+  const url = document.getElementById("syncUrl").value.trim();
+  const banner = document.getElementById("syncStatusBanner");
+  banner.hidden = false;
+  banner.className = "confidence-banner mid";
+  banner.textContent = "測試連線中…";
+  if (!url) {
+    banner.className = "confidence-banner low";
+    banner.textContent = "請先填寫 Apps Script 網址";
+    return;
+  }
+  try {
+    const res = await fetch(url, { method: "GET" });
+    const data = await res.json();
+    if (data && data.ok) {
+      banner.className = "confidence-banner high";
+      // 一併顯示這個「部署版本」實際使用的 OCR 模型，方便確認部署有沒有更新到最新程式碼
+      const modelInfo = data.model
+        ? `｜此部署使用的 OCR 模型：${data.model}${data.geminiKeySet ? "" : "（⚠ 尚未設定 Gemini 金鑰）"}`
+        : "｜⚠ 這個部署版本較舊，沒有回報模型資訊，請到 Apps Script 重新部署「新版本」";
+      banner.textContent = "連線成功！" + (data.message || "") + modelInfo;
+    } else {
+      banner.className = "confidence-banner low";
+      banner.textContent = "連線失敗：" + (data && data.error ? data.error : "未知錯誤");
+    }
+  } catch (err) {
+    banner.className = "confidence-banner low";
+    banner.textContent = "連線失敗，請確認網址是否正確、是否已部署為「任何人」可存取：" + err.message;
+  }
+});
+
+function cloudStatusHtml(r) {
+  const config = loadSyncConfig();
+  if (!config.enabled || !config.url) return "";
+  const statusText = r.cloudSynced ? "已同步至 Google 試算表" : (r.cloudError ? "同步失敗：" + escapeHtml(r.cloudError) : "尚未同步");
+  const linkHtml = r.cloudFileUrl ? ` ・ <a href="${escapeHtml(r.cloudFileUrl)}" target="_blank" rel="noopener">查看雲端檔案</a>` : "";
+  return `
+    <div class="confidence-banner ${r.cloudSynced ? "high" : "low"}">
+      ☁ ${statusText}${linkHtml}
+    </div>
+    <div class="btn-row">
+      <button class="ghost-btn" id="btnRetrySync" style="flex:1;">${r.cloudSynced ? "重新同步" : "同步至雲端"}</button>
+    </div>
+  `;
+}
+
+function updateRecordCloudStatus(id, patch) {
+  const records = loadRecords();
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+  Object.assign(r, patch);
+  saveRecords(records);
+}
+
+async function syncRecordToCloud(record, action) {
+  const config = loadSyncConfig();
+  if (!config.enabled || !config.url) return { ok: false, skipped: true };
+  try {
+    const res = await fetch(config.url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // 避免觸發 CORS 預檢，Apps Script 端用 JSON.parse 解析
+      body: JSON.stringify({ token: config.token, action, record }),
+    });
+    const data = await res.json();
+    if (data && data.ok) {
+      updateRecordCloudStatus(record.id, { cloudSynced: true, cloudFileUrl: data.fileUrl || record.cloudFileUrl || "", cloudError: "" });
+    } else {
+      updateRecordCloudStatus(record.id, { cloudSynced: false, cloudError: (data && data.error) || "未知錯誤" });
+    }
+    refreshVisibleListView();
+    return data;
+  } catch (err) {
+    updateRecordCloudStatus(record.id, { cloudSynced: false, cloudError: err.message });
+    refreshVisibleListView();
+    return { ok: false, error: err.message };
+  }
+}
+
+function refreshVisibleListView() {
+  if (!views.mine.hidden) renderMineView();
+  if (!views.review.hidden) renderReviewView();
+}
+
+async function cloudOcrRecognize(imageDataUrl) {
+  const config = loadSyncConfig();
+  if (!config.url) return { ok: false, error: "尚未設定 Apps Script 網址" };
+  try {
+    const res = await fetch(config.url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ token: config.token, action: "ocr", imageDataUrl }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/* ============================================================
+   名單設定（上傳人 / 專案）
+   ============================================================ */
+function renderListsView() {
+  renderTagList("uploaderTagList", loadUploaders(), removeUploader);
+  renderTagList("projectTagList", loadProjects(), removeProject);
+}
+
+function renderTagList(containerId, items, onRemove) {
+  const el = document.getElementById(containerId);
+  if (items.length === 0) {
+    el.innerHTML = '<div class="tag-list-empty">目前沒有任何項目，請在下面新增</div>';
+    return;
+  }
+  el.innerHTML = items.map(item => `
+    <span class="tag-chip" data-value="${escapeHtml(item)}">
+      ${escapeHtml(item)}
+      <button type="button" title="刪除">✕</button>
+    </span>
+  `).join("");
+  el.querySelectorAll(".tag-chip button").forEach(btn => {
+    btn.addEventListener("click", () => onRemove(btn.closest(".tag-chip").dataset.value));
+  });
+}
+
+function addUploader(name) {
+  name = name.trim();
+  if (!name) return;
+  const list = loadUploaders();
+  if (list.includes(name)) { showToast("這個人已經在名單裡了"); return; }
+  list.push(name);
+  saveUploaders(list);
+  renderListsView();
+  populateUploaderAndProjectSelects();
+}
+function removeUploader(name) {
+  saveUploaders(loadUploaders().filter(u => u !== name));
+  renderListsView();
+  populateUploaderAndProjectSelects();
+}
+function addProject(name) {
+  name = name.trim();
+  if (!name) return;
+  const list = loadProjects();
+  if (list.includes(name)) { showToast("這個專案已經在名單裡了"); return; }
+  list.push(name);
+  saveProjects(list);
+  renderListsView();
+  populateUploaderAndProjectSelects();
+}
+function removeProject(name) {
+  saveProjects(loadProjects().filter(p => p !== name));
+  renderListsView();
+  populateUploaderAndProjectSelects();
+}
+
+document.getElementById("addUploaderBtn").addEventListener("click", () => {
+  const input = document.getElementById("newUploaderInput");
+  addUploader(input.value);
+  input.value = "";
+  input.focus();
+});
+document.getElementById("newUploaderInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("addUploaderBtn").click();
+});
+document.getElementById("addProjectBtn").addEventListener("click", () => {
+  const input = document.getElementById("newProjectInput");
+  addProject(input.value);
+  input.value = "";
+  input.focus();
+});
+document.getElementById("newProjectInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("addProjectBtn").click();
+});
+
+/* ---------------- 初始化 ---------------- */
+applySetupLinkIfPresent();
+populateUploaderAndProjectSelects();
+switchView("upload");

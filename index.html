@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skills for U｜單據小幫手</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23c7d92e'/><text x='50' y='68' font-size='58' text-anchor='middle' fill='%230b4870' font-family='sans-serif' font-weight='700'>S</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">S</span>
+      <span class="brand-name">Skills for U<span class="brand-sep">｜</span>單據小幫手</span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-view="upload">上傳單據</button>
+      <button class="tab-btn" data-view="mine">我的紀錄</button>
+      <button class="tab-btn" data-view="review">主管審核</button>
+      <button class="tab-btn" data-view="lists">名單設定</button>
+      <button class="tab-btn" data-view="sync">雲端同步設定</button>
+    </nav>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <!-- ============ 上傳單據 ============ -->
+  <section class="view" id="view-upload">
+    <div class="card">
+      <h1 class="card-title">上傳單據</h1>
+      <p class="card-sub">拍照或選擇憑證檔案，按一鍵取得辨識結果</p>
+
+      <label class="field-label">上傳人</label>
+      <select id="uploaderSelect" class="select-input">
+        <option value="">請選擇上傳人</option>
+      </select>
+
+      <label class="field-label">所屬專案</label>
+      <select id="projectSelect" class="select-input">
+        <option value="">請選擇專案</option>
+      </select>
+
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="image/*,.pdf" hidden>
+        <div class="dropzone-inner" id="dropzoneInner">
+          <div class="plus-circle"><span>+</span></div>
+          <div class="dz-title">點我拍照 / 選擇檔案</div>
+          <div class="dz-sub">支援 JPG・PNG・PDF</div>
+        </div>
+        <div class="dz-preview" id="dzPreview" hidden>
+          <img id="dzPreviewImg" alt="預覽">
+          <div class="dz-filename" id="dzFilename"></div>
+          <button type="button" class="link-btn" id="dzRemoveBtn">移除，重新選擇</button>
+        </div>
+      </div>
+
+      <button class="primary-btn" id="startOcrBtn" disabled>開始辨識</button>
+
+      <div class="ocr-progress" id="ocrProgress" hidden>
+        <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
+        <div class="ocr-progress-label" id="ocrProgressLabel">辨識中…</div>
+      </div>
+    </div>
+
+    <!-- ============ 辨識結果確認表單 ============ -->
+    <div class="card" id="confirmCard" hidden>
+      <h2 class="card-title-sm">確認辨識結果</h2>
+      <p class="card-sub">AI 已嘗試自動判讀，請核對並補齊欄位後送出</p>
+
+      <div class="confidence-banner" id="confidenceBanner"></div>
+
+      <div class="form-grid">
+        <div class="form-field">
+          <label class="field-label">發票 / 收據日期 <span class="req">*</span> <span class="field-flag" id="flag-date"></span></label>
+          <input type="date" id="f_date" class="text-input">
+        </div>
+        <div class="form-field">
+          <label class="field-label">所屬期間（自動）</label>
+          <input type="text" id="f_period" class="text-input" readonly placeholder="—">
+        </div>
+        <div class="form-field">
+          <label class="field-label">金額 <span class="req">*</span> <span class="field-flag" id="flag-amount"></span></label>
+          <input type="number" id="f_amount" class="text-input" placeholder="0" min="0" step="1">
+        </div>
+        <div class="form-field">
+          <label class="field-label">活動 / 用途說明</label>
+          <input type="text" id="f_purpose" class="text-input" placeholder="例如：7 月理監事會議餐費">
+        </div>
+        <div class="form-field span-2">
+          <label class="field-label">店家 / 憑證抬頭</label>
+          <input type="text" id="f_vendor" class="text-input" placeholder="例如：全家便利商店">
+        </div>
+        <div class="form-field span-2">
+          <label class="field-label">發票內容 / 品項摘要</label>
+          <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
+        </div>
+      </div>
+
+      <details class="raw-ocr-toggle">
+        <summary>查看 OCR 原始辨識文字</summary>
+        <pre id="rawOcrText" class="raw-ocr-pre"></pre>
+      </details>
+
+      <div class="btn-row">
+        <button class="ghost-btn" id="cancelConfirmBtn">取消</button>
+        <button class="primary-btn" id="submitRecordBtn">送出審核</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 我的紀錄 ============ -->
+  <section class="view" id="view-mine" hidden>
+    <div class="card">
+      <h1 class="card-title">我的紀錄</h1>
+      <p class="card-sub">查看自己上傳單據的審核狀態</p>
+      <div class="filter-row">
+        <select id="mineUploaderFilter" class="select-input select-input-sm">
+          <option value="">全部上傳人</option>
+        </select>
+      </div>
+      <div id="mineList" class="record-list"></div>
+      <div class="empty-state" id="mineEmpty" hidden>目前還沒有任何上傳紀錄</div>
+    </div>
+  </section>
+
+  <!-- ============ 主管審核 ============ -->
+  <section class="view" id="view-review" hidden>
+    <div class="card">
+      <h1 class="card-title">主管審核彙總</h1>
+      <p class="card-sub">檢視待審項目，同意或退回並註明原因</p>
+
+      <div class="stat-row">
+        <div class="stat-pill stat-pending"><span id="statPending">0</span> 待審核</div>
+        <div class="stat-pill stat-approved"><span id="statApproved">0</span> 已核准</div>
+        <div class="stat-pill stat-rejected"><span id="statRejected">0</span> 已退回</div>
+      </div>
+
+      <div class="filter-row">
+        <select id="reviewStatusFilter" class="select-input select-input-sm">
+          <option value="pending">待審核</option>
+          <option value="approved">已核准</option>
+          <option value="rejected">已退回</option>
+          <option value="all">全部</option>
+        </select>
+        <select id="reviewProjectFilter" class="select-input select-input-sm">
+          <option value="">全部專案</option>
+        </select>
+        <button class="ghost-btn ghost-btn-sm" id="exportCsvBtn">匯出 CSV（可貼上 Google 試算表）</button>
+      </div>
+
+      <div id="reviewList" class="record-list"></div>
+      <div class="empty-state" id="reviewEmpty" hidden>目前沒有符合條件的紀錄</div>
+    </div>
+  </section>
+
+  <!-- ============ 名單設定 ============ -->
+  <section class="view" id="view-lists" hidden>
+    <div class="card">
+      <h1 class="card-title">名單設定</h1>
+      <p class="card-sub">管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼</p>
+
+      <label class="field-label">上傳人名單</label>
+      <div class="tag-list" id="uploaderTagList"></div>
+      <div class="add-item-row">
+        <input type="text" id="newUploaderInput" class="text-input" placeholder="輸入姓名，例如：王小明">
+        <button class="ghost-btn" id="addUploaderBtn">新增</button>
+      </div>
+
+      <label class="field-label" style="margin-top:28px;">所屬專案名單</label>
+      <div class="tag-list" id="projectTagList"></div>
+      <div class="add-item-row">
+        <input type="text" id="newProjectInput" class="text-input" placeholder="輸入專案名稱，例如：C 專案">
+        <button class="ghost-btn" id="addProjectBtn">新增</button>
+      </div>
+
+      <p class="list-hint">刪除名單上的人員／專案，不會影響已經送出的舊單據紀錄，只會讓「上傳單據」頁面的下拉選單不再顯示它。</p>
+    </div>
+  </section>
+
+  <!-- ============ 雲端同步設定 ============ -->
+  <section class="view" id="view-sync" hidden>
+    <div class="card">
+      <h1 class="card-title">雲端同步設定</h1>
+      <p class="card-sub">連接你自己部署的 Google Apps Script，把上傳單據自動寫入 Google 試算表，憑證照片存進 Google Drive</p>
+
+      <label class="field-label">
+        <input type="checkbox" id="syncEnabled"> 啟用雲端同步
+      </label>
+
+      <label class="field-label">Apps Script 網頁應用程式網址（結尾 /exec）</label>
+      <input type="text" id="syncUrl" class="text-input" placeholder="https://script.google.com/macros/s/.../exec">
+
+      <label class="field-label">密碼字串（要跟 Apps Script 裡的 SECRET_TOKEN 一致）</label>
+      <input type="password" id="syncToken" class="text-input" placeholder="請輸入你設定的密碼字串">
+
+      <label class="field-label" style="margin-top:24px;">
+        <input type="checkbox" id="cloudOcrEnabled"> 使用雲端 OCR（透過同一組 Apps Script + Gemini 辨識，效果比離線辨識好）
+      </label>
+
+      <div class="btn-row">
+        <button class="ghost-btn" id="testSyncBtn">測試連線</button>
+        <button class="primary-btn" id="saveSyncBtn">儲存設定</button>
+      </div>
+
+      <div class="confidence-banner" id="syncStatusBanner" hidden></div>
+
+      <div class="btn-row" style="margin-top:24px;">
+        <button class="ghost-btn" id="generateSetupLinkBtn" style="flex:1;">產生給同事的一次性設定連結</button>
+      </div>
+      <div id="setupLinkBox" hidden style="margin-top:14px;">
+        <label class="field-label">設定連結（複製整段傳給同事，他們點開一次即可自動套用設定）</label>
+        <input type="text" id="setupLinkOutput" class="text-input" readonly>
+        <button type="button" class="link-btn" id="copySetupLinkBtn" style="margin-top:8px;">複製連結</button>
+        <p class="list-hint">⚠️ 這串連結裡包含密碼字串，跟原始網址一樣是敏感資訊，只透過私訊／內部群組傳給要用的同事，不要貼在公開頁面或大型群組。</p>
+      </div>
+
+      <details class="raw-ocr-toggle" style="margin-top:24px;">
+        <summary>還沒設定過？查看部署步驟</summary>
+        <div class="sync-help">
+          <ol>
+            <li>開一個 Google 試算表（或用現有的收支表）。</li>
+            <li>選單「擴充功能」→「Apps Script」，把專案資料夾裡 <code>google-sync/Code.gs</code> 的內容整份貼進去。</li>
+            <li>把程式碼裡的 <code>SECRET_TOKEN</code> 改成你自己的密碼字串，跟上面填的要一樣。</li>
+            <li>右上角「部署」→「新增部署作業」→類型選「網頁應用程式」，執行身分選「我」，誰可以存取選「任何人」。</li>
+            <li>複製部署後的網址（結尾 /exec），貼到上面「Apps Script 網頁應用程式網址」欄位。</li>
+            <li>按「測試連線」確認成功，再按「儲存設定」。之後上傳與審核都會自動同步。</li>
+          </ol>
+          <p>⚠️ 這個網址一旦設成「任何人」可存取就是公開的，請不要把網址和密碼分享出去；外流的話回 Apps Script 換一個新密碼重新部署即可。</p>
+        </div>
+      </details>
+
+      <details class="raw-ocr-toggle">
+        <summary>想開啟「雲端 OCR」？多做這幾步</summary>
+        <div class="sync-help">
+          <ol>
+            <li>到 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> 用同一個 Google 帳號登入，申請一組 Gemini API 金鑰（有免費額度）。</li>
+            <li>回到 Apps Script 編輯器，把 <code>GEMINI_API_KEY</code> 改成你剛申請的金鑰，存檔後重新部署（部署→管理部署作業→編輯→版本選「新版本」）。</li>
+            <li>回到這頁，勾選「使用雲端 OCR」，按「儲存設定」。之後「開始辨識」就會改用 Gemini，辨識失敗時會自動退回本機離線辨識，不會卡住。</li>
+          </ol>
+          <p>⚠️ Gemini API 金鑰也是敏感資訊，一樣不要把 <code>Code.gs</code> 或部署網址分享出去。</p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ 單據詳情 / 審核 Modal ============ -->
+<div class="modal-overlay" id="detailModal" hidden>
+  <div class="modal-card">
+    <button class="modal-close" id="modalCloseBtn">✕</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
