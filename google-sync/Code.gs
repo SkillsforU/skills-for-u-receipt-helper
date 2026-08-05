@@ -1,48 +1,87 @@
 /**
- * Skills for U｜單據小幫手 — Google Sheets / Drive 同步接收端
+ * Skills for U｜單據小幫手 — Google Sheets / Drive 同步 + 專案審核 + Slack 通知
  *
- * 使用方式：
- * 1. 開一個 Google 試算表（或用現有的收支表）。
- * 2. 上方選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去（覆蓋原本的內容）。
- * 3. 把下面 SECRET_TOKEN 改成你自己的一串密碼（英數字，越隨機越好）。
- * 4. 需要的話調整 SHEET_NAME（要寫入哪個分頁）與 DRIVE_FOLDER_ID（憑證存到哪個資料夾）。
- * 5. 右上角「部署」→「新增部署作業」→類型選「網頁應用程式」：
- *      - 執行身分：我（你自己的帳號）
- *      - 誰可以存取：任何人
- *    部署後會拿到一個網址（結尾是 /exec），把它跟 SECRET_TOKEN 貼到「單據小幫手」網頁的
- *    「雲端同步設定」頁面裡即可。
+ * ── 第一次設定 ─────────────────────────────────────────────
+ * 1. 開一個 Google 試算表（這份就是「總表」），選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去。
+ * 2. 修改下面「設定區」：SECRET_TOKEN、GEMINI_API_KEY、SLACK_WEBHOOK_URL、PROJECT_APPROVERS。
+ * 3. 右上角「部署」→「新增部署作業」→「網頁應用程式」：執行身分「我」、誰可以存取「任何人」。
+ *    把拿到的 /exec 網址跟 SECRET_TOKEN 貼到「單據小幫手」網頁的「雲端同步設定」。
+ * 4. 重新整理總表，上方會多一個「單據小幫手」選單，點「① 建立/更新各專案審核表」。
+ *    這會依 PROJECT_APPROVERS 幫每個專案建立獨立的審核用試算表、設好權限、並分享給審核人。
+ * 5. 點「② 設定自動排程」，安裝兩個定時任務：
+ *      - 每 15 分鐘把各專案的審核結果同步回總表
+ *      - 每週一早上把待審清單發到 Slack
  *
- * 安全性提醒：「誰可以存取：任何人」代表這個網址是公開的，任何人拿到網址 + 正確的
- * SECRET_TOKEN 就能寫資料進來。請不要公開分享這個網址與密碼；如果不小心外流，
- * 回到 Apps Script 改一個新的 SECRET_TOKEN 並重新部署即可失效舊的存取權。
+ * ── 權限模型 ───────────────────────────────────────────────
+ * 每個專案有自己獨立的試算表，只分享給該專案的審核人（編輯者）。
+ * 表內除了「審核狀態／審核人／審核備註」三欄之外，全部鎖定不可編輯，
+ * 所以審核人只能改審核結果，不能竄改單據原始資料。
  *
- * 想順便開啟「雲端 OCR」（用 Gemini 辨識單據，效果比純離線辨識好）：
- * 1. 到 https://aistudio.google.com/apikey 用同一個 Google 帳號申請一組 API 金鑰（有免費額度）。
- * 2. 把下面 GEMINI_API_KEY 改成你申請到的金鑰。
- * 3. 存檔後回到「部署」→「管理部署作業」→ 編輯（鉛筆圖示）→ 版本選「新版本」→ 部署，讓改動生效。
- * 4. 回到「單據小幫手」的「雲端同步設定」頁，勾選「使用雲端 OCR」、儲存設定即可。
- * 這組金鑰跟 SECRET_TOKEN 一樣是敏感資訊，不要外流；沒填的話「雲端 OCR」功能就不會被使用，
- * 工具會自動改用瀏覽器內建的離線辨識，不影響其他功能。
+ * ── 安全性提醒 ─────────────────────────────────────────────
+ * 網頁應用程式設成「任何人」可存取，代表拿到網址 + SECRET_TOKEN 就能寫資料進來。
+ * 請勿公開分享網址與密碼；外流時改一組新的 SECRET_TOKEN 並重新部署即可失效舊的存取權。
+ * GEMINI_API_KEY 與 SLACK_WEBHOOK_URL 同樣是機密，不要外流。
  */
 
-const SHEET_NAME = '收支表';       // 要寫入的分頁名稱，找不到會自動建立
+/* ============================================================
+   設定區
+   ============================================================ */
+const SHEET_NAME = '收支表';       // 總表裡要寫入的分頁名稱，找不到會自動建立
 const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「單據小幫手」資料夾
 const SECRET_TOKEN = '請改成你自己的密碼字串';
-const GEMINI_API_KEY = '';         // 留空 = 不啟用雲端 OCR；到 Google AI Studio 申請後貼在這裡
+const GEMINI_API_KEY = '';         // 留空 = 不啟用雲端 OCR
 // 預設用 gemini-flash-latest 這個別名，它會自動指向目前最新的 Flash 模型，
 // 不會因為 Google 淘汰舊版本（回傳 404 no longer available）而突然失效。
-// 若要指定特定模型，先到 https://ai.dev/rate-limit 確認你的帳號對它有額度：
-// 顯示 0/0 代表沒額度、用了會噴 429；TTS 系列是語音用的，不能辨識單據。
 const GEMINI_MODEL = 'gemini-flash-latest';
 
-// 欄位順序＝寫進試算表的實際順序。若要調整順序或欄位，這裡跟 createRow_ / updateRow_ 裡的
-// 欄位索引（getRange 的第 2 個參數）要一起改，兩邊沒對齊會寫錯欄。
+// Slack 傳入 Webhook 網址。留空 = 不發送任何 Slack 通知（其他功能不受影響）。
+// 申請方式：Slack → 你的工作區 → Apps → 搜尋「Incoming Webhooks」→ 選一個頻道 → 複製網址。
+const SLACK_WEBHOOK_URL = '';
+
+// 各專案的審核人。key 要跟「單據小幫手」名單設定裡的專案名稱「完全一致」（含繁簡、空格）。
+const PROJECT_APPROVERS = {
+  '組織發展中心':     ['ceo@skillsforu.org', 'rosyhu@skillsforu.org'],
+  '高雄技職年會':     ['ceo@skillsforu.org', 'rein@skillsforu.org'],
+  '臺灣技職教育年會': ['ceo@skillsforu.org', 'daphnekuo@skillsforu.org'],
+  '組織行銷中心':     ['ceo@skillsforu.org'],
+  '人才培育中心':     ['ceo@skillsforu.org'],
+};
+
+// email → 顯示名稱，用於審核人下拉選單與 Slack 訊息
+const APPROVER_NAMES = {
+  'ceo@skillsforu.org': '偉翔',
+  'rosyhu@skillsforu.org': '琬茜',
+  'rein@skillsforu.org': '梓豪',
+  'daphnekuo@skillsforu.org': 'Daphne',
+};
+
+/* ============================================================
+   欄位定義
+   ============================================================ */
+// 總表欄位順序。調整時 createRow_ / updateRow_ / 下面的欄位索引常數要一起改。
 const HEADERS = [
   '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途',
-  '所屬期間', '狀態', '審核人', '審核時間', '退回原因', '憑證檔名', '憑證雲端連結',
+  '所屬期間', '急迫性', '狀態', '審核人', '審核時間', '退回原因', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
+const MASTER_STATUS_COL = 11;   // 狀態、審核人、審核時間、退回原因＝第 11~14 欄（四欄連續）
+const MASTER_RECORD_ID_COL = 17;
 
+// 各專案審核表的欄位。前 9 欄唯讀，最後 3 欄開放給審核人編輯。
+const REVIEW_HEADERS = [
+  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途', '急迫性', '憑證連結',
+  '審核狀態', '審核人', '審核備註', '紀錄ID',
+];
+const REVIEW_EDITABLE_START_COL = 10; // 審核狀態
+const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
+const REVIEW_RECORD_ID_COL = 13;
+
+const CONFIG_SHEET_NAME = '系統設定';
+const STATUS_OPTIONS = ['待審核', '已核准', '已退回'];
+
+/* ============================================================
+   Web App 入口
+   ============================================================ */
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
@@ -65,16 +104,26 @@ function doPost(e) {
   }
 }
 
-// imageDataUrl 可以是圖片（image/jpeg、image/png）或 PDF（application/pdf）的 data URL，
-// Gemini 兩種都能直接讀取，不需要額外轉檔。
+function doGet(e) {
+  return jsonOut_({
+    ok: true,
+    message: '單據小幫手同步端點運作中，請用 POST 送資料。',
+    model: GEMINI_MODEL,
+    geminiKeySet: GEMINI_API_KEY ? true : false,
+    slackSet: SLACK_WEBHOOK_URL ? true : false,
+  });
+}
+
+/* ============================================================
+   雲端 OCR（Gemini）
+   ============================================================ */
+// imageDataUrl 可以是圖片或 PDF 的 data URL，Gemini 兩種都能直接讀，不需額外轉檔。
 function recognizeReceipt_(imageDataUrl) {
   if (!GEMINI_API_KEY) {
     return { ok: false, error: '尚未設定 GEMINI_API_KEY，未啟用雲端 OCR' };
   }
   const match = String(imageDataUrl || '').match(/^data:(.+);base64,(.*)$/);
   if (!match) return { ok: false, error: '找不到圖片或 PDF 資料' };
-  const mimeType = match[1];
-  const base64Data = match[2];
 
   const prompt = '你是台灣財務單據辨識助理。這份文件可能是圖片，也可能是含多頁的 PDF；' +
     '如果是多頁 PDF，裡面可能只有其中一頁是真正的發票或收據，其他頁可能是空白、附言或其他不相關內容，' +
@@ -92,7 +141,7 @@ function recognizeReceipt_(imageDataUrl) {
     contents: [{
       parts: [
         { text: prompt },
-        { inline_data: { mime_type: mimeType, data: base64Data } },
+        { inline_data: { mime_type: match[1], data: match[2] } },
       ],
     }],
     generationConfig: { responseMimeType: 'application/json' },
@@ -108,7 +157,6 @@ function recognizeReceipt_(imageDataUrl) {
 
   const status = res.getResponseCode();
   if (status !== 200) {
-    // 保留較長的錯誤內容，429 時 Google 會在這裡說明是「每分鐘」還是「每天」的額度用完
     return { ok: false, error: 'Gemini API 錯誤（狀態碼 ' + status + '）：' + res.getContentText().slice(0, 800) };
   }
 
@@ -124,18 +172,9 @@ function recognizeReceipt_(imageDataUrl) {
   }
 }
 
-// 讓瀏覽器可以先用 GET 測試網址是否部署成功。
-// 這裡會一併回報目前「這個部署版本」實際使用的模型，方便確認部署有沒有更新到最新程式碼
-//（只顯示模型名稱與金鑰是否已設定，不會外洩金鑰內容）。
-function doGet(e) {
-  return jsonOut_({
-    ok: true,
-    message: '單據小幫手同步端點運作中，請用 POST 送資料。',
-    model: GEMINI_MODEL,
-    geminiKeySet: GEMINI_API_KEY ? true : false,
-  });
-}
-
+/* ============================================================
+   總表寫入
+   ============================================================ */
 function getSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(SHEET_NAME);
@@ -152,8 +191,7 @@ function getRootFolder_() {
   return DriveApp.createFolder(name);
 }
 
-// 依「所屬期間」（record.period，格式 YYYY-MM）在主資料夾下開一個 YYYYMM 命名的子資料夾，
-// 例如 2026-07 → 子資料夾「202607」；找不到期間就歸到「未分類」。
+// 依「所屬期間」（YYYY-MM）在主資料夾下開 YYYYMM 子資料夾，找不到期間就歸到「未分類」
 function getMonthFolder_(period) {
   const root = getRootFolder_();
   const folderName = period ? String(period).replace(/-/g, '') : '未分類';
@@ -166,35 +204,44 @@ function saveFile_(record) {
   if (!record.fileDataUrl) return '';
   const match = String(record.fileDataUrl).match(/^data:(.+);base64,(.*)$/);
   if (!match) return '';
-  const contentType = match[1];
-  const bytes = Utilities.base64Decode(match[2]);
-  const blob = Utilities.newBlob(bytes, contentType, record.fileName || 'receipt.jpg');
-  const file = getMonthFolder_(record.period).createFile(blob);
-  return file.getUrl();
+  const blob = Utilities.newBlob(Utilities.base64Decode(match[2]), match[1], record.fileName || 'receipt.jpg');
+  return getMonthFolder_(record.period).createFile(blob).getUrl();
 }
 
 function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
-  // 順序要跟 HEADERS 一一對應
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate,
     record.amount, record.items, record.vendor, record.purpose,
-    record.period, statusLabel_(record.status),
+    record.period, record.urgent ? '緊急' : '一般', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
     record.fileName, fileUrl, record.id,
   ]);
+
+  // 同步一份到該專案的審核表，供主管審核
+  try {
+    appendToProjectReviewSheet_(record, fileUrl);
+  } catch (err) {
+    // 審核表寫入失敗不應該讓整筆上傳失敗，記在 log 就好
+    console.error('寫入專案審核表失敗：' + err);
+  }
+
+  // 緊急件立刻發 Slack；一般件等定期彙總
+  if (record.urgent) {
+    try {
+      notifyUrgentToSlack_(record, fileUrl);
+    } catch (err) {
+      console.error('Slack 緊急通知失敗：' + err);
+    }
+  }
+
   return { ok: true, fileUrl: fileUrl };
 }
 
-// 紀錄ID 放在最後一欄（第 16 欄），updateRow_ 靠它找到要更新的那一列，
-// 所以不能整欄刪除，只是不放在最前面而已。
-const RECORD_ID_COL = 16;
-const STATUS_COL = 10; // 狀態、審核人、審核時間、退回原因＝第 10~13 欄，四欄連續
-
-function findRowById_(sheet, id) {
+function findRowById_(sheet, id, idCol) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return -1;
-  const ids = sheet.getRange(2, RECORD_ID_COL, lastRow - 1, 1).getValues();
+  const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
   for (let i = 0; i < ids.length; i++) {
     if (ids[i][0] === id) return i + 2;
   }
@@ -202,19 +249,19 @@ function findRowById_(sheet, id) {
 }
 
 function updateRow_(sheet, record) {
-  const rowIndex = findRowById_(sheet, record.id);
+  const rowIndex = findRowById_(sheet, record.id, MASTER_RECORD_ID_COL);
   if (rowIndex === -1) return createRow_(sheet, record);
-  sheet.getRange(rowIndex, STATUS_COL, 1, 4).setValues([[
+  sheet.getRange(rowIndex, MASTER_STATUS_COL, 1, 4).setValues([[
     statusLabel_(record.status), record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
   ]]);
   return { ok: true };
 }
 
 function statusLabel_(status) {
-  return { pending: '待審核', approved: '已核准', rejected: '已退回' }[status] || status;
+  return { pending: '待審核', approved: '已核准', rejected: '已退回' }[status] || status || '待審核';
 }
 
-// 把 ISO 時間字串換算成 GMT+8、只顯示到分鐘，例如 "2026-07-31 14:23"
+// ISO 時間字串 → GMT+8、精確到分鐘，例如 "2026-07-31 14:23"
 function formatDateTime_(isoString) {
   if (!isoString) return '';
   const date = new Date(isoString);
@@ -226,10 +273,297 @@ function jsonOut_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
+/* ============================================================
+   系統設定分頁：記住每個專案審核表的檔案 ID
+   （用 ID 而非檔名/路徑，所以你之後把檔案搬到別的資料夾也不會壞）
+   ============================================================ */
+function getConfigSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(CONFIG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG_SHEET_NAME);
+    sheet.appendRow(['專案名稱', '審核表檔案ID', '審核表網址']);
+  }
+  return sheet;
+}
+
+function getProjectFileId_(project) {
+  const sheet = getConfigSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return '';
+  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (values[i][0] === project) return values[i][1];
+  }
+  return '';
+}
+
+function setProjectFileId_(project, fileId, url) {
+  const sheet = getConfigSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const values = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (values[i][0] === project) {
+        sheet.getRange(i + 2, 2, 1, 2).setValues([[fileId, url]]);
+        return;
+      }
+    }
+  }
+  sheet.appendRow([project, fileId, url]);
+}
+
+/* ============================================================
+   建立 / 更新各專案審核表
+   ============================================================ */
+function setupProjectReviewSheets() {
+  const created = [];
+  Object.keys(PROJECT_APPROVERS).forEach(function (project) {
+    const ss = getOrCreateProjectSpreadsheet_(project);
+    applyProjectPermissions_(ss, project);
+    created.push(project);
+  });
+  SpreadsheetApp.getUi().alert(
+    '已建立/更新 ' + created.length + ' 個專案審核表：\n\n' + created.join('\n') +
+    '\n\n各審核表的網址可在「' + CONFIG_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。'
+  );
+}
+
+function getOrCreateProjectSpreadsheet_(project) {
+  const existingId = getProjectFileId_(project);
+  if (existingId) {
+    try {
+      return SpreadsheetApp.openById(existingId);
+    } catch (e) {
+      // 檔案被刪掉了，往下重新建立
+    }
+  }
+  const ss = SpreadsheetApp.create('單據審核 - ' + project);
+  const sheet = ss.getSheets()[0];
+  sheet.setName('待審核單據');
+  sheet.appendRow(REVIEW_HEADERS);
+  sheet.setFrozenRows(1);
+  setProjectFileId_(project, ss.getId(), ss.getUrl());
+
+  // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
+  try {
+    const root = getRootFolder_();
+    const folderName = '專案審核表';
+    const it = root.getFoldersByName(folderName);
+    const folder = it.hasNext() ? it.next() : root.createFolder(folderName);
+    DriveApp.getFileById(ss.getId()).moveTo(folder);
+  } catch (e) {
+    console.error('搬移審核表到資料夾失敗（不影響功能）：' + e);
+  }
+  return ss;
+}
+
+function applyProjectPermissions_(ss, project) {
+  const approvers = PROJECT_APPROVERS[project] || [];
+  const sheet = ss.getSheets()[0];
+
+  // 1. 分享給審核人（編輯者）
+  approvers.forEach(function (email) {
+    try {
+      ss.addEditor(email);
+    } catch (e) {
+      console.error('無法分享給 ' + email + '：' + e);
+    }
+  });
+
+  // 2. 鎖住整張表，只留審核三欄可編輯。
+  //    保護範圍的編輯者只留擁有者，其餘欄位審核人就改不動；
+  //    未保護範圍（審核三欄）則是檔案的編輯者（＝審核人）可以改。
+  sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (p) { p.remove(); });
+  const protection = sheet.protect().setDescription('單據資料唯讀，僅開放審核欄位');
+  protection.removeEditors(protection.getEditors());
+  protection.setUnprotectedRanges([
+    sheet.getRange(2, REVIEW_EDITABLE_START_COL, sheet.getMaxRows() - 1, REVIEW_EDITABLE_COL_COUNT),
+  ]);
+
+  // 3. 審核狀態、審核人做成下拉選單，避免打錯字導致同步比對失敗
+  const maxRows = sheet.getMaxRows() - 1;
+  sheet.getRange(2, REVIEW_EDITABLE_START_COL, maxRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireValueInList(STATUS_OPTIONS, true).setAllowInvalid(false).build()
+  );
+  const approverNames = approvers.map(function (e) { return APPROVER_NAMES[e] || e; });
+  if (approverNames.length > 0) {
+    sheet.getRange(2, REVIEW_EDITABLE_START_COL + 1, maxRows, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(approverNames, true).setAllowInvalid(false).build()
+    );
+  }
+}
+
+function appendToProjectReviewSheet_(record, fileUrl) {
+  if (!PROJECT_APPROVERS[record.project]) return; // 沒設定審核人的專案就不建審核表
+  const ss = getOrCreateProjectSpreadsheet_(record.project);
+  const sheet = ss.getSheets()[0];
+  sheet.appendRow([
+    formatDateTime_(record.uploadedAt), record.uploader, record.invoiceDate, record.amount,
+    record.items, record.vendor, record.purpose, record.urgent ? '緊急' : '一般', fileUrl,
+    '待審核', '', '', record.id,
+  ]);
+}
+
+/* ============================================================
+   把各專案審核結果同步回總表（定時執行）
+   ============================================================ */
+function syncApprovalsToMaster() {
+  const master = getSheet_();
+  const lastRow = master.getLastRow();
+  if (lastRow < 2) return 0;
+
+  // 先把總表現有的 紀錄ID → 列號 建成索引，避免每筆都重新掃一次
+  const masterIds = master.getRange(2, MASTER_RECORD_ID_COL, lastRow - 1, 1).getValues();
+  const rowById = {};
+  masterIds.forEach(function (row, i) { if (row[0]) rowById[row[0]] = i + 2; });
+
+  const masterStatuses = master.getRange(2, MASTER_STATUS_COL, lastRow - 1, 4).getValues();
+  let updated = 0;
+
+  Object.keys(PROJECT_APPROVERS).forEach(function (project) {
+    const fileId = getProjectFileId_(project);
+    if (!fileId) return;
+    let sheet;
+    try {
+      sheet = SpreadsheetApp.openById(fileId).getSheets()[0];
+    } catch (e) {
+      console.error('開啟 ' + project + ' 審核表失敗：' + e);
+      return;
+    }
+    const rLast = sheet.getLastRow();
+    if (rLast < 2) return;
+    const rows = sheet.getRange(2, 1, rLast - 1, REVIEW_HEADERS.length).getValues();
+
+    rows.forEach(function (row) {
+      const status = row[REVIEW_EDITABLE_START_COL - 1];
+      const reviewer = row[REVIEW_EDITABLE_START_COL];
+      const note = row[REVIEW_EDITABLE_START_COL + 1];
+      const recordId = row[REVIEW_RECORD_ID_COL - 1];
+      if (!recordId || !status || status === '待審核') return;
+
+      const masterRow = rowById[recordId];
+      if (!masterRow) return;
+      const current = masterStatuses[masterRow - 2];
+      // 狀態、審核人、備註都沒變就跳過，避免每次都重寫整張表
+      if (current[0] === status && current[1] === reviewer && current[3] === note) return;
+
+      master.getRange(masterRow, MASTER_STATUS_COL, 1, 4).setValues([[
+        status, reviewer, formatDateTime_(new Date().toISOString()), note,
+      ]]);
+      updated++;
+    });
+  });
+  return updated;
+}
+
+function syncApprovalsNow() {
+  const n = syncApprovalsToMaster();
+  SpreadsheetApp.getUi().alert('同步完成，共更新 ' + n + ' 筆審核結果。');
+}
+
+/* ============================================================
+   Slack 通知
+   ============================================================ */
+function postToSlack_(text) {
+  if (!SLACK_WEBHOOK_URL) return;
+  UrlFetchApp.fetch(SLACK_WEBHOOK_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ text: text }),
+    muteHttpExceptions: true,
+  });
+}
+
+function projectApproverMentionText_(project) {
+  const approvers = (PROJECT_APPROVERS[project] || []).map(function (e) { return APPROVER_NAMES[e] || e; });
+  return approvers.length ? approvers.join('、') : '（未設定審核人）';
+}
+
+function notifyUrgentToSlack_(record, fileUrl) {
+  const reviewUrl = getProjectFileId_(record.project)
+    ? SpreadsheetApp.openById(getProjectFileId_(record.project)).getUrl() : '';
+  const lines = [
+    '🚨 *有一筆緊急單據待審核*',
+    '專案：' + record.project + '（審核人：' + projectApproverMentionText_(record.project) + '）',
+    '上傳者：' + record.uploader,
+    '金額：NT$ ' + (record.amount || 0),
+    '用途：' + (record.purpose || record.items || '—'),
+    fileUrl ? '憑證：' + fileUrl : '',
+    reviewUrl ? '前往審核：' + reviewUrl : '',
+  ];
+  postToSlack_(lines.filter(Boolean).join('\n'));
+}
+
+// 定期彙總：把所有專案還沒審核的件數整理成一則訊息
+function sendPendingDigestToSlack() {
+  const master = getSheet_();
+  const lastRow = master.getLastRow();
+  if (lastRow < 2) return;
+
+  const values = master.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const pendingByProject = {};
+  let total = 0;
+  values.forEach(function (row) {
+    const project = row[2];
+    const status = row[MASTER_STATUS_COL - 1];
+    if (status && status !== '待審核') return;
+    pendingByProject[project] = (pendingByProject[project] || 0) + 1;
+    total++;
+  });
+
+  if (total === 0) {
+    postToSlack_('✅ 目前沒有待審核的單據，感謝大家！');
+    return;
+  }
+
+  const lines = ['📋 *單據待審核提醒* — 目前共 ' + total + ' 筆待審核'];
+  Object.keys(pendingByProject).forEach(function (project) {
+    const fileId = getProjectFileId_(project);
+    let url = '';
+    try { url = fileId ? SpreadsheetApp.openById(fileId).getUrl() : ''; } catch (e) {}
+    lines.push('• ' + project + '：' + pendingByProject[project] + ' 筆（' +
+      projectApproverMentionText_(project) + '）' + (url ? ' → ' + url : ''));
+  });
+  postToSlack_(lines.join('\n'));
+}
+
+/* ============================================================
+   排程與選單
+   ============================================================ */
+function setupTriggers() {
+  // 先清掉舊的，避免重複安裝造成一次跑很多遍
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    const fn = t.getHandlerFunction();
+    if (fn === 'syncApprovalsToMaster' || fn === 'sendPendingDigestToSlack') ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger('syncApprovalsToMaster').timeBased().everyMinutes(15).create();
+  ScriptApp.newTrigger('sendPendingDigestToSlack').timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(10).create();
+
+  SpreadsheetApp.getUi().alert(
+    '已設定自動排程：\n\n' +
+    '• 每 15 分鐘把各專案審核結果同步回總表\n' +
+    '• 每週一上午 10 點發送待審核彙總到 Slack\n\n' +
+    '想改成兩週或每月一次，可到左側「觸發條件」頁面調整 sendPendingDigestToSlack 的頻率。'
+  );
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('單據小幫手')
+    .addItem('① 建立/更新各專案審核表', 'setupProjectReviewSheets')
+    .addItem('② 設定自動排程', 'setupTriggers')
+    .addSeparator()
+    .addItem('立即同步審核結果', 'syncApprovalsNow')
+    .addItem('立即發送待審提醒到 Slack', 'sendPendingDigestToSlack')
+    .addToUi();
+}
+
 /**
  * 授權用測試函式。設定好 GEMINI_API_KEY 後，在編輯器上方的函式下拉選單選「testGeminiAuth」
- * 並按「執行」，Google 會跳出授權畫面（要允許「連線至外部服務」這項權限），
- * 之後雲端 OCR 才不會出現「你沒有呼叫 UrlFetchApp.fetch 的權限」錯誤。
+ * 並按「執行」，Google 會跳出授權畫面（要允許「連線至外部服務」這項權限）。
  *
  * 注意：函式名稱結尾「不能」有底線，否則 Apps Script 會視為私有函式而不顯示在下拉選單中。
  */

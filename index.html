@@ -17,8 +17,7 @@
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab-btn active" data-view="upload">上傳單據</button>
-      <button class="tab-btn" data-view="mine">我的紀錄</button>
-      <button class="tab-btn" data-view="review">主管審核</button>
+      <button class="tab-btn" data-view="mine">上傳紀錄</button>
       <button class="tab-btn" data-view="lists">名單設定</button>
       <button class="tab-btn" data-view="sync">雲端同步設定</button>
     </nav>
@@ -97,6 +96,13 @@
           <label class="field-label">發票內容 / 品項摘要</label>
           <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
         </div>
+        <div class="form-field span-2">
+          <label class="field-label">審核急迫性</label>
+          <div class="segmented" id="urgencyToggle">
+            <button type="button" class="seg-btn active" data-urgent="0">一般</button>
+            <button type="button" class="seg-btn seg-btn-urgent" data-urgent="1">緊急（立即通知主管）</button>
+          </div>
+        </div>
       </div>
 
       <details class="raw-ocr-toggle">
@@ -111,26 +117,11 @@
     </div>
   </section>
 
-  <!-- ============ 我的紀錄 ============ -->
+  <!-- ============ 上傳紀錄 ============ -->
   <section class="view" id="view-mine" hidden>
     <div class="card">
-      <h1 class="card-title">我的紀錄</h1>
-      <p class="card-sub">查看自己上傳單據的審核狀態</p>
-      <div class="filter-row">
-        <select id="mineUploaderFilter" class="select-input select-input-sm">
-          <option value="">全部上傳人</option>
-        </select>
-      </div>
-      <div id="mineList" class="record-list"></div>
-      <div class="empty-state" id="mineEmpty" hidden>目前還沒有任何上傳紀錄</div>
-    </div>
-  </section>
-
-  <!-- ============ 主管審核 ============ -->
-  <section class="view" id="view-review" hidden>
-    <div class="card">
-      <h1 class="card-title">主管審核彙總</h1>
-      <p class="card-sub">檢視待審項目，同意或退回並註明原因</p>
+      <h1 class="card-title">上傳紀錄</h1>
+      <p class="card-sub">查看單據上傳與審核狀態。實際的同意／退回請主管到 Google 試算表的專案審核表操作，這裡只顯示結果</p>
 
       <div class="stat-row">
         <div class="stat-pill stat-pending"><span id="statPending">0</span> 待審核</div>
@@ -139,20 +130,16 @@
       </div>
 
       <div class="filter-row">
-        <select id="reviewStatusFilter" class="select-input select-input-sm">
-          <option value="pending">待審核</option>
-          <option value="approved">已核准</option>
-          <option value="rejected">已退回</option>
-          <option value="all">全部</option>
+        <select id="mineUploaderFilter" class="select-input select-input-sm">
+          <option value="">全部上傳人</option>
         </select>
-        <select id="reviewProjectFilter" class="select-input select-input-sm">
+        <select id="mineProjectFilter" class="select-input select-input-sm">
           <option value="">全部專案</option>
         </select>
-        <button class="ghost-btn ghost-btn-sm" id="exportCsvBtn">匯出 CSV（可貼上 Google 試算表）</button>
+        <button class="ghost-btn ghost-btn-sm" id="exportCsvBtn">匯出 CSV</button>
       </div>
-
-      <div id="reviewList" class="record-list"></div>
-      <div class="empty-state" id="reviewEmpty" hidden>目前沒有符合條件的紀錄</div>
+      <div id="mineList" class="record-list"></div>
+      <div class="empty-state" id="mineEmpty" hidden>目前還沒有任何上傳紀錄</div>
     </div>
   </section>
 

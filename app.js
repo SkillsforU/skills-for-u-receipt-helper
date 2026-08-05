@@ -107,7 +107,6 @@ function escapeHtml(s) {
 const views = {
   upload: document.getElementById("view-upload"),
   mine: document.getElementById("view-mine"),
-  review: document.getElementById("view-review"),
   lists: document.getElementById("view-lists"),
   sync: document.getElementById("view-sync"),
 };
@@ -120,7 +119,6 @@ function switchView(name) {
   Object.entries(views).forEach(([key, el]) => { el.hidden = key !== name; });
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
   if (name === "mine") renderMineView();
-  if (name === "review") renderReviewView();
   if (name === "lists") renderListsView();
   if (name === "sync") renderSyncView();
 }
@@ -402,6 +400,20 @@ function updatePeriodField() {
   f_period.value = f_date.value ? f_date.value.slice(0, 7) : "";
 }
 
+/* 緊急／一般切換：緊急件會在送出當下立刻發 Slack 通知主管，一般件只進定期彙總提醒 */
+const urgencyToggle = document.getElementById("urgencyToggle");
+let currentUrgent = false;
+urgencyToggle.addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  currentUrgent = btn.dataset.urgent === "1";
+  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+});
+function resetUrgency() {
+  currentUrgent = false;
+  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.urgent === "0"));
+}
+
 function openConfirmForm({ rawText, confidenceMean, guesses }) {
   currentOcrRawText = rawText;
   rawOcrText.textContent = rawText || "（此檔案未執行文字辨識，請手動輸入欄位）";
@@ -412,6 +424,7 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_vendor.value = guesses.vendor || "";
   f_items.value = "";
   f_purpose.value = "";
+  resetUrgency();
 
   setFlag("flag-date", !!guesses.date);
   setFlag("flag-amount", !!guesses.amount);
@@ -475,6 +488,7 @@ function submitRecord() {
     vendor: f_vendor.value.trim(),
     items: f_items.value.trim(),
     purpose: f_purpose.value.trim(),
+    urgent: currentUrgent,
     confidence: Number(confirmCard.dataset.confidence || 0),
     rawOcrText: currentOcrRawText,
     status: "pending",
@@ -489,30 +503,47 @@ function submitRecord() {
 
   confirmCard.hidden = true;
   resetFileSelection();
+  resetUrgency(); // 避免「緊急」殘留到下一筆
   uploaderSelect.value = uploaderSelect.value; // 保留上傳人，方便連續上傳
 
   syncRecordToCloud(record, "create");
 }
 
 /* ============================================================
-   我的紀錄
+   上傳紀錄（唯讀。實際審核動作在 Google 試算表的各專案審核表進行）
    ============================================================ */
-function populateUploaderFilterOptions() {
-  const uploaders = [...new Set(loadRecords().map(r => r.uploader).filter(Boolean))];
-  const sel = document.getElementById("mineUploaderFilter");
-  const current = sel.value;
-  sel.innerHTML = '<option value="">全部上傳人</option>' + uploaders.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
-  sel.value = current;
+function populateRecordFilterOptions() {
+  const all = loadRecords();
+  const uploaderSel = document.getElementById("mineUploaderFilter");
+  const projectSel = document.getElementById("mineProjectFilter");
+  const uploaders = [...new Set(all.map(r => r.uploader).filter(Boolean))];
+  const projects = [...new Set(all.map(r => r.project).filter(Boolean))];
+  const curU = uploaderSel.value, curP = projectSel.value;
+  uploaderSel.innerHTML = '<option value="">全部上傳人</option>' + uploaders.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  projectSel.innerHTML = '<option value="">全部專案</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  uploaderSel.value = curU;
+  projectSel.value = curP;
 }
 document.getElementById("mineUploaderFilter").addEventListener("change", renderMineView);
+document.getElementById("mineProjectFilter").addEventListener("change", renderMineView);
+document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
 
 function renderMineView() {
-  populateUploaderFilterOptions();
+  populateRecordFilterOptions();
+  const all = loadRecords();
+
+  document.getElementById("statPending").textContent = all.filter(r => r.status === "pending").length;
+  document.getElementById("statApproved").textContent = all.filter(r => r.status === "approved").length;
+  document.getElementById("statRejected").textContent = all.filter(r => r.status === "rejected").length;
+
   const filterUploader = document.getElementById("mineUploaderFilter").value;
-  const records = loadRecords().filter(r => !filterUploader || r.uploader === filterUploader);
+  const filterProject = document.getElementById("mineProjectFilter").value;
+  let records = all;
+  if (filterUploader) records = records.filter(r => r.uploader === filterUploader);
+  if (filterProject) records = records.filter(r => r.project === filterProject);
+
   const listEl = document.getElementById("mineList");
   const emptyEl = document.getElementById("mineEmpty");
-
   if (records.length === 0) {
     listEl.innerHTML = "";
     emptyEl.hidden = false;
@@ -522,48 +553,6 @@ function renderMineView() {
   listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: !filterUploader })).join("");
   listEl.querySelectorAll(".record-item").forEach(el => {
     el.addEventListener("click", () => openDetailModal(el.dataset.id, { mode: "view" }));
-  });
-}
-
-/* ============================================================
-   主管審核
-   ============================================================ */
-function populateProjectFilterOptions() {
-  const projects = [...new Set(loadRecords().map(r => r.project).filter(Boolean))];
-  const sel = document.getElementById("reviewProjectFilter");
-  const current = sel.value;
-  sel.innerHTML = '<option value="">全部專案</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
-  sel.value = current;
-}
-document.getElementById("reviewStatusFilter").addEventListener("change", renderReviewView);
-document.getElementById("reviewProjectFilter").addEventListener("change", renderReviewView);
-document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
-
-function renderReviewView() {
-  populateProjectFilterOptions();
-  const all = loadRecords();
-
-  document.getElementById("statPending").textContent = all.filter(r => r.status === "pending").length;
-  document.getElementById("statApproved").textContent = all.filter(r => r.status === "approved").length;
-  document.getElementById("statRejected").textContent = all.filter(r => r.status === "rejected").length;
-
-  const statusFilter = document.getElementById("reviewStatusFilter").value;
-  const projectFilter = document.getElementById("reviewProjectFilter").value;
-  let records = all;
-  if (statusFilter !== "all") records = records.filter(r => r.status === statusFilter);
-  if (projectFilter) records = records.filter(r => r.project === projectFilter);
-
-  const listEl = document.getElementById("reviewList");
-  const emptyEl = document.getElementById("reviewEmpty");
-  if (records.length === 0) {
-    listEl.innerHTML = "";
-    emptyEl.hidden = false;
-    return;
-  }
-  emptyEl.hidden = true;
-  listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: true })).join("");
-  listEl.querySelectorAll(".record-item").forEach(el => {
-    el.addEventListener("click", () => openDetailModal(el.dataset.id, { mode: "review" }));
   });
 }
 
@@ -590,7 +579,7 @@ function recordItemHtml(r, { showUploader }) {
       </div>
       <div style="text-align:right;flex-shrink:0;">
         <div class="record-amount">${fmtMoney(r.amount)}</div>
-        <div><span class="status-badge ${r.status}">${statusLabel(r.status)}</span> ${cloudBadge}</div>
+        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${r.status}">${statusLabel(r.status)}</span> ${cloudBadge}</div>
       </div>
     </div>`;
 }
@@ -631,6 +620,7 @@ function openDetailModal(id, { mode }) {
       <dt>金額</dt><dd>${fmtMoney(r.amount)}</dd>
       <dt>發票內容</dt><dd>${escapeHtml(r.items || "—")}</dd>
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
+      <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
       <dt>辨識信心</dt><dd>${r.confidence ? r.confidence + "%" : "—"}</dd>
       <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
     </div>
@@ -647,61 +637,14 @@ function openDetailModal(id, { mode }) {
     openDetailModal(id, { mode }); // 重新整理畫面顯示最新同步狀態
   });
 
+  // 審核動作已移到 Google 試算表的各專案審核表（由 Sheets 權限控管誰能審），這裡只提供檢視與下載
   const actions = document.getElementById("modalActions");
-  if (mode === "review" && r.status === "pending") {
-    actions.innerHTML = `
-      <div class="reject-reason-box" id="rejectBox" hidden>
-        <label class="field-label">退回原因</label>
-        <textarea id="rejectReasonInput" class="textarea-input" rows="2" placeholder="請說明退回原因，將通知申請人"></textarea>
-      </div>
-      <div class="btn-row" id="initialActionsRow">
-        <button class="ghost-btn" id="btnReject">不同意 / 退回</button>
-        <button class="primary-btn" id="btnApprove">同意核准</button>
-      </div>
-      <div class="btn-row" id="confirmRejectRow" hidden>
-        <button class="ghost-btn" id="btnCancelReject">取消</button>
-        <button class="primary-btn" id="btnConfirmReject">確認退回</button>
-      </div>
-    `;
-    document.getElementById("btnApprove").addEventListener("click", () => decideRecord(r.id, "approved"));
-    document.getElementById("btnReject").addEventListener("click", () => {
-      document.getElementById("rejectBox").hidden = false;
-      document.getElementById("initialActionsRow").hidden = true;
-      document.getElementById("confirmRejectRow").hidden = false;
-      document.getElementById("rejectReasonInput").focus();
-    });
-    document.getElementById("btnConfirmReject").addEventListener("click", () => {
-      const reason = document.getElementById("rejectReasonInput").value.trim();
-      if (!reason) { showToast("請填寫退回原因"); return; }
-      decideRecord(r.id, "rejected", reason);
-    });
-    document.getElementById("btnCancelReject").addEventListener("click", () => {
-      document.getElementById("rejectBox").hidden = true;
-      document.getElementById("initialActionsRow").hidden = false;
-      document.getElementById("confirmRejectRow").hidden = true;
-    });
-  } else if (r.fileDataUrl) {
+  if (r.fileDataUrl) {
     actions.innerHTML = `<div class="btn-row"><button class="ghost-btn" id="btnDownload" style="flex:1;">下載憑證檔案（依命名規則）</button></div>`;
     document.getElementById("btnDownload").addEventListener("click", () => downloadRecordFile(r));
   }
 
   detailModal.hidden = false;
-}
-
-function decideRecord(id, status, reason = "") {
-  const records = loadRecords();
-  const r = records.find(x => x.id === id);
-  if (!r) return;
-  r.status = status;
-  r.reviewer = "主管"; // 示範用；正式版可接入登入身份
-  r.reviewedAt = new Date().toISOString();
-  r.rejectReason = reason;
-  saveRecords(records);
-  closeModal();
-  renderReviewView();
-  showToast(status === "approved" ? "已核准" : "已退回，將通知申請人");
-
-  syncRecordToCloud(r, "update");
 }
 
 function downloadRecordFile(r) {
@@ -721,10 +664,10 @@ function exportCsv() {
   const records = loadRecords();
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
   // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
-    r.items, r.vendor, r.purpose, r.period, statusLabel(r.status),
+    r.items, r.vendor, r.purpose, r.period, r.urgent ? "緊急" : "一般", statusLabel(r.status),
     r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.fileName, r.id,
   ]);
   const csv = [headers, ...rows]
@@ -908,7 +851,6 @@ async function syncRecordToCloud(record, action) {
 
 function refreshVisibleListView() {
   if (!views.mine.hidden) renderMineView();
-  if (!views.review.hidden) renderReviewView();
 }
 
 async function cloudOcrRecognize(imageDataUrl) {

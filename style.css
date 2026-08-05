@@ -303,6 +303,47 @@ body {
 .cloud-badge.synced { background: var(--success-bg); color: var(--success); }
 .cloud-badge.unsynced { background: var(--warn-bg); color: var(--warn); }
 
+/* ---------------- 緊急/一般 切換 ---------------- */
+.segmented {
+  display: flex;
+  gap: 8px;
+}
+.seg-btn {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border-light);
+  background: #fff;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.seg-btn:hover { border-color: var(--navy); }
+.seg-btn.active {
+  background: var(--navy);
+  border-color: var(--navy);
+  color: #fff;
+}
+.seg-btn-urgent.active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.urgent-badge {
+  display: inline-block;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* ---------------- 名單設定 ---------------- */
 .tag-list {
   display: flex;
