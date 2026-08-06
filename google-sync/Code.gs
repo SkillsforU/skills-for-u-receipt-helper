@@ -540,6 +540,25 @@ function notifyUrgentToSlack_(record, fileUrl) {
   postToSlack_(lines.filter(Boolean).join('\n'));
 }
 
+const DIGEST_DAY_OF_MONTH = 13; // 每月審核日；遇到週六/週日會自動順延到下一個週一
+
+// 排程專用：每天執行一次，只有輪到「本月審核日」（已考慮週末順延）才真的發送。
+// 手動測試請用選單「立即發送待審核提醒到 Slack」，那個是呼叫下面 sendPendingDigestToSlack()，
+// 不受日期限制，隨時按都會真的送出。
+function sendScheduledDigestIfDue_() {
+  if (isReviewReminderDay_()) sendPendingDigestToSlack();
+}
+
+function isReviewReminderDay_() {
+  const tz = 'Asia/Taipei';
+  const today = new Date();
+  const target = new Date(today.getFullYear(), today.getMonth(), DIGEST_DAY_OF_MONTH);
+  const weekday = target.getDay(); // 0=週日, 6=週六
+  if (weekday === 6) target.setDate(target.getDate() + 2); // 六 → 順延到週一
+  if (weekday === 0) target.setDate(target.getDate() + 1); // 日 → 順延到週一
+  return Utilities.formatDate(today, tz, 'yyyy-MM-dd') === Utilities.formatDate(target, tz, 'yyyy-MM-dd');
+}
+
 // 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel>（等於「@all」）發一句提醒，
 // 附上每個專案審核表的連結，養成大家固定日子進去看一輪的習慣。
 function sendPendingDigestToSlack() {
@@ -560,20 +579,21 @@ function setupTriggers() {
   // 先清掉舊的，避免重複安裝造成一次跑很多遍
   ScriptApp.getProjectTriggers().forEach(function (t) {
     const fn = t.getHandlerFunction();
-    if (fn === 'syncApprovalsToMaster' || fn === 'sendPendingDigestToSlack') ScriptApp.deleteTrigger(t);
+    if (fn === 'syncApprovalsToMaster' || fn === 'sendPendingDigestToSlack' || fn === 'sendScheduledDigestIfDue_') {
+      ScriptApp.deleteTrigger(t);
+    }
   });
 
   ScriptApp.newTrigger('syncApprovalsToMaster').timeBased().everyMinutes(15).create();
-  // 每月 13 號上午 10 點發送彙總（Apps Script 的月觸發沒有「兩週一次」的選項，
-  // 要改成別的日期／改回每週，直接調整這裡的 onMonthDay(13) 或改用 onWeekDay(...)）。
-  ScriptApp.newTrigger('sendPendingDigestToSlack').timeBased()
-    .onMonthDay(13).atHour(10).create();
+  // 改成每天檢查一次（是不是「本月審核日」由 isReviewReminderDay_() 判斷，含週末順延邏輯），
+  // 而不是直接用 onMonthDay，這樣才能在 13 號遇到週末時自動改發下一個週一。
+  ScriptApp.newTrigger('sendScheduledDigestIfDue_').timeBased().everyDays(1).atHour(10).create();
 
   SpreadsheetApp.getUi().alert(
     '已設定自動排程：\n\n' +
     '• 每 15 分鐘把各專案審核結果同步回總表\n' +
-    '• 每月 13 號上午 10 點發送待審核彙總到 Slack（會 @channel 通知頻道所有人）\n\n' +
-    '想改頻率或日期，可到左側「觸發條件」頁面調整 sendPendingDigestToSlack，或改 Code.gs 裡 setupTriggers() 的設定後重新執行這個選單。'
+    '• 每月 ' + DIGEST_DAY_OF_MONTH + ' 號上午 10 點發送審核提醒到 Slack（會 @channel 通知頻道所有人；若當天是週六/週日會自動順延到下一個週一）\n\n' +
+    '想改日期，改 Code.gs 裡的 DIGEST_DAY_OF_MONTH 後重新執行這個選單即可。'
   );
 }
 
