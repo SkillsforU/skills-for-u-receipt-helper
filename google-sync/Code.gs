@@ -81,20 +81,24 @@ const APPROVER_NAMES = {
 // 總表欄位順序。調整時 createRow_ / updateRow_ / 下面的欄位索引常數要一起改。
 const HEADERS = [
   '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途',
-  '所屬期間', '急迫性', '狀態', '審核人', '審核時間', '退回原因', '憑證檔名', '憑證雲端連結',
+  '所屬期間', '付款方式', '收款對象', '匯款帳戶', '急迫性',
+  '狀態', '審核人', '審核時間', '退回原因', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
-const MASTER_STATUS_COL = 11;   // 狀態、審核人、審核時間、退回原因＝第 11~14 欄（四欄連續）
-const MASTER_RECORD_ID_COL = 17;
+const MASTER_STATUS_COL = 14;   // 狀態、審核人、審核時間、退回原因＝第 14~17 欄（四欄連續）
+const MASTER_FILE_URL_COL = 19; // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 20;
 
-// 各專案審核表的欄位。前 9 欄唯讀，最後 3 欄開放給審核人編輯。
+// 各專案審核表的欄位。前 11 欄唯讀（含付款資訊，讓主管知道自己核准的是什麼付款），
+// 之後 3 欄開放給審核人編輯，最後一欄是比對用的紀錄ID。
 const REVIEW_HEADERS = [
-  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途', '急迫性', '憑證連結',
+  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途',
+  '付款方式', '收款對象', '急迫性', '憑證連結',
   '審核狀態', '審核人', '審核備註', '紀錄ID',
 ];
-const REVIEW_EDITABLE_START_COL = 10; // 審核狀態
+const REVIEW_EDITABLE_START_COL = 12; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
-const REVIEW_RECORD_ID_COL = 13;
+const REVIEW_RECORD_ID_COL = 15;
 
 const CONFIG_SHEET_NAME = '系統設定';
 const STATUS_OPTIONS = ['待審核', '已核准', '已退回'];
@@ -252,8 +256,9 @@ function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate,
-    record.amount, record.items, record.vendor, record.purpose,
-    record.period, record.urgent ? '緊急' : '一般', statusLabel_(record.status),
+    record.amount, record.items, record.vendor, record.purpose, record.period,
+    record.payMethod || '', record.payee || '', record.payeeBank || '',
+    record.urgent ? '緊急' : '一般', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
     record.fileName, fileUrl, record.id,
   ]);
@@ -462,7 +467,8 @@ function appendToProjectReviewSheet_(record, fileUrl) {
   const sheet = ss.getSheets()[0];
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.invoiceDate, record.amount,
-    record.items, record.vendor, record.purpose, record.urgent ? '緊急' : '一般', fileUrl,
+    record.items, record.vendor, record.purpose,
+    record.payMethod || '', record.payee || '', record.urgent ? '緊急' : '一般', fileUrl,
     '待審核', '', '', record.id,
   ]);
 }
@@ -481,6 +487,9 @@ function syncApprovalsToMaster() {
   masterIds.forEach(function (row, i) { if (row[0]) rowById[row[0]] = i + 2; });
 
   const masterStatuses = master.getRange(2, MASTER_STATUS_COL, lastRow - 1, 4).getValues();
+  const masterFileUrls = master.getRange(2, MASTER_FILE_URL_COL, lastRow - 1, 1).getValues();
+  const masterProjects = master.getRange(2, 3, lastRow - 1, 1).getValues();   // 第 3 欄＝所屬專案
+  const masterPeriods = master.getRange(2, 9, lastRow - 1, 1).getValues();    // 第 9 欄＝所屬期間
   let updated = 0;
 
   Object.keys(PROJECT_APPROVERS).forEach(function (project) {
@@ -514,9 +523,44 @@ function syncApprovalsToMaster() {
         status, reviewer, formatDateTime_(new Date().toISOString()), note,
       ]]);
       updated++;
+
+      // 退回的憑證搬到「已退回」資料夾，讓正式資料夾只留有效單據；
+      // 若之後改判為核准，再搬回原本的專案/年月資料夾。搬檔失敗不影響狀態同步。
+      try {
+        const fileUrl = masterFileUrls[masterRow - 2][0];
+        if (status === '已退回') {
+          moveReceiptFile_(fileUrl, getRejectedFolder_());
+        } else if (status === '已核准') {
+          moveReceiptFile_(fileUrl, getMonthFolder_(masterProjects[masterRow - 2][0], masterPeriods[masterRow - 2][0]));
+        }
+      } catch (err) {
+        console.error('搬移退回憑證失敗（不影響審核狀態同步）：' + err);
+      }
     });
   });
   return updated;
+}
+
+// 從 Drive 檔案網址取出檔案 ID（getUrl() 會回傳 .../file/d/{id}/view 這種格式）
+function fileIdFromUrl_(url) {
+  const m = String(url || '').match(/[-\w]{25,}/);
+  return m ? m[0] : '';
+}
+
+function getRejectedFolder_() {
+  return findOrCreateSubfolder_(getRootFolder_(), '已退回');
+}
+
+function moveReceiptFile_(fileUrl, targetFolder) {
+  const id = fileIdFromUrl_(fileUrl);
+  if (!id) return;
+  const file = DriveApp.getFileById(id);
+  // 已經在目標資料夾就不用重複搬（同步每天都會跑，避免多做事）
+  const parents = file.getParents();
+  while (parents.hasNext()) {
+    if (parents.next().getId() === targetFolder.getId()) return;
+  }
+  file.moveTo(targetFolder);
 }
 
 function syncApprovalsNow() {

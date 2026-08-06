@@ -453,6 +453,33 @@ const f_amount = document.getElementById("f_amount");
 const f_vendor = document.getElementById("f_vendor");
 const f_items = document.getElementById("f_items");
 const f_purpose = document.getElementById("f_purpose");
+const f_payMethod = document.getElementById("f_payMethod");
+const f_payeePerson = document.getElementById("f_payeePerson");
+const f_payeeVendor = document.getElementById("f_payeeVendor");
+const f_payeeBank = document.getElementById("f_payeeBank");
+
+/* 付款方式決定要填哪些收款資訊：
+   - 個人代墊：要指定還款對象（預設帶上傳人，但可改，因為常有幫同事代送單據的情況）
+   - 組織匯款：要填收款單位與匯款帳戶
+   - 零用金／信用卡：款項已由組織當場支付，不需要收款資訊 */
+f_payMethod.addEventListener("change", updatePayeeFields);
+function updatePayeeFields() {
+  const method = f_payMethod.value;
+  document.getElementById("payeePersonField").hidden = method !== "個人代墊";
+  document.getElementById("payeeVendorField").hidden = method !== "組織匯款";
+  document.getElementById("payeeBankField").hidden = method !== "組織匯款";
+  if (method === "個人代墊") populatePayeePersonOptions();
+}
+
+function populatePayeePersonOptions() {
+  const current = f_payeePerson.value;
+  const people = loadUploaders();
+  f_payeePerson.innerHTML = '<option value="">請選擇還款對象</option>' +
+    people.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  // 預設帶入上傳人，但使用者可以改成別人
+  const preferred = people.includes(current) ? current : uploaderSelect.value;
+  if (people.includes(preferred)) f_payeePerson.value = preferred;
+}
 
 f_date.addEventListener("change", updatePeriodField);
 function updatePeriodField() {
@@ -483,6 +510,10 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_vendor.value = guesses.vendor || "";
   f_items.value = "";
   f_purpose.value = "";
+  f_payMethod.value = "";
+  f_payeeVendor.value = "";
+  f_payeeBank.value = "";
+  updatePayeeFields();
   resetUrgency();
 
   setFlag("flag-date", !!guesses.date);
@@ -520,11 +551,9 @@ document.getElementById("cancelConfirmBtn").addEventListener("click", () => {
 
 document.getElementById("submitRecordBtn").addEventListener("click", submitRecord);
 
-// 檔名規則：{專案名}_{日期}_{金額}元，例如「臺灣技職教育年會_15_64元」。
-// 年月不放進檔名，因為 Google Drive 那邊會依「年月」開子資料夾（見 google-sync/Code.gs 的 getFolder_），檔名裡重複標年月沒意義。
-// 檔名規則：{日期}_{金額}元，例如「15_64元」。專案名稱不放進檔名，
-// 因為 Google Drive 那邊現在會先依專案分資料夾、資料夾裡再依年月分子資料夾（見 google-sync/Code.gs 的 getProjectFolder_/getMonthFolder_），
-// 檔名裡重複標專案跟年月沒意義。
+// 檔名規則：{日期}_{金額}元，例如「15_64元」。專案名稱與年月都不放進檔名，
+// 因為 Google Drive 那邊會先依專案分資料夾、資料夾裡再依年月分子資料夾
+//（見 google-sync/Code.gs 的 getProjectFolder_ / getMonthFolder_），檔名裡重複標沒意義。
 function suggestFileName(record, originalName) {
   const ext = (originalName.match(/\.[a-zA-Z0-9]+$/) || [".jpg"])[0];
   const day = record.invoiceDate ? record.invoiceDate.slice(-2) : "未知日";
@@ -534,6 +563,20 @@ function suggestFileName(record, originalName) {
 function submitRecord() {
   if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
   if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
+  if (!f_payMethod.value) { showToast("請選擇付款方式"); f_payMethod.focus(); return; }
+  if (f_payMethod.value === "個人代墊" && !f_payeePerson.value) {
+    showToast("請選擇還款對象"); f_payeePerson.focus(); return;
+  }
+  if (f_payMethod.value === "組織匯款") {
+    if (!f_payeeVendor.value.trim()) { showToast("請填寫收款單位"); f_payeeVendor.focus(); return; }
+    if (!f_payeeBank.value.trim()) { showToast("請填寫匯款帳戶資訊"); f_payeeBank.focus(); return; }
+  }
+
+  // 收款對象：個人代墊記人名、組織匯款記單位名，零用金/信用卡則無（款項已由組織支付）
+  const payMethod = f_payMethod.value;
+  const payee = payMethod === "個人代墊" ? f_payeePerson.value
+    : payMethod === "組織匯款" ? f_payeeVendor.value.trim() : "";
+  const payeeBank = payMethod === "組織匯款" ? f_payeeBank.value.trim() : "";
 
   const now = new Date().toISOString();
   const record = {
@@ -549,6 +592,9 @@ function submitRecord() {
     vendor: f_vendor.value.trim(),
     items: f_items.value.trim(),
     purpose: f_purpose.value.trim(),
+    payMethod: payMethod,
+    payee: payee,
+    payeeBank: payeeBank,
     urgent: currentUrgent,
     confidence: Number(confirmCard.dataset.confidence || 0),
     rawOcrText: currentOcrRawText,
@@ -690,6 +736,9 @@ function openDetailModal(id, { mode }) {
       <dt>金額</dt><dd>${fmtMoney(r.amount)}</dd>
       <dt>發票內容</dt><dd>${escapeHtml(r.items || "—")}</dd>
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
+      <dt>付款方式</dt><dd>${escapeHtml(r.payMethod || "—")}</dd>
+      ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
+      ${r.payeeBank ? `<dt>匯款帳戶</dt><dd>${escapeHtml(r.payeeBank)}</dd>` : ""}
       <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
       <dt>辨識信心</dt><dd>${r.confidence ? r.confidence + "%" : "—"}</dd>
       <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
@@ -734,10 +783,12 @@ function exportCsv() {
   const records = loadRecords();
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
   // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "匯款帳戶", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
-    r.items, r.vendor, r.purpose, r.period, r.urgent ? "緊急" : "一般", statusLabel(r.status),
+    r.items, r.vendor, r.purpose, r.period,
+    r.payMethod || "", r.payee || "", r.payeeBank || "",
+    r.urgent ? "緊急" : "一般", statusLabel(r.status),
     r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.fileName, r.id,
   ]);
   const csv = [headers, ...rows]

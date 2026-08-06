@@ -96,6 +96,33 @@
           <label class="field-label">發票內容 / 品項摘要</label>
           <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
         </div>
+        <div class="form-field">
+          <label class="field-label">付款方式 <span class="req">*</span></label>
+          <select id="f_payMethod" class="select-input">
+            <option value="">請選擇付款方式</option>
+            <option value="組織匯款">組織匯款</option>
+            <option value="個人代墊">個人代墊</option>
+            <option value="組織零用金">組織零用金</option>
+            <option value="組織信用卡">組織信用卡</option>
+          </select>
+        </div>
+
+        <!-- 個人代墊：收款人預設帶入上傳人，但可改成別人（幫同事代送單據的情況） -->
+        <div class="form-field" id="payeePersonField" hidden>
+          <label class="field-label">還款對象 <span class="req">*</span></label>
+          <select id="f_payeePerson" class="select-input"></select>
+        </div>
+
+        <!-- 組織匯款：填對方單位名稱與帳戶 -->
+        <div class="form-field" id="payeeVendorField" hidden>
+          <label class="field-label">收款單位 <span class="req">*</span></label>
+          <input type="text" id="f_payeeVendor" class="text-input" placeholder="例如：某某印刷有限公司">
+        </div>
+        <div class="form-field span-2" id="payeeBankField" hidden>
+          <label class="field-label">匯款帳戶資訊 <span class="req">*</span></label>
+          <textarea id="f_payeeBank" class="textarea-input" rows="2" placeholder="銀行／分行、戶名、帳號"></textarea>
+        </div>
+
         <div class="form-field span-2">
           <label class="field-label">審核急迫性</label>
           <div class="segmented" id="urgencyToggle">
