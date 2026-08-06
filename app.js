@@ -142,7 +142,52 @@ const projectSelect = document.getElementById("projectSelect");
 
 let selectedFile = null;      // 原始 File
 let selectedImageDataUrl = null; // 壓縮後 dataURL（供預覽 / 離線與雲端 OCR / 儲存）
-let selectedPdfDataUrl = null;   // PDF 原始 dataURL（離線 OCR 無法處理，僅雲端 OCR／儲存用）
+let selectedPdfDataUrl = null;   // PDF 原始 dataURL（離線 OCR 無法處理，僅雲端 OCR／儲存用；保留原始檔存進 Drive）
+let selectedPdfPreviewImages = null; // PDF 轉成的壓縮圖片（最多前 3 頁），雲端 OCR 改傳這個而不是整份 PDF，速度快很多
+
+// pdf.js 的頁面渲染依賴 requestAnimationFrame，分頁背景分頁/最小化時瀏覽器會節流甚至完全不觸發，
+// 導致 render() 永遠不resolve。幫每一頁的渲染加個安全逾時，超過就放棄轉檔、整份改送原始 PDF，
+// 不要讓「開始辨識」卡住等一個永遠不會完成的 Promise。
+const PDF_PAGE_RENDER_TIMEOUT_MS = 10000;
+function withTimeout_(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(label + " 逾時")), ms)),
+  ]);
+}
+
+// PDF 直接整份送給 Gemini 常常偏大、拖慢辨識速度，改成在瀏覽器裡先轉成最多 3 頁的壓縮圖片再送出，
+// 存進 Drive 的仍是原始 PDF，不受影響。任何一步失敗（含逾時）就回傳空陣列，呼叫端會自動退回用原始 PDF。
+async function renderPdfToCompressedImages(pdfDataUrl, maxPages = 3) {
+  try {
+    if (typeof pdfjsLib === "undefined") return [];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    const base64 = pdfDataUrl.split(",")[1];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const pdf = await withTimeout_(pdfjsLib.getDocument({ data: bytes }).promise, PDF_PAGE_RENDER_TIMEOUT_MS, "PDF 解析");
+    const pageCount = Math.min(pdf.numPages, maxPages);
+    const images = [];
+    for (let i = 1; i <= pageCount; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const renderTask = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+      await withTimeout_(renderTask.promise, PDF_PAGE_RENDER_TIMEOUT_MS, "PDF 第 " + i + " 頁渲染").catch((err) => {
+        renderTask.cancel();
+        throw err;
+      });
+      images.push(await downscaleImage(canvas.toDataURL("image/jpeg", 0.85), 1400));
+    }
+    return images;
+  } catch (err) {
+    console.error("PDF 轉圖片失敗，辨識時將改用原始 PDF：", err);
+    return [];
+  }
+}
 
 dropzone.addEventListener("click", () => { if (!selectedFile) fileInput.click(); });
 ["dragenter", "dragover"].forEach(evt => dropzone.addEventListener(evt, (e) => {
@@ -167,6 +212,7 @@ function resetFileSelection() {
   selectedFile = null;
   selectedImageDataUrl = null;
   selectedPdfDataUrl = null;
+  selectedPdfPreviewImages = null;
   fileInput.value = "";
   dzPreview.hidden = true;
   dropzoneInner.hidden = false;
@@ -179,6 +225,7 @@ function handleFileSelected(file) {
   if (isPdf) {
     selectedImageDataUrl = null;
     selectedPdfDataUrl = null;
+    selectedPdfPreviewImages = null;
     dzPreviewImg.hidden = true;
     const cloudOcrReady = loadSyncConfig().cloudOcrEnabled;
     dzFilename.textContent = "📄 " + file.name + (cloudOcrReady
@@ -187,7 +234,15 @@ function handleFileSelected(file) {
     dropzoneInner.hidden = true;
     dzPreview.hidden = false;
     const reader = new FileReader();
-    reader.onload = () => { selectedPdfDataUrl = reader.result; };
+    reader.onload = () => {
+      selectedPdfDataUrl = reader.result;
+      // 先在背景把 PDF 轉成壓縮圖片備用，開始辨識時如果轉檔還沒完成，就直接送原始 PDF，不會卡住等待
+      if (cloudOcrReady) {
+        renderPdfToCompressedImages(selectedPdfDataUrl).then(images => {
+          selectedPdfPreviewImages = images.length ? images : null;
+        });
+      }
+    };
     reader.readAsDataURL(file);
     updateStartButtonState();
     return;
@@ -269,7 +324,8 @@ async function runOcr() {
     ocrProgress.hidden = false;
     ocrProgressFill.style.width = "50%";
     ocrProgressLabel.textContent = "雲端辨識中（Gemini，PDF）…";
-    const cloud = await cloudOcrRecognize(selectedPdfDataUrl);
+    // 有轉檔好的壓縮圖片就用它（快很多），沒有（例如轉檔還沒完成或失敗）就退回送整份原始 PDF
+    const cloud = await cloudOcrRecognize(selectedPdfPreviewImages || selectedPdfDataUrl);
     ocrProgress.hidden = true;
     startOcrBtn.disabled = false;
     if (cloud.ok) {
@@ -910,18 +966,31 @@ async function refreshRecordStatuses() {
   }
 }
 
-async function cloudOcrRecognize(imageDataUrl) {
+const CLOUD_OCR_TIMEOUT_MS = 45000; // 逾時就直接判定失敗、退回本機離線辨識，避免無上限空等
+
+// data 可以是單一張圖片/PDF 的 dataURL 字串，也可以是多張圖片 dataURL 組成的陣列（PDF 轉圖片後的多頁）
+async function cloudOcrRecognize(data) {
   const config = loadSyncConfig();
   if (!config.url) return { ok: false, error: "尚未設定 Apps Script 網址" };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CLOUD_OCR_TIMEOUT_MS);
   try {
+    const payload = { token: config.token, action: "ocr" };
+    if (Array.isArray(data)) payload.imageDataUrls = data; else payload.imageDataUrl = data;
     const res = await fetch(config.url, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ token: config.token, action: "ocr", imageDataUrl }),
+      body: JSON.stringify(payload),
+      signal: controller.signal,
     });
     return await res.json();
   } catch (err) {
+    if (err.name === "AbortError") {
+      return { ok: false, error: `辨識逾時（超過 ${CLOUD_OCR_TIMEOUT_MS / 1000} 秒），已自動取消` };
+    }
     return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

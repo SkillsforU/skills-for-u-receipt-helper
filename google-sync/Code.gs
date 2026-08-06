@@ -109,7 +109,9 @@ function doPost(e) {
       return jsonOut_({ ok: false, error: 'unauthorized' });
     }
     if (body.action === 'ocr') {
-      return jsonOut_(recognizeReceipt_(body.imageDataUrl));
+      // imageDataUrls（陣列）＝ PDF 在瀏覽器端轉成的多頁壓縮圖片；沒有的話退回單一張 imageDataUrl（可能是圖片，也可能是原始 PDF）
+      const images = Array.isArray(body.imageDataUrls) && body.imageDataUrls.length ? body.imageDataUrls : [body.imageDataUrl];
+      return jsonOut_(recognizeReceipt_(images));
     }
     if (body.action === 'getStatuses') {
       return jsonOut_(getAllStatuses_());
@@ -140,16 +142,20 @@ function doGet(e) {
 /* ============================================================
    雲端 OCR（Gemini）
    ============================================================ */
-// imageDataUrl 可以是圖片或 PDF 的 data URL，Gemini 兩種都能直接讀，不需額外轉檔。
-function recognizeReceipt_(imageDataUrl) {
+// images：一或多張圖片／PDF 的 data URL 陣列。多張的情況通常是瀏覽器端把一份多頁 PDF 轉成的
+// 各頁壓縮圖片（比整份原始 PDF 小很多，辨識明顯較快），也相容單純傳一張圖片或一份原始 PDF 的舊用法。
+function recognizeReceipt_(images) {
   if (!GEMINI_API_KEY) {
     return { ok: false, error: '尚未設定 GEMINI_API_KEY，未啟用雲端 OCR' };
   }
-  const match = String(imageDataUrl || '').match(/^data:(.+);base64,(.*)$/);
-  if (!match) return { ok: false, error: '找不到圖片或 PDF 資料' };
+  const list = Array.isArray(images) ? images : [images];
+  const parsed = list
+    .map(function (img) { return String(img || '').match(/^data:(.+);base64,(.*)$/); })
+    .filter(Boolean);
+  if (parsed.length === 0) return { ok: false, error: '找不到圖片或 PDF 資料' };
 
-  const prompt = '你是台灣財務單據辨識助理。這份文件可能是圖片，也可能是含多頁的 PDF；' +
-    '如果是多頁 PDF，裡面可能只有其中一頁是真正的發票或收據，其他頁可能是空白、附言或其他不相關內容，' +
+  const prompt = '你是台灣財務單據辨識助理。這份文件可能是一張圖片、一份 PDF，或是同一份文件拆成的多張頁面圖片；' +
+    '裡面可能只有其中一頁是真正的發票或收據，其他頁可能是空白、附言或其他不相關內容，' +
     '請你自己判斷找出真正屬於發票/收據內容的那一頁來辨識，忽略其他頁。' +
     '這份文件只會包含「一張」發票或收據；如果你發現裡面其實有兩張以上不同的發票或收據，' +
     '請只針對看起來金額最大、或最完整清楚的那一張辨識，並把 "items" 欄位裡註明「偵測到疑似不只一張單據，請人工確認」。' +
@@ -162,10 +168,9 @@ function recognizeReceipt_(imageDataUrl) {
 
   const payload = {
     contents: [{
-      parts: [
-        { text: prompt },
-        { inline_data: { mime_type: match[1], data: match[2] } },
-      ],
+      parts: [{ text: prompt }].concat(parsed.map(function (m) {
+        return { inline_data: { mime_type: m[1], data: m[2] } };
+      })),
     }],
     generationConfig: { responseMimeType: 'application/json' },
   };
