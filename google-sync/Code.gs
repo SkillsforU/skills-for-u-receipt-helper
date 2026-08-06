@@ -609,16 +609,18 @@ function setupTriggers() {
     }
   });
 
-  ScriptApp.newTrigger('syncApprovalsToMaster').timeBased().everyMinutes(15).create();
+  // 每天固定時間同步一次即可（審核集中在每月固定幾天，緊急件用選單「立即同步審核結果」手動處理）。
+  // 想改回更頻繁，把這行換成 .everyMinutes(15)（只能填 1/5/10/15/30）。
+  ScriptApp.newTrigger('syncApprovalsToMaster').timeBased().everyDays(1).atHour(23).create();
   // 改成每天檢查一次（是不是「本月審核日」由 isReviewReminderDay_() 判斷，含週末順延邏輯），
   // 而不是直接用 onMonthDay，這樣才能在 13 號遇到週末時自動改發下一個週一。
   ScriptApp.newTrigger('sendScheduledDigestIfDue_').timeBased().everyDays(1).atHour(10).create();
 
   SpreadsheetApp.getUi().alert(
     '已設定自動排程：\n\n' +
-    '• 每 15 分鐘把各專案審核結果同步回總表\n' +
+    '• 每天晚上 11 點左右把各專案審核結果同步回總表（Apps Script 只能指定「幾點」，不保證精確到分鐘）\n' +
     '• 每月 ' + DIGEST_DAY_OF_MONTH + ' 號上午 10 點發送審核提醒到 Slack（會 @channel 通知頻道所有人；若當天是週六/週日會自動順延到下一個週一）\n\n' +
-    '想改日期，改 Code.gs 裡的 DIGEST_DAY_OF_MONTH 後重新執行這個選單即可。'
+    '想馬上同步不想等，用選單「立即同步審核結果」；想改日期，改 Code.gs 裡的 DIGEST_DAY_OF_MONTH 後重新執行這個選單即可。'
   );
 }
 
