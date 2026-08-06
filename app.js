@@ -84,6 +84,9 @@ function fmtMoney(n) {
 }
 function fmtDateTime(iso) {
   if (!iso) return "—";
+  // 從雲端「重新整理狀態」抓回來的審核時間，已經是 Code.gs 那邊格式化好的
+  // "YYYY-MM-DD HH:mm" 人類可讀字串，直接顯示即可，不用再當 ISO 解析一次（避免各瀏覽器解析行為不一致）
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(iso)) return iso;
   const d = new Date(iso);
   return d.toLocaleString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
@@ -529,6 +532,15 @@ function populateRecordFilterOptions() {
 document.getElementById("mineUploaderFilter").addEventListener("change", renderMineView);
 document.getElementById("mineProjectFilter").addEventListener("change", renderMineView);
 document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+document.getElementById("refreshStatusBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "整理中…";
+  await refreshRecordStatuses();
+  btn.textContent = originalText;
+  btn.disabled = false;
+});
 
 function renderMineView() {
   populateRecordFilterOptions();
@@ -853,6 +865,49 @@ async function syncRecordToCloud(record, action) {
 
 function refreshVisibleListView() {
   if (!views.mine.hidden) renderMineView();
+}
+
+function statusKeyFromLabel_(label) {
+  return { "待審核": "pending", "已核准": "approved", "已退回": "rejected" }[label] || "pending";
+}
+
+// 向 Apps Script 要目前總表上每筆單據的真實審核狀態，覆蓋本機記錄。
+// 審核動作實際發生在 Google 試算表的專案審核表，這裡只是「拉取」最新結果，不會反過來改到 Sheets。
+async function refreshRecordStatuses() {
+  const config = loadSyncConfig();
+  if (!config.enabled || !config.url) {
+    showToast("尚未啟用雲端同步，無法重新整理狀態");
+    return;
+  }
+  try {
+    const res = await fetch(config.url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ token: config.token, action: "getStatuses" }),
+    });
+    const data = await res.json();
+    if (!data || !data.ok) {
+      showToast("重新整理失敗：" + ((data && data.error) || "未知錯誤"));
+      return;
+    }
+    const records = loadRecords();
+    let changed = 0;
+    records.forEach((r) => {
+      const s = data.statuses[r.id];
+      if (!s || !s.status) return;
+      const newStatus = statusKeyFromLabel_(s.status);
+      if (r.status !== newStatus || r.reviewer !== (s.reviewer || "") || r.rejectReason !== (s.rejectReason || "")) changed++;
+      r.status = newStatus;
+      r.reviewer = s.reviewer || "";
+      r.reviewedAt = s.reviewedAt || "";
+      r.rejectReason = s.rejectReason || "";
+    });
+    saveRecords(records);
+    renderMineView();
+    showToast(changed > 0 ? `已更新 ${changed} 筆審核狀態` : "審核狀態沒有新變動");
+  } catch (err) {
+    showToast("重新整理失敗：" + err.message);
+  }
 }
 
 async function cloudOcrRecognize(imageDataUrl) {

@@ -111,6 +111,9 @@ function doPost(e) {
     if (body.action === 'ocr') {
       return jsonOut_(recognizeReceipt_(body.imageDataUrl));
     }
+    if (body.action === 'getStatuses') {
+      return jsonOut_(getAllStatuses_());
+    }
     const sheet = getSheet_();
     if (body.action === 'create') {
       return jsonOut_(createRow_(sheet, body.record));
@@ -287,6 +290,28 @@ function updateRow_(sheet, record) {
     statusLabel_(record.status), record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
   ]]);
   return { ok: true };
+}
+
+// 給「上傳紀錄」頁按「重新整理狀態」用：回傳總表目前每一筆紀錄的審核狀態，
+// 讓小幫手網頁能把本機資料跟 Google 試算表上（透過各專案審核表同步回來的）最新結果對齊。
+// 資料量大到有效能疑慮時，可以改成只回傳某個時間點之後有更新的列，目前量小先簡單處理。
+function getAllStatuses_() {
+  const sheet = getSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: true, statuses: {} };
+  const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const statuses = {};
+  values.forEach(function (row) {
+    const id = row[MASTER_RECORD_ID_COL - 1];
+    if (!id) return;
+    statuses[id] = {
+      status: row[MASTER_STATUS_COL - 1],
+      reviewer: row[MASTER_STATUS_COL],
+      reviewedAt: row[MASTER_STATUS_COL + 1],
+      rejectReason: row[MASTER_STATUS_COL + 2],
+    };
+  });
+  return { ok: true, statuses: statuses };
 }
 
 function statusLabel_(status) {
@@ -540,7 +565,7 @@ function notifyUrgentToSlack_(record, fileUrl) {
   postToSlack_(lines.filter(Boolean).join('\n'));
 }
 
-const DIGEST_DAY_OF_MONTH = 13; // 每月審核日；遇到週六/週日會自動順延到下一個週一
+const DIGEST_DAY_OF_MONTH = 10; // 每月審核日；遇到週六/週日會自動順延到下一個週一（最晚仍會落在 13 號前）
 
 // 排程專用：每天執行一次，只有輪到「本月審核日」（已考慮週末順延）才真的發送。
 // 手動測試請用選單「立即發送待審核提醒到 Slack」，那個是呼叫下面 sendPendingDigestToSlack()，
