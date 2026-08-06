@@ -175,7 +175,15 @@
   <section class="view" id="view-lists" hidden>
     <div class="card">
       <h1 class="card-title">名單設定</h1>
-      <p class="card-sub">管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼</p>
+      <p class="card-sub" id="listsSubtitle">管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼</p>
+
+      <div class="confidence-banner mid" id="listsCloudBanner" hidden>
+        名單由 Google 試算表的「人員設定」「專案設定」分頁管理，所有人看到的一致。
+        要新增／異動人員或專案，請到試算表編輯，再回總表點選單的「① 建立/更新設定與審核表」。
+      </div>
+      <div class="btn-row" id="listsRefreshRow" hidden>
+        <button class="ghost-btn" id="refreshListsBtn" style="flex:1;">🔄 從試算表重新抓取名單</button>
+      </div>
 
       <label class="field-label">上傳人名單</label>
       <div class="tag-list" id="uploaderTagList"></div>

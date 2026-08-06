@@ -32,7 +32,10 @@ function upsertRecord(record) {
   saveRecords(records);
 }
 
-/* ---------------- 上傳人 / 專案名單 ---------------- */
+/* ---------------- 上傳人 / 專案名單 ----------------
+   啟用雲端同步後，名單以 Google 試算表的「人員設定」「專案設定」分頁為單一真相來源，
+   這裡的 localStorage 只是最近一次抓下來的快取，離線或連線失敗時仍能照常上傳。
+   沒啟用雲端同步時，才會退回成純本機、可在「名單設定」頁自行編輯的模式。 */
 function loadUploaders() {
   try {
     const raw = localStorage.getItem(UPLOADERS_KEY);
@@ -54,6 +57,33 @@ function loadProjects() {
 }
 function saveProjects(list) {
   localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+}
+
+// 名單是否由試算表管理（啟用雲端同步就是）
+function listsManagedByCloud() {
+  const c = loadSyncConfig();
+  return !!(c.enabled && c.url);
+}
+
+// 從 Apps Script 抓最新名單覆蓋本機快取。回傳是否成功。
+async function fetchListsFromCloud() {
+  const config = loadSyncConfig();
+  if (!config.enabled || !config.url) return { ok: false, error: "尚未啟用雲端同步" };
+  try {
+    const res = await fetch(config.url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ token: config.token, action: "getConfig" }),
+    });
+    const data = await res.json();
+    if (!data || !data.ok) return { ok: false, error: (data && data.error) || "未知錯誤" };
+    if (Array.isArray(data.uploaders)) saveUploaders(data.uploaders);
+    if (Array.isArray(data.projects)) saveProjects(data.projects);
+    populateUploaderAndProjectSelects();
+    return { ok: true, uploaders: data.uploaders, projects: data.projects };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 }
 
 function populateUploaderAndProjectSelects() {
@@ -695,7 +725,7 @@ function recordItemHtml(r, { showUploader }) {
       </div>
       <div style="text-align:right;flex-shrink:0;">
         <div class="record-amount">${fmtMoney(r.amount)}</div>
-        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${r.status}">${statusLabel(r.status)}</span> ${cloudBadge}</div>
+        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${r.status}">${statusLabel(r.status)}</span>${r.paidAt ? ` <span class="paid-badge">💰 已付款</span>` : ""} ${cloudBadge}</div>
       </div>
     </div>`;
 }
@@ -739,6 +769,7 @@ function openDetailModal(id, { mode }) {
       <dt>付款方式</dt><dd>${escapeHtml(r.payMethod || "—")}</dd>
       ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
       ${r.payeeBank ? `<dt>匯款帳戶</dt><dd>${escapeHtml(r.payeeBank)}</dd>` : ""}
+      <dt>付款日期</dt><dd>${r.paidAt ? escapeHtml(r.paidAt) : "尚未付款"}</dd>
       <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
       <dt>辨識信心</dt><dd>${r.confidence ? r.confidence + "%" : "—"}</dd>
       <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
@@ -783,13 +814,13 @@ function exportCsv() {
   const records = loadRecords();
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
   // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "匯款帳戶", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "憑證檔名", "紀錄ID"];
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "匯款帳戶", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "付款日期", "憑證檔名", "紀錄ID"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
     r.items, r.vendor, r.purpose, r.period,
     r.payMethod || "", r.payee || "", r.payeeBank || "",
     r.urgent ? "緊急" : "一般", statusLabel(r.status),
-    r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.fileName, r.id,
+    r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.paidAt || "", r.fileName, r.id,
   ]);
   const csv = [headers, ...rows]
     .map(row => row.map(cellToCsv).join(","))
@@ -1003,15 +1034,17 @@ async function refreshRecordStatuses() {
       const s = data.statuses[r.id];
       if (!s || !s.status) return;
       const newStatus = statusKeyFromLabel_(s.status);
-      if (r.status !== newStatus || r.reviewer !== (s.reviewer || "") || r.rejectReason !== (s.rejectReason || "")) changed++;
+      if (r.status !== newStatus || r.reviewer !== (s.reviewer || "") ||
+          r.rejectReason !== (s.rejectReason || "") || r.paidAt !== (s.paidAt || "")) changed++;
       r.status = newStatus;
       r.reviewer = s.reviewer || "";
       r.reviewedAt = s.reviewedAt || "";
       r.rejectReason = s.rejectReason || "";
+      r.paidAt = s.paidAt || "";
     });
     saveRecords(records);
     renderMineView();
-    showToast(changed > 0 ? `已更新 ${changed} 筆審核狀態` : "審核狀態沒有新變動");
+    showToast(changed > 0 ? `已更新 ${changed} 筆狀態／付款資訊` : "審核狀態與付款資訊沒有新變動");
   } catch (err) {
     showToast("重新整理失敗：" + err.message);
   }
@@ -1049,22 +1082,47 @@ async function cloudOcrRecognize(data) {
    名單設定（上傳人 / 專案）
    ============================================================ */
 function renderListsView() {
-  renderTagList("uploaderTagList", loadUploaders(), removeUploader);
-  renderTagList("projectTagList", loadProjects(), removeProject);
+  // 啟用雲端同步時名單由試算表管理，這裡只做唯讀呈現，避免兩邊各改一份造成不一致
+  const cloud = listsManagedByCloud();
+  document.getElementById("listsCloudBanner").hidden = !cloud;
+  document.getElementById("listsRefreshRow").hidden = !cloud;
+  document.getElementById("listsSubtitle").textContent = cloud
+    ? "名單來自 Google 試算表，這裡僅供檢視"
+    : "管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼";
+  document.querySelectorAll("#view-lists .add-item-row").forEach(el => { el.hidden = cloud; });
+  document.querySelector("#view-lists .list-hint").hidden = cloud;
+
+  renderTagList("uploaderTagList", loadUploaders(), cloud ? null : removeUploader);
+  renderTagList("projectTagList", loadProjects(), cloud ? null : removeProject);
 }
 
+document.getElementById("refreshListsBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "抓取中…";
+  const res = await fetchListsFromCloud();
+  btn.textContent = original;
+  btn.disabled = false;
+  renderListsView();
+  showToast(res.ok ? "已從試算表更新名單" : "抓取失敗：" + res.error);
+});
+
+// onRemove 傳 null＝唯讀模式（名單由試算表管理時），不顯示刪除按鈕
 function renderTagList(containerId, items, onRemove) {
   const el = document.getElementById(containerId);
   if (items.length === 0) {
-    el.innerHTML = '<div class="tag-list-empty">目前沒有任何項目，請在下面新增</div>';
+    el.innerHTML = '<div class="tag-list-empty">' +
+      (onRemove ? "目前沒有任何項目，請在下面新增" : "目前沒有任何項目，請到 Google 試算表的設定分頁新增") + "</div>";
     return;
   }
   el.innerHTML = items.map(item => `
     <span class="tag-chip" data-value="${escapeHtml(item)}">
       ${escapeHtml(item)}
-      <button type="button" title="刪除">✕</button>
+      ${onRemove ? '<button type="button" title="刪除">✕</button>' : ""}
     </span>
   `).join("");
+  if (!onRemove) return;
   el.querySelectorAll(".tag-chip button").forEach(btn => {
     btn.addEventListener("click", () => onRemove(btn.closest(".tag-chip").dataset.value));
   });
@@ -1124,3 +1182,5 @@ document.getElementById("newProjectInput").addEventListener("keydown", (e) => {
 applySetupLinkIfPresent();
 populateUploaderAndProjectSelects();
 switchView("upload");
+// 啟用雲端同步時，開頁面就在背景抓一次最新名單；抓不到（離線等）就沿用上次的快取，不擋使用
+if (listsManagedByCloud()) fetchListsFromCloud();
