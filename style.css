@@ -309,6 +309,21 @@ body {
   color: var(--text-muted);
   line-height: 1.5;
 }
+.field-hint-example {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--input-bg, rgba(127,127,127,0.08));
+  border: 1px dashed var(--border, rgba(127,127,127,0.35));
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  white-space: pre-line;
+}
+.field-hint-example strong {
+  color: var(--text-main);
+  font-weight: 600;
+}
 
 .checkbox-row {
   display: flex;

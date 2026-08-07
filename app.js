@@ -519,18 +519,16 @@ function updatePayeeFields() {
     detailField.hidden = false;
     label.innerHTML = '匯款帳戶資訊 <span class="req">*</span>';
     f_paymentDetail.placeholder = "銀行／分行、戶名、帳號";
-    hint.textContent = "範例：國泰世華銀行（013）中山分行、戶名：某某印刷有限公司、帳號：1234-5678-9012";
+    hint.className = "field-hint-example";
+    hint.innerHTML = "<strong>範例：</strong>\n華南銀行 城東分行　008_1083\n震旦行股份有限公司\n帳號：94480081415416";
   } else if (method === PAY_METHOD_CARD_LINK) {
     detailField.hidden = false;
     label.innerHTML = '刷卡連結 <span class="req">*</span>';
     f_paymentDetail.placeholder = "貼上對方提供的線上刷卡網址";
+    hint.className = "field-hint";
     hint.textContent = "範例：https://payment.example.com/pay/abc123";
-  } else if (method === PAY_METHOD_CARD_PAPER) {
-    detailField.hidden = false;
-    label.innerHTML = '卡號 <span class="req">*</span>';
-    f_paymentDetail.placeholder = "刷卡單上的卡號";
-    hint.textContent = "";
   } else {
+    // 信用卡（紙本）不用在這裡填卡號——卡號由偉翔另外提供，這裡只留兩項確認勾選
     detailField.hidden = true;
   }
 }
@@ -684,7 +682,7 @@ function submitRecord() {
     showToast("請填寫刷卡連結"); f_paymentDetail.focus(); return;
   }
   if (payMethod === PAY_METHOD_CARD_PAPER) {
-    if (!f_paymentDetail.value.trim()) { showToast("請填寫卡號"); f_paymentDetail.focus(); return; }
+    // 卡號不在這裡填，由偉翔另外提供；上傳人只需要確認過這兩項才能送出
     if (!f_cardConfirm1.checked || !f_cardConfirm2.checked) {
       showToast("請勾選兩項確認後才能送出（信用卡紙本付款須先確認無法匯款、無法線上刷卡）");
       return;
@@ -697,7 +695,7 @@ function submitRecord() {
   // 收款對象：組織匯款（組織人員）記人名、組織匯款（非組織人員）記單位名，其他方式則無（款項已由組織支付）
   const payee = payMethod === PAY_METHOD_MEMBER ? f_payeePerson.value
     : payMethod === PAY_METHOD_VENDOR ? f_payeeVendor.value.trim() : "";
-  const paymentDetail = (payMethod === PAY_METHOD_VENDOR || payMethod === PAY_METHOD_CARD_LINK || payMethod === PAY_METHOD_CARD_PAPER)
+  const paymentDetail = (payMethod === PAY_METHOD_VENDOR || payMethod === PAY_METHOD_CARD_LINK)
     ? f_paymentDetail.value.trim() : "";
   const cardConfirmNote = payMethod === PAY_METHOD_CARD_PAPER
     ? "我已確認對方無法使用匯款付款；我已確認對方無法提供線上刷卡連結" : "";
