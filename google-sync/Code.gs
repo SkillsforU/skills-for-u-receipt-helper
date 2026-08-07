@@ -308,7 +308,16 @@ function getSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
-  if (sheet.getLastRow() === 0) sheet.appendRow(HEADERS);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(HEADERS);
+    // 「發票日期」「所屬期間」存的是我們自訂格式的純文字（YYYY-MM-DD / YYYY-MM），
+    // 不先設成純文字格式，Sheets 會自動把它們轉成真正的日期儲存格，
+    // 之後程式讀回來就會變成 Date 物件而不是原本的字串（例如資料夾名稱變成一長串英文日期）。
+    sheet.getRange(2, 4, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
+    sheet.getRange(2, 9, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 所屬期間
+    sheet.getRange(2, 16, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
+    sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+  }
   return sheet;
 }
 
@@ -334,9 +343,18 @@ function getProjectFolder_(projectName) {
 }
 
 // 專案資料夾底下再依「所屬期間」（YYYY-MM）開 YYYYMM 子資料夾
+// period 正常是 "2026-08" 這種文字，但如果 Sheets 把儲存格自動轉成了真正的日期，
+// getValues() 讀回來的會是 JS Date 物件——這裡兩種情況都處理，確保資料夾名稱一定是 "202608" 這種格式。
+function periodToFolderName_(period) {
+  if (!period) return '未分類';
+  if (Object.prototype.toString.call(period) === '[object Date]') {
+    return Utilities.formatDate(period, 'Asia/Taipei', 'yyyyMM');
+  }
+  return String(period).replace(/-/g, '');
+}
+
 function getMonthFolder_(projectName, period) {
-  const folderName = period ? String(period).replace(/-/g, '') : '未分類';
-  return findOrCreateSubfolder_(getProjectFolder_(projectName), folderName);
+  return findOrCreateSubfolder_(getProjectFolder_(projectName), periodToFolderName_(period));
 }
 
 function getRejectedFolder_() {
@@ -414,7 +432,7 @@ function getAllStatuses_() {
     statuses[id] = {
       status: row[MASTER_STATUS_COL - 1],
       reviewer: row[MASTER_STATUS_COL],
-      reviewedAt: row[MASTER_STATUS_COL + 1],
+      reviewedAt: formatDateTime_(row[MASTER_STATUS_COL + 1]), // Date 安全：formatDateTime_ 對 Date 物件跟文字都能正確處理
       rejectReason: row[MASTER_STATUS_COL + 2],
       paidAt: formatDateOnly_(row[MASTER_PAYDATE_COL - 1]),
     };
@@ -484,6 +502,9 @@ function getOrCreateProjectSpreadsheet_(project) {
   sheet.setName('待審核單據');
   sheet.appendRow(REVIEW_HEADERS);
   sheet.setFrozenRows(1);
+  // 同一個原因：避免「發票日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
+  sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
+  sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
   // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
