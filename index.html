@@ -96,40 +96,62 @@
           <label class="field-label">發票內容 / 品項摘要</label>
           <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
         </div>
-        <div class="form-field">
+        <div class="form-field span-2">
           <label class="field-label">付款方式 <span class="req">*</span></label>
           <select id="f_payMethod" class="select-input">
             <option value="">請選擇付款方式</option>
-            <option value="組織匯款">組織匯款</option>
-            <option value="個人代墊">個人代墊</option>
+            <option value="組織匯款（組織人員）">組織匯款（組織人員）</option>
+            <option value="組織匯款（非組織人員）">組織匯款（非組織人員）</option>
             <option value="組織零用金">組織零用金</option>
-            <option value="組織信用卡">組織信用卡</option>
+            <option value="組織信用卡（連結）">組織信用卡（連結）</option>
+            <option value="組織信用卡（紙本）">組織信用卡（紙本）</option>
           </select>
         </div>
 
-        <!-- 個人代墊：收款人預設帶入上傳人，但可改成別人（幫同事代送單據的情況） -->
-        <div class="form-field" id="payeePersonField" hidden>
+        <!-- 組織匯款（組織人員）：還款對象預設帶入上傳人，但可改成別人（幫同事代送單據的情況） -->
+        <div class="form-field span-2" id="payeePersonField" hidden>
           <label class="field-label">還款對象 <span class="req">*</span></label>
           <select id="f_payeePerson" class="select-input"></select>
         </div>
 
-        <!-- 組織匯款：填對方單位名稱與帳戶 -->
-        <div class="form-field" id="payeeVendorField" hidden>
+        <!-- 組織匯款（非組織人員）：填對方單位名稱與帳戶 -->
+        <div class="form-field span-2" id="payeeVendorField" hidden>
           <label class="field-label">收款單位 <span class="req">*</span></label>
           <input type="text" id="f_payeeVendor" class="text-input" placeholder="例如：某某印刷有限公司">
         </div>
-        <div class="form-field span-2" id="payeeBankField" hidden>
-          <label class="field-label">匯款帳戶資訊 <span class="req">*</span></label>
-          <textarea id="f_payeeBank" class="textarea-input" rows="2" placeholder="銀行／分行、戶名、帳號"></textarea>
+
+        <!-- 這個欄位在不同付款方式下重複使用：匯款帳戶 / 刷卡連結 / 卡號，標籤與提示文字會跟著切換 -->
+        <div class="form-field span-2" id="paymentDetailField" hidden>
+          <label class="field-label" id="paymentDetailLabel">付款資訊 <span class="req">*</span></label>
+          <textarea id="f_paymentDetail" class="textarea-input" rows="2"></textarea>
+          <p class="field-hint" id="paymentDetailHint"></p>
+        </div>
+
+        <!-- 組織信用卡（紙本）：必須勾選兩項確認才能送出 -->
+        <div class="form-field span-2" id="cardConfirmField" hidden>
+          <label class="checkbox-row">
+            <input type="checkbox" id="f_cardConfirm1">
+            我已確認對方無法使用匯款付款。
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="f_cardConfirm2">
+            我已確認對方無法提供線上刷卡連結。
+          </label>
         </div>
 
         <div class="form-field span-2">
           <label class="field-label">審核急迫性</label>
           <div class="segmented" id="urgencyToggle">
             <button type="button" class="seg-btn active" data-urgent="0">一般</button>
-            <button type="button" class="seg-btn seg-btn-urgent" data-urgent="1">緊急（立即通知主管）</button>
+            <button type="button" class="seg-btn seg-btn-urgent" data-urgent="1">緊急</button>
           </div>
         </div>
+        <div class="form-field span-2" id="urgentDateField" hidden>
+          <label class="field-label">希望撥款日期 <span class="req">*</span></label>
+          <input type="date" id="f_urgentDate" class="text-input">
+        </div>
+
+        <div class="form-field span-2 confidence-banner mid" id="payoutEstimateBanner" hidden></div>
       </div>
 
       <details class="raw-ocr-toggle">

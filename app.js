@@ -486,19 +486,53 @@ const f_purpose = document.getElementById("f_purpose");
 const f_payMethod = document.getElementById("f_payMethod");
 const f_payeePerson = document.getElementById("f_payeePerson");
 const f_payeeVendor = document.getElementById("f_payeeVendor");
-const f_payeeBank = document.getElementById("f_payeeBank");
+const f_paymentDetail = document.getElementById("f_paymentDetail");
+const f_cardConfirm1 = document.getElementById("f_cardConfirm1");
+const f_cardConfirm2 = document.getElementById("f_cardConfirm2");
+const f_urgentDate = document.getElementById("f_urgentDate");
+
+const PAY_METHOD_MEMBER = "組織匯款（組織人員）";
+const PAY_METHOD_VENDOR = "組織匯款（非組織人員）";
+const PAY_METHOD_PETTY_CASH = "組織零用金";
+const PAY_METHOD_CARD_LINK = "組織信用卡（連結）";
+const PAY_METHOD_CARD_PAPER = "組織信用卡（紙本）";
 
 /* 付款方式決定要填哪些收款資訊：
-   - 個人代墊：要指定還款對象（預設帶上傳人，但可改，因為常有幫同事代送單據的情況）
-   - 組織匯款：要填收款單位與匯款帳戶
-   - 零用金／信用卡：款項已由組織當場支付，不需要收款資訊 */
-f_payMethod.addEventListener("change", updatePayeeFields);
+   - 組織匯款（組織人員）：要指定還款對象（預設帶上傳人，但可改，因為常有幫同事代送單據的情況）
+   - 組織匯款（非組織人員）：要填收款單位與匯款帳戶
+   - 組織零用金：款項已由組織當場支付，不需要收款資訊
+   - 組織信用卡（連結）：填線上刷卡連結
+   - 組織信用卡（紙本）：填卡號，且要勾選兩項確認才能送出
+   「付款資訊」欄位在匯款/連結/卡號三種情境下共用同一個輸入框，只是標籤跟提示文字不同 */
+f_payMethod.addEventListener("change", () => { updatePayeeFields(); updatePayoutEstimate(); });
 function updatePayeeFields() {
   const method = f_payMethod.value;
-  document.getElementById("payeePersonField").hidden = method !== "個人代墊";
-  document.getElementById("payeeVendorField").hidden = method !== "組織匯款";
-  document.getElementById("payeeBankField").hidden = method !== "組織匯款";
-  if (method === "個人代墊") populatePayeePersonOptions();
+  document.getElementById("payeePersonField").hidden = method !== PAY_METHOD_MEMBER;
+  document.getElementById("payeeVendorField").hidden = method !== PAY_METHOD_VENDOR;
+  document.getElementById("cardConfirmField").hidden = method !== PAY_METHOD_CARD_PAPER;
+  if (method === PAY_METHOD_MEMBER) populatePayeePersonOptions();
+
+  const detailField = document.getElementById("paymentDetailField");
+  const label = document.getElementById("paymentDetailLabel");
+  const hint = document.getElementById("paymentDetailHint");
+  if (method === PAY_METHOD_VENDOR) {
+    detailField.hidden = false;
+    label.innerHTML = '匯款帳戶資訊 <span class="req">*</span>';
+    f_paymentDetail.placeholder = "銀行／分行、戶名、帳號";
+    hint.textContent = "範例：國泰世華銀行（013）中山分行、戶名：某某印刷有限公司、帳號：1234-5678-9012";
+  } else if (method === PAY_METHOD_CARD_LINK) {
+    detailField.hidden = false;
+    label.innerHTML = '刷卡連結 <span class="req">*</span>';
+    f_paymentDetail.placeholder = "貼上對方提供的線上刷卡網址";
+    hint.textContent = "範例：https://payment.example.com/pay/abc123";
+  } else if (method === PAY_METHOD_CARD_PAPER) {
+    detailField.hidden = false;
+    label.innerHTML = '卡號 <span class="req">*</span>';
+    f_paymentDetail.placeholder = "刷卡單上的卡號";
+    hint.textContent = "";
+  } else {
+    detailField.hidden = true;
+  }
 }
 
 function populatePayeePersonOptions() {
@@ -516,6 +550,43 @@ function updatePeriodField() {
   f_period.value = f_date.value ? f_date.value.slice(0, 7) : "";
 }
 
+/* ---------------- 預計撥款日期 ----------------
+   組織 5 號／20 號固定發款。以「送出審核當下」而不是發票日期為準：
+   - 組織匯款（非組織人員／廠商）：9 號前送出 → 當月 20 號；9 號（含）後 → 次月 20 號
+   - 組織匯款（組織人員／同仁代墊）：9 號前送出 → 次月 5 號；9 號（含）後 → 次次月 5 號
+   其他付款方式（零用金／信用卡）沒有固定發款週期規則，不自動推算。
+   標記緊急時，改用上傳人自己選的「希望撥款日期」，不套用這個公式。 */
+function computeExpectedPayoutDate(payMethod, submitDate) {
+  const day = submitDate.getDate();
+  const y = submitDate.getFullYear();
+  const m = submitDate.getMonth();
+  if (payMethod === PAY_METHOD_VENDOR) {
+    return new Date(y, day <= 9 ? m : m + 1, 20);
+  }
+  if (payMethod === PAY_METHOD_MEMBER) {
+    return new Date(y, day <= 9 ? m + 1 : m + 2, 5);
+  }
+  return null;
+}
+function fmtDateYMD(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function updatePayoutEstimate() {
+  const banner = document.getElementById("payoutEstimateBanner");
+  if (currentUrgent) {
+    banner.hidden = true; // 緊急件的日期由「希望撥款日期」欄位處理，不重複顯示這個提示
+    return;
+  }
+  const estimated = computeExpectedPayoutDate(f_payMethod.value, new Date());
+  if (!estimated) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  banner.textContent = `💰 依目前送出時間推算，預計撥款日期為 ${fmtDateYMD(estimated)}（實際仍以財務作業為準）`;
+}
+
 /* 緊急／一般切換：緊急件會在送出當下立刻發 Slack 通知主管，一般件只進定期彙總提醒 */
 const urgencyToggle = document.getElementById("urgencyToggle");
 let currentUrgent = false;
@@ -524,10 +595,14 @@ urgencyToggle.addEventListener("click", (e) => {
   if (!btn) return;
   currentUrgent = btn.dataset.urgent === "1";
   urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+  document.getElementById("urgentDateField").hidden = !currentUrgent;
+  updatePayoutEstimate();
 });
 function resetUrgency() {
   currentUrgent = false;
   urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.urgent === "0"));
+  document.getElementById("urgentDateField").hidden = true;
+  f_urgentDate.value = "";
 }
 
 function openConfirmForm({ rawText, confidenceMean, guesses }) {
@@ -542,9 +617,12 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_purpose.value = "";
   f_payMethod.value = "";
   f_payeeVendor.value = "";
-  f_payeeBank.value = "";
+  f_paymentDetail.value = "";
+  f_cardConfirm1.checked = false;
+  f_cardConfirm2.checked = false;
   updatePayeeFields();
   resetUrgency();
+  updatePayoutEstimate();
 
   setFlag("flag-date", !!guesses.date);
   setFlag("flag-amount", !!guesses.amount);
@@ -594,19 +672,42 @@ function submitRecord() {
   if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
   if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
   if (!f_payMethod.value) { showToast("請選擇付款方式"); f_payMethod.focus(); return; }
-  if (f_payMethod.value === "個人代墊" && !f_payeePerson.value) {
+  const payMethod = f_payMethod.value;
+  if (payMethod === PAY_METHOD_MEMBER && !f_payeePerson.value) {
     showToast("請選擇還款對象"); f_payeePerson.focus(); return;
   }
-  if (f_payMethod.value === "組織匯款") {
+  if (payMethod === PAY_METHOD_VENDOR) {
     if (!f_payeeVendor.value.trim()) { showToast("請填寫收款單位"); f_payeeVendor.focus(); return; }
-    if (!f_payeeBank.value.trim()) { showToast("請填寫匯款帳戶資訊"); f_payeeBank.focus(); return; }
+    if (!f_paymentDetail.value.trim()) { showToast("請填寫匯款帳戶資訊"); f_paymentDetail.focus(); return; }
+  }
+  if (payMethod === PAY_METHOD_CARD_LINK && !f_paymentDetail.value.trim()) {
+    showToast("請填寫刷卡連結"); f_paymentDetail.focus(); return;
+  }
+  if (payMethod === PAY_METHOD_CARD_PAPER) {
+    if (!f_paymentDetail.value.trim()) { showToast("請填寫卡號"); f_paymentDetail.focus(); return; }
+    if (!f_cardConfirm1.checked || !f_cardConfirm2.checked) {
+      showToast("請勾選兩項確認後才能送出（信用卡紙本付款須先確認無法匯款、無法線上刷卡）");
+      return;
+    }
+  }
+  if (currentUrgent && !f_urgentDate.value) {
+    showToast("標記緊急時，請選擇希望撥款日期"); f_urgentDate.focus(); return;
   }
 
-  // 收款對象：個人代墊記人名、組織匯款記單位名，零用金/信用卡則無（款項已由組織支付）
-  const payMethod = f_payMethod.value;
-  const payee = payMethod === "個人代墊" ? f_payeePerson.value
-    : payMethod === "組織匯款" ? f_payeeVendor.value.trim() : "";
-  const payeeBank = payMethod === "組織匯款" ? f_payeeBank.value.trim() : "";
+  // 收款對象：組織匯款（組織人員）記人名、組織匯款（非組織人員）記單位名，其他方式則無（款項已由組織支付）
+  const payee = payMethod === PAY_METHOD_MEMBER ? f_payeePerson.value
+    : payMethod === PAY_METHOD_VENDOR ? f_payeeVendor.value.trim() : "";
+  const paymentDetail = (payMethod === PAY_METHOD_VENDOR || payMethod === PAY_METHOD_CARD_LINK || payMethod === PAY_METHOD_CARD_PAPER)
+    ? f_paymentDetail.value.trim() : "";
+  const cardConfirmNote = payMethod === PAY_METHOD_CARD_PAPER
+    ? "我已確認對方無法使用匯款付款；我已確認對方無法提供線上刷卡連結" : "";
+
+  const expectedPayoutDate = currentUrgent
+    ? f_urgentDate.value
+    : (() => {
+        const d = computeExpectedPayoutDate(payMethod, new Date());
+        return d ? fmtDateYMD(d) : "";
+      })();
 
   const now = new Date().toISOString();
   const record = {
@@ -624,14 +725,17 @@ function submitRecord() {
     purpose: f_purpose.value.trim(),
     payMethod: payMethod,
     payee: payee,
-    payeeBank: payeeBank,
+    paymentDetail: paymentDetail,
+    cardConfirmNote: cardConfirmNote,
     urgent: currentUrgent,
+    expectedPayoutDate: expectedPayoutDate,
     confidence: Number(confirmCard.dataset.confidence || 0),
     rawOcrText: currentOcrRawText,
     status: "pending",
     reviewer: "",
     reviewedAt: "",
     rejectReason: "",
+    receiptComplete: false,
   };
   record.fileName = suggestFileName(record, record.originalFileName || "receipt.jpg");
 
@@ -706,6 +810,13 @@ function statusLabel(status) {
   return { pending: "待審核", approved: "已核准", rejected: "已退回" }[status] || status;
 }
 
+// 已核准、有期望撥款日期、但憑證正本還沒送到後勤（單據完備=false）時，在紀錄卡片上直接顯示提醒，
+// 不另外用通知打擾——使用者明確要求「不要跳出通知，就直接在申請頁面上顯示提醒」。
+function receiptReminderHtml(r) {
+  if (r.status !== "approved" || r.receiptComplete || !r.expectedPayoutDate) return "";
+  return `<div class="confidence-banner mid" style="margin-top:8px;">✅ 已收到您的審核，請於 ${escapeHtml(r.expectedPayoutDate)} 前繳交憑證至後勤人員處</div>`;
+}
+
 function recordItemHtml(r, { showUploader }) {
   const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
   const syncConfigured = !!loadSyncConfig().enabled;
@@ -722,6 +833,7 @@ function recordItemHtml(r, { showUploader }) {
           <span>${escapeHtml(r.invoiceDate || "無日期")}</span>
           ${lowConfidence ? `<span style="color:var(--warn)">⚠ 信心分數偏低</span>` : ""}
         </div>
+        ${receiptReminderHtml(r)}
       </div>
       <div style="text-align:right;flex-shrink:0;">
         <div class="record-amount">${fmtMoney(r.amount)}</div>
@@ -768,13 +880,16 @@ function openDetailModal(id, { mode }) {
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
       <dt>付款方式</dt><dd>${escapeHtml(r.payMethod || "—")}</dd>
       ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
-      ${r.payeeBank ? `<dt>匯款帳戶</dt><dd>${escapeHtml(r.payeeBank)}</dd>` : ""}
+      ${r.paymentDetail ? `<dt>付款資訊</dt><dd>${escapeHtml(r.paymentDetail)}</dd>` : ""}
+      <dt>期望撥款日期</dt><dd>${escapeHtml(r.expectedPayoutDate || "—")}</dd>
       <dt>付款日期</dt><dd>${r.paidAt ? escapeHtml(r.paidAt) : "尚未付款"}</dd>
       <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
+      <dt>單據完備</dt><dd>${r.receiptComplete ? "✅ 已收到正本" : "尚未收到正本"}</dd>
       <dt>辨識信心</dt><dd>${r.confidence ? r.confidence + "%" : "—"}</dd>
       <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
     </div>
     ${reviewInfo}
+    ${receiptReminderHtml(r)}
     ${cloudStatusHtml(r)}
     <div id="modalActions"></div>
   `;
@@ -814,13 +929,14 @@ function exportCsv() {
   const records = loadRecords();
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
   // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "匯款帳戶", "急迫性", "狀態", "審核人", "審核時間", "退回原因", "付款日期", "憑證檔名", "紀錄ID"];
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "付款資訊", "信用卡紙本確認", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "憑證檔名", "紀錄ID"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
     r.items, r.vendor, r.purpose, r.period,
-    r.payMethod || "", r.payee || "", r.payeeBank || "",
-    r.urgent ? "緊急" : "一般", statusLabel(r.status),
-    r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason, r.paidAt || "", r.fileName, r.id,
+    r.payMethod || "", r.payee || "", r.paymentDetail || "", r.cardConfirmNote || "",
+    r.urgent ? "緊急" : "一般", r.expectedPayoutDate || "", statusLabel(r.status),
+    r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason,
+    r.receiptComplete ? "是" : "否", r.paidAt || "", r.fileName, r.id,
   ]);
   const csv = [headers, ...rows]
     .map(row => row.map(cellToCsv).join(","))
@@ -1035,12 +1151,14 @@ async function refreshRecordStatuses() {
       if (!s || !s.status) return;
       const newStatus = statusKeyFromLabel_(s.status);
       if (r.status !== newStatus || r.reviewer !== (s.reviewer || "") ||
-          r.rejectReason !== (s.rejectReason || "") || r.paidAt !== (s.paidAt || "")) changed++;
+          r.rejectReason !== (s.rejectReason || "") || r.paidAt !== (s.paidAt || "") ||
+          !!r.receiptComplete !== !!s.receiptComplete) changed++;
       r.status = newStatus;
       r.reviewer = s.reviewer || "";
       r.reviewedAt = s.reviewedAt || "";
       r.rejectReason = s.rejectReason || "";
       r.paidAt = s.paidAt || "";
+      r.receiptComplete = !!s.receiptComplete;
     });
     saveRecords(records);
     renderMineView();

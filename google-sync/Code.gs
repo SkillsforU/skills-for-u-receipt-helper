@@ -72,27 +72,29 @@ const SEED_PROJECTS = [
 // 總表欄位順序。調整時 createRow_ 的寫入順序與下面的欄位位置常數要一起改。
 const HEADERS = [
   '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途',
-  '所屬期間', '付款方式', '收款對象', '匯款帳戶', '急迫性',
-  '狀態', '審核人', '審核時間', '退回原因', '付款日期', '憑證檔名', '憑證雲端連結',
+  '所屬期間', '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期',
+  '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
 const MASTER_PROJECT_COL = 3;
 const MASTER_PERIOD_COL = 9;
-const MASTER_STATUS_COL = 14;   // 狀態、審核人、審核時間、退回原因＝第 14~17 欄（四欄連續）
-const MASTER_PAYDATE_COL = 18;  // 付款日期，由財務手動填，會同步到各專案審核表
-const MASTER_FILE_URL_COL = 20; // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
-const MASTER_RECORD_ID_COL = 21;
+const MASTER_STATUS_COL = 16;    // 狀態、審核人、審核時間、退回原因＝第 16~19 欄（四欄連續）
+const MASTER_COMPLETE_COL = 20;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
+const MASTER_PAYDATE_COL = 21;   // 付款日期，由財務手動填，會同步到各專案審核表
+const MASTER_FILE_URL_COL = 23;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 24;
 
 // 各專案審核表的欄位。除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。
 const REVIEW_HEADERS = [
   '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途',
-  '付款方式', '收款對象', '急迫性', '憑證連結',
-  '審核狀態', '審核人', '審核備註', '付款日期', '紀錄ID',
+  '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '憑證連結',
+  '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
 ];
-const REVIEW_EDITABLE_START_COL = 12; // 審核狀態
+const REVIEW_EDITABLE_START_COL = 15; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
-const REVIEW_PAYDATE_COL = 15;        // 由總表同步過來，審核人不能改
-const REVIEW_RECORD_ID_COL = 16;
+const REVIEW_COMPLETE_COL = 18;       // 單據完備，由總表同步過來（後勤在總表勾選）
+const REVIEW_PAYDATE_COL = 19;        // 由總表同步過來，審核人不能改
+const REVIEW_RECORD_ID_COL = 20;
 
 const PEOPLE_SHEET_NAME = '人員設定';
 const PROJECTS_SHEET_NAME = '專案設定';
@@ -315,8 +317,11 @@ function getSheet_() {
     // 之後程式讀回來就會變成 Date 物件而不是原本的字串（例如資料夾名稱變成一長串英文日期）。
     sheet.getRange(2, 4, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
     sheet.getRange(2, 9, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 所屬期間
-    sheet.getRange(2, 16, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
-    sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+    sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
+    sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
+    sheet.getRange(2, 21, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+    // 「單據完備」做成勾選框，後勤人員收到憑證正本後在這裡打勾即可
+    sheet.getRange(2, MASTER_COMPLETE_COL, sheet.getMaxRows() - 1, 1).insertCheckboxes();
   }
   return sheet;
 }
@@ -374,9 +379,10 @@ function createRow_(sheet, record) {
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate,
     record.amount, record.items, record.vendor, record.purpose, record.period,
-    record.payMethod || '', record.payee || '', record.payeeBank || '',
-    record.urgent ? '緊急' : '一般', statusLabel_(record.status),
+    record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
+    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
+    '', // 單據完備，由後勤人員在總表勾選
     '', // 付款日期，等財務付款後手動填
     record.fileName, fileUrl, record.id,
   ]);
@@ -434,6 +440,7 @@ function getAllStatuses_() {
       reviewer: row[MASTER_STATUS_COL],
       reviewedAt: formatDateTime_(row[MASTER_STATUS_COL + 1]), // Date 安全：formatDateTime_ 對 Date 物件跟文字都能正確處理
       rejectReason: row[MASTER_STATUS_COL + 2],
+      receiptComplete: row[MASTER_COMPLETE_COL - 1] === true || row[MASTER_COMPLETE_COL - 1] === '是' || row[MASTER_COMPLETE_COL - 1] === 'TRUE',
       paidAt: formatDateOnly_(row[MASTER_PAYDATE_COL - 1]),
     };
   });
@@ -502,9 +509,11 @@ function getOrCreateProjectSpreadsheet_(project) {
   sheet.setName('待審核單據');
   sheet.appendRow(REVIEW_HEADERS);
   sheet.setFrozenRows(1);
-  // 同一個原因：避免「發票日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
+  // 同一個原因：避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
   sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-  sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+  sheet.getRange(2, 13, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
+  sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+  sheet.getRange(2, REVIEW_COMPLETE_COL, sheet.getMaxRows() - 1, 1).insertCheckboxes(); // 單據完備（由總表同步過來，僅供顯示）
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
   // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
@@ -565,8 +574,9 @@ function appendToProjectReviewSheet_(record, fileUrl) {
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.invoiceDate, record.amount,
     record.items, record.vendor, record.purpose,
-    record.payMethod || '', record.payee || '', record.urgent ? '緊急' : '一般', fileUrl,
-    '待審核', '', '', '', record.id,
+    record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
+    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
+    '待審核', '', '', '', '', record.id,
   ]);
 }
 
@@ -636,7 +646,15 @@ function syncApprovalsToMaster() {
         }
       }
 
-      // (B) 付款日期：總表 → 審核表（財務在總表填，主管在審核表看得到）
+      // (B) 單據完備：總表 → 審核表（後勤人員在總表勾選，主管在審核表看得到）
+      const masterComplete = masterData[MASTER_COMPLETE_COL - 1] === true;
+      const reviewComplete = row[REVIEW_COMPLETE_COL - 1] === true;
+      if (masterComplete !== reviewComplete) {
+        sheet.getRange(idx + 2, REVIEW_COMPLETE_COL).setValue(masterComplete);
+        updated++;
+      }
+
+      // (C) 付款日期：總表 → 審核表（財務在總表填，主管在審核表看得到）
       const masterPaid = formatDateOnly_(masterData[MASTER_PAYDATE_COL - 1]);
       const reviewPaid = formatDateOnly_(row[REVIEW_PAYDATE_COL - 1]);
       if (masterPaid && masterPaid !== reviewPaid) {
