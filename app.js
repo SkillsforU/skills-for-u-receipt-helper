@@ -504,12 +504,13 @@ const PAY_METHOD_CARD_PAPER = "組織信用卡（紙本）";
    - 組織信用卡（連結）：填線上刷卡連結
    - 組織信用卡（紙本）：填卡號，且要勾選兩項確認才能送出
    「付款資訊」欄位在匯款/連結/卡號三種情境下共用同一個輸入框，只是標籤跟提示文字不同 */
-/* 只有「組織匯款」這兩種在建檔當下錢還沒付出去，審核卡住＝有人領不到錢，標記緊急才有意義。
-   零用金與信用卡（連結／紙本）建檔時款項已由組織支付完畢（實例：Apple 電腦是偉翔先刷卡、
-   拿到發票後才進系統請款），審核只是事後補文件，催主管並不會讓任何款項提早撥出，
-   所以這幾種一律隱藏急迫性切換、固定當作「一般」。 */
+/* 規則只有一個例外，方便同事記：除了組織零用金以外，都可以標記緊急。
+   零用金的款項固定、而且進到系統時早就以現金支出了，催主管不會改變任何事。
+   信用卡雖然多數情況也是刷完才建檔（實例：Apple 電腦是先刷卡、拿到發票後才請款），
+   但仍有「還沒刷、想指定完成刷卡日期」的可能，所以保留切換——
+   多留一個用不到的鈕，使用者自己會不用；少留一個需要的鈕，卻只能改程式碼才救得回來。 */
 function methodAllowsUrgency_(method) {
-  return method === PAY_METHOD_MEMBER || method === PAY_METHOD_VENDOR;
+  return method !== PAY_METHOD_PETTY_CASH;
 }
 
 f_payMethod.addEventListener("change", () => { updatePayeeFields(); updateUrgencyVisibility(); updatePayoutEstimate(); });
@@ -561,7 +562,7 @@ function updatePeriodField() {
    - 組織匯款（非組織人員／廠商）：9 號前送出 → 當月 20 號；9 號（含）後 → 次月 20 號
    - 組織匯款（組織人員／同仁代墊）：9 號前送出 → 次月 5 號；9 號（含）後 → 次次月 5 號
    其他付款方式（零用金／信用卡）沒有固定發款週期規則，不自動推算。
-   標記緊急時，改用上傳人自己選的「希望撥款日期」，不套用這個公式。 */
+   標記緊急時，改用上傳人自己選的「希望完成付款日期」，不套用這個公式。 */
 function computeExpectedPayoutDate(payMethod, submitDate) {
   const day = submitDate.getDate();
   const y = submitDate.getFullYear();
@@ -581,7 +582,7 @@ function fmtDateYMD(d) {
 function updatePayoutEstimate() {
   const banner = document.getElementById("payoutEstimateBanner");
   if (currentUrgent) {
-    banner.hidden = true; // 緊急件的日期由「希望撥款日期」欄位處理，不重複顯示這個提示
+    banner.hidden = true; // 緊急件的日期由「希望完成付款日期」欄位處理，不重複顯示這個提示
     return;
   }
   const estimated = computeExpectedPayoutDate(f_payMethod.value, new Date());
@@ -708,7 +709,7 @@ function submitRecord() {
   // 不支援急迫性的付款方式一律視為「一般」，即使切換過程中殘留了勾選狀態也不會送出緊急件
   const urgent = methodAllowsUrgency_(payMethod) && currentUrgent;
   if (urgent && !f_urgentDate.value) {
-    showToast("標記緊急時，請選擇希望撥款日期"); f_urgentDate.focus(); return;
+    showToast("標記緊急時，請選擇希望完成付款日期"); f_urgentDate.focus(); return;
   }
 
   // 收款對象：組織匯款（組織人員）記人名、組織匯款（非組織人員）記單位名，其他方式則無（款項已由組織支付）

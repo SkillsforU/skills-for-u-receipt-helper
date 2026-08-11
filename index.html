@@ -139,7 +139,7 @@
           </label>
         </div>
 
-        <!-- 零用金／信用卡建檔時款項已由組織付出，審核擋不住撥款，所以這一整塊會隱藏（見 app.js 的 methodAllowsUrgency_） -->
+        <!-- 只有組織零用金會隱藏這一整塊（款項固定且已支出），其餘付款方式都保留（見 app.js 的 methodAllowsUrgency_） -->
         <div class="form-field span-2" id="urgencyField">
           <label class="field-label">審核急迫性</label>
           <div class="segmented" id="urgencyToggle">
@@ -147,8 +147,9 @@
             <button type="button" class="seg-btn seg-btn-urgent" data-urgent="1">緊急</button>
           </div>
         </div>
+        <!-- 標題刻意用通用說法，匯款（撥款）與信用卡（刷卡）都套得上，不需要依付款方式換字 -->
         <div class="form-field span-2" id="urgentDateField" hidden>
-          <label class="field-label">希望撥款日期 <span class="req">*</span></label>
+          <label class="field-label">希望完成付款日期 <span class="req">*</span></label>
           <input type="date" id="f_urgentDate" class="text-input">
         </div>
 
