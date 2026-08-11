@@ -504,7 +504,15 @@ const PAY_METHOD_CARD_PAPER = "組織信用卡（紙本）";
    - 組織信用卡（連結）：填線上刷卡連結
    - 組織信用卡（紙本）：填卡號，且要勾選兩項確認才能送出
    「付款資訊」欄位在匯款/連結/卡號三種情境下共用同一個輸入框，只是標籤跟提示文字不同 */
-f_payMethod.addEventListener("change", () => { updatePayeeFields(); updatePayoutEstimate(); });
+/* 只有「組織匯款」這兩種在建檔當下錢還沒付出去，審核卡住＝有人領不到錢，標記緊急才有意義。
+   零用金與信用卡（連結／紙本）建檔時款項已由組織支付完畢（實例：Apple 電腦是偉翔先刷卡、
+   拿到發票後才進系統請款），審核只是事後補文件，催主管並不會讓任何款項提早撥出，
+   所以這幾種一律隱藏急迫性切換、固定當作「一般」。 */
+function methodAllowsUrgency_(method) {
+  return method === PAY_METHOD_MEMBER || method === PAY_METHOD_VENDOR;
+}
+
+f_payMethod.addEventListener("change", () => { updatePayeeFields(); updateUrgencyVisibility(); updatePayoutEstimate(); });
 function updatePayeeFields() {
   const method = f_payMethod.value;
   document.getElementById("payeePersonField").hidden = method !== PAY_METHOD_MEMBER;
@@ -603,6 +611,14 @@ function resetUrgency() {
   f_urgentDate.value = "";
 }
 
+// 切換到不支援急迫性的付款方式時，順手把已經選好的「緊急」清掉，
+// 避免使用者先勾了緊急、再改付款方式，結果送出一筆看不見卻標著緊急的紀錄。
+function updateUrgencyVisibility() {
+  const allowed = methodAllowsUrgency_(f_payMethod.value);
+  document.getElementById("urgencyField").hidden = !allowed;
+  if (!allowed) resetUrgency();
+}
+
 function openConfirmForm({ rawText, confidenceMean, guesses }) {
   currentOcrRawText = rawText;
   rawOcrText.textContent = rawText || "（此檔案未執行文字辨識，請手動輸入欄位）";
@@ -620,6 +636,7 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_cardConfirm2.checked = false;
   updatePayeeFields();
   resetUrgency();
+  updateUrgencyVisibility();
   updatePayoutEstimate();
 
   setFlag("flag-date", !!guesses.date);
@@ -688,7 +705,9 @@ function submitRecord() {
       return;
     }
   }
-  if (currentUrgent && !f_urgentDate.value) {
+  // 不支援急迫性的付款方式一律視為「一般」，即使切換過程中殘留了勾選狀態也不會送出緊急件
+  const urgent = methodAllowsUrgency_(payMethod) && currentUrgent;
+  if (urgent && !f_urgentDate.value) {
     showToast("標記緊急時，請選擇希望撥款日期"); f_urgentDate.focus(); return;
   }
 
@@ -700,7 +719,7 @@ function submitRecord() {
   const cardConfirmNote = payMethod === PAY_METHOD_CARD_PAPER
     ? "我已確認對方無法使用匯款付款；我已確認對方無法提供線上刷卡連結" : "";
 
-  const expectedPayoutDate = currentUrgent
+  const expectedPayoutDate = urgent
     ? f_urgentDate.value
     : (() => {
         const d = computeExpectedPayoutDate(payMethod, new Date());
@@ -725,7 +744,7 @@ function submitRecord() {
     payee: payee,
     paymentDetail: paymentDetail,
     cardConfirmNote: cardConfirmNote,
-    urgent: currentUrgent,
+    urgent: urgent,
     expectedPayoutDate: expectedPayoutDate,
     confidence: Number(confirmCard.dataset.confidence || 0),
     rawOcrText: currentOcrRawText,

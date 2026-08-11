@@ -139,7 +139,8 @@
           </label>
         </div>
 
-        <div class="form-field span-2">
+        <!-- 零用金／信用卡建檔時款項已由組織付出，審核擋不住撥款，所以這一整塊會隱藏（見 app.js 的 methodAllowsUrgency_） -->
+        <div class="form-field span-2" id="urgencyField">
           <label class="field-label">審核急迫性</label>
           <div class="segmented" id="urgencyToggle">
             <button type="button" class="seg-btn active" data-urgent="0">一般</button>
