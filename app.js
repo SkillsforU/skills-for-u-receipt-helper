@@ -517,10 +517,10 @@ function updatePayeeFields() {
   const hint = document.getElementById("paymentDetailHint");
   if (method === PAY_METHOD_VENDOR) {
     detailField.hidden = false;
-    label.innerHTML = '匯款帳戶資訊 <span class="req">*</span>';
-    f_paymentDetail.placeholder = "銀行／分行、戶名、帳號";
+    label.innerHTML = '帳號資訊 <span class="req">*</span>';
+    f_paymentDetail.placeholder = "銀行／分行、帳號";
     hint.className = "field-hint-example";
-    hint.innerHTML = "<strong>範例：</strong>\n華南銀行 城東分行　008_1083\n震旦行股份有限公司\n帳號：94480081415416";
+    hint.innerHTML = "<strong>範例：</strong>\n華南銀行 城東分行　008_1083\n帳號：94480081415416";
   } else if (method === PAY_METHOD_CARD_LINK) {
     detailField.hidden = false;
     label.innerHTML = '刷卡連結 <span class="req">*</span>';
