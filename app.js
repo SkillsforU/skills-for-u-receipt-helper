@@ -707,8 +707,9 @@ document.getElementById("submitRecordBtn").addEventListener("click", submitRecor
 //（見 google-sync/Code.gs 的 getProjectFolder_ / getMonthFolder_），檔名裡重複標沒意義。
 function suggestFileName(record, originalName) {
   const ext = (originalName.match(/\.[a-zA-Z0-9]+$/) || [".jpg"])[0];
-  const day = record.invoiceDate ? record.invoiceDate.slice(-2) : "未知日";
-  return `${day}_${record.amount || 0}元${ext}`;
+  // record.invoiceDate 是 "YYYY-MM-DD"，去掉連字號變成 "YYYYMMDD"
+  const ymd = record.invoiceDate ? record.invoiceDate.replace(/-/g, "") : "未知日期";
+  return `${ymd}_${record.amount || 0}元${ext}`;
 }
 
 function submitRecord() {
