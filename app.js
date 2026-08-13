@@ -22,14 +22,41 @@ function loadRecords() {
     return [];
   }
 }
+// 憑證照片的 base64 內容很佔空間，localStorage 通常只有 5~10MB，測試/正式用一陣子很容易爆滿。
+// 爆滿時不能整個崩潰讓使用者以為「送出沒反應」——所以分兩層自動搶救：
+// 1. 先清掉「已經同步到雲端」那些紀錄的縮圖（Drive 上已經有正本，本機縮圖只是離線快取，清掉不影響資料）。
+// 2. 還是不夠的話，連還沒同步的縮圖也一起清（欄位資料不會丟，只是預覽圖跟下載按鈕會失效）。
+// 呼叫端要檢查回傳值，在畫面上老實告訴使用者發生了什麼事，不能靜靜吞掉錯誤。
 function saveRecords(records) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    return { ok: true };
+  } catch (e) {
+    if (!(e && (e.name === "QuotaExceededError" || e.code === 22))) {
+      console.error("儲存紀錄失敗", e);
+      return { ok: false, error: e };
+    }
+    try {
+      const pruned = records.map(r => r.cloudSynced ? { ...r, fileDataUrl: "" } : r);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(pruned));
+      return { ok: true, pruned: true };
+    } catch (e2) {
+      try {
+        const prunedAll = records.map(r => ({ ...r, fileDataUrl: "" }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(prunedAll));
+        return { ok: true, prunedAll: true };
+      } catch (e3) {
+        console.error("本機儲存空間不足，清理縮圖後仍無法儲存", e3);
+        return { ok: false, error: e3 };
+      }
+    }
+  }
 }
 function upsertRecord(record) {
   const records = loadRecords();
   const idx = records.findIndex(r => r.id === record.id);
   if (idx >= 0) records[idx] = record; else records.unshift(record);
-  saveRecords(records);
+  return saveRecords(records);
 }
 
 /* ---------------- 上傳人 / 專案名單 ----------------
@@ -757,8 +784,19 @@ function submitRecord() {
   };
   record.fileName = suggestFileName(record, record.originalFileName || "receipt.jpg");
 
-  upsertRecord(record);
-  showToast("已送出，等待主管審核");
+  const saveResult = upsertRecord(record);
+  if (!saveResult.ok) {
+    // 真的救不回來：不要清空表單，讓使用者可以重試或先手動清理舊紀錄，資料不會憑空消失
+    showToast("送出失敗：瀏覽器本機儲存空間已滿，請到「上傳紀錄」清理較舊的項目後再試一次");
+    return;
+  }
+  if (saveResult.prunedAll) {
+    showToast("已送出，但本機空間不足，已自動清除本機縮圖（雲端資料不受影響，已同步的可到雲端硬碟查看）");
+  } else if (saveResult.pruned) {
+    showToast("已送出，等待主管審核（已自動清理部分舊縮圖騰出空間）");
+  } else {
+    showToast("已送出，等待主管審核");
+  }
 
   confirmCard.hidden = true;
   resetFileSelection();
@@ -874,7 +912,11 @@ function openDetailModal(id, { mode }) {
   const r = records.find(x => x.id === id);
   if (!r) return;
 
-  const imgHtml = r.fileDataUrl ? `<img class="detail-img" src="${r.fileDataUrl}" alt="憑證預覽">` : "";
+  // 已同步到雲端的紀錄，本機縮圖會在同步成功後自動清除以節省空間（見 syncRecordToCloud），
+  // 這裡改用文字提示引導去下面的「查看雲端檔案」連結，而不是留白讓人以為照片不見了。
+  const imgHtml = r.fileDataUrl
+    ? `<img class="detail-img" src="${r.fileDataUrl}" alt="憑證預覽">`
+    : (r.cloudFileUrl ? `<p class="field-hint">本機縮圖已於同步後自動清除，正本請見下方「查看雲端檔案」</p>` : "");
   const reviewInfo = r.status !== "pending"
     ? `<div class="detail-grid">
          <dt>審核狀態</dt><dd><span class="status-badge ${r.status}">${statusLabel(r.status)}</span></dd>
@@ -1122,7 +1164,10 @@ async function syncRecordToCloud(record, action) {
     });
     const data = await res.json();
     if (data && data.ok) {
-      updateRecordCloudStatus(record.id, { cloudSynced: true, cloudFileUrl: data.fileUrl || record.cloudFileUrl || "", cloudError: "" });
+      // 同步成功代表 Drive 上已經有正本了，本機縮圖只是上傳前的暫存，主動清掉可以避免
+      // localStorage 累積到爆滿（憑證照片的 base64 很佔空間，瀏覽器通常只有 5~10MB 可用）。
+      // 「查看雲端檔案」連結（cloudFileUrl）會接手負責預覽/下載。
+      updateRecordCloudStatus(record.id, { cloudSynced: true, cloudFileUrl: data.fileUrl || record.cloudFileUrl || "", cloudError: "", fileDataUrl: "" });
     } else {
       updateRecordCloudStatus(record.id, { cloudSynced: false, cloudError: (data && data.error) || "未知錯誤" });
     }
