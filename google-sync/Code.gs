@@ -325,14 +325,18 @@ function getSheet_() {
     sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
     sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
     sheet.getRange(2, 21, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-    // 「單據完備」做成勾選框，後勤人員收到憑證正本後在這裡打勾即可。
-    // 用 setDataValidation 而不是 insertCheckboxes()：後者會把整個範圍的每一格都寫入實際的
-    // false 值，讓 appendRow() 誤以為這 1000 列都「有資料」，新資料就會被擠到第 1000 列後面
-    // 而不是接在第 2 列。setDataValidation 只設定「這格顯示成勾選框」的規則，空格仍然是空的。
-    sheet.getRange(2, MASTER_COMPLETE_COL, sheet.getMaxRows() - 1, 1)
-      .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+    // 「單據完備」勾選框改成「每寫入一列才對那一列設定」（見 createRow_ 的 setCompleteCheckbox_），
+    // 不在這裡對整欄一次設定——避免任何指令把 2~1000 列都當成「有資料」，害 appendRow() 把
+    // 新資料接到第 1000 列後面而不是第 2 列。
   }
   return sheet;
+}
+
+// 只對「單據完備」欄的某一列設定勾選框格式（空格仍然是空的，不會被 getLastRow 算進去）。
+function setCompleteCheckbox_(sheet, row, col) {
+  sheet.getRange(row, col).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireCheckbox().build()
+  );
 }
 
 function getRootFolder_() {
@@ -395,6 +399,7 @@ function createRow_(sheet, record) {
     '', // 付款日期，等財務付款後手動填
     record.fileName, fileUrl, record.id,
   ]);
+  setCompleteCheckbox_(sheet, sheet.getLastRow(), MASTER_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
 
   // 同步一份到該專案的審核表，供主管審核
   try {
@@ -522,10 +527,7 @@ function getOrCreateProjectSpreadsheet_(project) {
   sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
   sheet.getRange(2, 13, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
   sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-  // 單據完備（由總表同步過來，僅供顯示）：理由同上，用 setDataValidation 而不是 insertCheckboxes()，
-  // 避免把整欄寫滿 false 值，導致 appendRow() 把新資料擠到第 1000 列後面而不是接在第 2 列。
-  sheet.getRange(2, REVIEW_COMPLETE_COL, sheet.getMaxRows() - 1, 1)
-    .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+  // 單據完備勾選框同樣改成每寫入一列才對那列設定（見 appendToProjectReviewSheet_），不在這裡對整欄一次設定。
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
   // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
@@ -590,6 +592,7 @@ function appendToProjectReviewSheet_(record, fileUrl) {
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
     '待審核', '', '', '', '', record.id,
   ]);
+  setCompleteCheckbox_(sheet, sheet.getLastRow(), REVIEW_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
 }
 
 /* ============================================================
