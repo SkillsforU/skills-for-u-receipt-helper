@@ -889,3 +889,17 @@ function testGeminiAuth() {
   var tinyImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
   Logger.log(JSON.stringify(recognizeReceipt_(tinyImage)));
 }
+
+/**
+ * 授權用測試函式（同上，函式名稱結尾不能有底線）。用來確認目前登入的帳號對
+ * DRIVE_FOLDER_ID 這個資料夾真的有存取權，並觸發 Drive 服務的授權畫面。
+ * 執行完看「執行項目」或這裡的記錄，應該會印出資料夾名稱；如果噴錯，錯誤訊息會直接告訴你是授權問題還是 ID 錯誤。
+ */
+function testDriveAuth() {
+  if (!DRIVE_FOLDER_ID) {
+    Logger.log('DRIVE_FOLDER_ID 是空的，會改用「我的雲端硬碟」自動建立資料夾，不需要測試這個。');
+    return;
+  }
+  var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+  Logger.log('成功存取資料夾：' + folder.getName() + '（' + folder.getUrl() + '）');
+}
