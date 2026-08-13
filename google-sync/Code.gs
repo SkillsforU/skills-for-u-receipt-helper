@@ -513,9 +513,23 @@ function setupProjectReviewSheets() {
 function getOrCreateProjectSpreadsheet_(project) {
   if (project.reviewSheetId) {
     try {
-      return SpreadsheetApp.openById(project.reviewSheetId);
+      const existing = SpreadsheetApp.openById(project.reviewSheetId);
+      // openById 對「已丟進垃圾桶」的檔案不會報錯，還是打得開——如果不特別檢查，
+      // 系統會誤以為審核表還在，繼續往垃圾桶裡的舊檔案寫資料，新的完全不會出現在該出現的資料夾。
+      // 這裡刻意不自動重建：垃圾桶裡的檔案 30 天內都還在，可能是誤刪，貿然重建
+      // 會讓新舊兩份同時存在，之後有人把舊的救回來反而搞不清楚哪份才是正本。
+      // 明確報錯，把「救回來」還是「清空這格讓它重建」的決定交給人來下。
+      if (DriveApp.getFileById(project.reviewSheetId).isTrashed()) {
+        throw new Error(
+          '專案「' + project.name + '」的審核表（ID: ' + project.reviewSheetId + '）目前在垃圾桶裡，' +
+          '未自動重建。請到 Google 雲端硬碟垃圾桶把它復原，或是把「' + PROJECTS_SHEET_NAME +
+          '」分頁裡這個專案的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
+        );
+      }
+      return existing;
     } catch (e) {
-      // 檔案被刪掉了，往下重新建立
+      if (String(e).indexOf('目前在垃圾桶裡') !== -1) throw e; // 上面主動拋出的錯誤要讓它往外傳，不能被下面的 catch 吞掉
+      // openById 本身失敗（例如檔案被永久刪除），才走到這裡重新建立
     }
   }
   const ss = SpreadsheetApp.create('單據審核 - ' + project.name);
