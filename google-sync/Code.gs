@@ -345,8 +345,12 @@ function getSheet_() {
     sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
     sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
     sheet.getRange(2, 21, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-    // 「單據完備」做成勾選框，後勤人員收到憑證正本後在這裡打勾即可
-    sheet.getRange(2, MASTER_COMPLETE_COL, sheet.getMaxRows() - 1, 1).insertCheckboxes();
+    // 「單據完備」做成勾選框，後勤人員收到憑證正本後在這裡打勾即可。
+    // 用 setDataValidation 而不是 insertCheckboxes()：後者會把整個範圍的每一格都寫入實際的
+    // false 值，讓 appendRow() 誤以為這 1000 列都「有資料」，新資料就會被擠到第 1000 列後面
+    // 而不是接在第 2 列。setDataValidation 只設定「這格顯示成勾選框」的規則，空格仍然是空的。
+    sheet.getRange(2, MASTER_COMPLETE_COL, sheet.getMaxRows() - 1, 1)
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
   }
   return sheet;
 }
@@ -538,7 +542,10 @@ function getOrCreateProjectSpreadsheet_(project) {
   sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
   sheet.getRange(2, 13, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
   sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-  sheet.getRange(2, REVIEW_COMPLETE_COL, sheet.getMaxRows() - 1, 1).insertCheckboxes(); // 單據完備（由總表同步過來，僅供顯示）
+  // 單據完備（由總表同步過來，僅供顯示）：理由同上，用 setDataValidation 而不是 insertCheckboxes()，
+  // 避免把整欄寫滿 false 值，導致 appendRow() 把新資料擠到第 1000 列後面而不是接在第 2 列。
+  sheet.getRange(2, REVIEW_COMPLETE_COL, sheet.getMaxRows() - 1, 1)
+    .setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
   // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
