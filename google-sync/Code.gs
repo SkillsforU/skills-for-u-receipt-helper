@@ -192,24 +192,6 @@ function saveProjectReviewSheet_(project, sheetId, url) {
 /* ============================================================
    Web App 入口
    ============================================================ */
-// 除錯用：把錯誤直接寫進試算表裡一個獨立分頁，不用再去查 Apps Script 的「執行項目」
-// （網頁應用程式的執行紀錄是用部署設定的身分跑的，用別的帳號檢視常常打不開詳細內容）。
-// 問題排除、確認穩定之後可以把這個分頁刪掉，程式碼不用特別移除，找不到分頁會自動重建。
-function logDebug_(label, detail) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName('除錯紀錄');
-    if (!sheet) {
-      sheet = ss.insertSheet('除錯紀錄');
-      sheet.appendRow(['時間', '項目', '內容']);
-      sheet.setFrozenRows(1);
-    }
-    sheet.appendRow([Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss'), label, detail]);
-  } catch (e) {
-    // 除錯記錄本身失敗就算了，不能讓它反過來擋住正常流程
-  }
-}
-
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
@@ -229,17 +211,15 @@ function doPost(e) {
     }
     const sheet = getSheet_();
     if (body.action === 'create') {
-      logDebug_('create 開始', 'sheet=' + sheet.getName() + '　建立前列數=' + sheet.getLastRow() + '　project=' + (body.record && body.record.project));
-      const result = createRow_(sheet, body.record);
-      logDebug_('create 結束', 'sheet=' + sheet.getName() + '　建立後列數=' + sheet.getLastRow() + '　result=' + JSON.stringify(result));
-      return jsonOut_(result);
+      return jsonOut_(createRow_(sheet, body.record));
     }
     if (body.action === 'update') {
       return jsonOut_(updateRow_(sheet, body.record));
     }
     return jsonOut_({ ok: false, error: 'unknown action: ' + body.action });
   } catch (err) {
-    logDebug_('doPost 例外', String(err) + '　action=' + (e && e.postData && e.postData.contents ? e.postData.contents.slice(0, 200) : ''));
+    // 錯誤訊息會原樣回傳給網頁端，網頁的「☁ 同步失敗：」提示會直接顯示這段文字，
+    // 不需要額外寫進試算表；真的要深入排查再看 Apps Script 的「執行項目」即可。
     return jsonOut_({ ok: false, error: String(err) });
   }
 }
