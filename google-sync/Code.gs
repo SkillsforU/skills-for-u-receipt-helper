@@ -1,12 +1,12 @@
 /**
- * Skills for U｜單據小幫手 — Google Sheets / Drive 同步 + 專案審核 + Slack 通知
+ * Skills for U｜核銷小幫手 — Google Sheets / Drive 同步 + 專案審核 + Slack 通知
  *
  * ── 第一次設定 ─────────────────────────────────────────────
  * 1. 開一個 Google 試算表（這份就是「總表」），選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去。
  * 2. 修改下面「機密設定區」：SECRET_TOKEN、GEMINI_API_KEY、SLACK_WEBHOOK_URL。
  * 3. 右上角「部署」→「新增部署作業」→「網頁應用程式」：執行身分「我」、誰可以存取「任何人」。
- *    把拿到的 /exec 網址跟 SECRET_TOKEN 貼到「單據小幫手」網頁的「雲端同步設定」。
- * 4. 重新整理總表，上方會多一個「單據小幫手」選單，點「① 建立/更新設定與審核表」。
+ *    把拿到的 /exec 網址跟 SECRET_TOKEN 貼到「核銷小幫手」網頁的「雲端同步設定」。
+ * 4. 重新整理總表，上方會多一個「核銷小幫手」選單，點「① 建立/更新設定與審核表」。
  *    這會建立「人員設定」「專案設定」兩個分頁（第一次會用下面的種子名單預填），
  *    並依「專案設定」幫每個進行中的專案建立獨立審核試算表、設好權限、分享給審核人。
  * 5. 點「② 設定自動排程」安裝定時任務。
@@ -31,7 +31,7 @@
    機密設定區（只有這裡需要改程式碼）
    ============================================================ */
 const SHEET_NAME = '收支表';       // 總表裡要寫入的分頁名稱，找不到會自動建立
-const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「單據小幫手」資料夾
+const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
 const SECRET_TOKEN = '請改成你自己的密碼字串';
 const GEMINI_API_KEY = '';         // 留空 = 不啟用雲端 OCR
 // 預設用 gemini-flash-latest 這個別名，它會自動指向目前最新的 Flash 模型，
@@ -225,7 +225,7 @@ function doPost(e) {
 function doGet(e) {
   return jsonOut_({
     ok: true,
-    message: '單據小幫手同步端點運作中，請用 POST 送資料。',
+    message: '核銷小幫手同步端點運作中，請用 POST 送資料。',
     model: GEMINI_MODEL,
     geminiKeySet: GEMINI_API_KEY ? true : false,
     slackSet: SLACK_WEBHOOK_URL ? true : false,
@@ -328,7 +328,7 @@ function getSheet_() {
 
 function getRootFolder_() {
   if (DRIVE_FOLDER_ID) return DriveApp.getFolderById(DRIVE_FOLDER_ID);
-  const name = '單據小幫手';
+  const name = '核銷小幫手';
   const it = DriveApp.getFoldersByName(name);
   if (it.hasNext()) return it.next();
   return DriveApp.createFolder(name);
@@ -844,7 +844,7 @@ function isReviewReminderDay_() {
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('單據小幫手')
+    .createMenu('核銷小幫手')
     .addItem('① 建立/更新設定與審核表', 'setupProjectReviewSheets')
     .addItem('② 設定自動排程', 'setupTriggers')
     .addSeparator()
