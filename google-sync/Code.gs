@@ -481,7 +481,15 @@ function formatDateOnly_(value) {
   if (Object.prototype.toString.call(value) === '[object Date]') {
     return Utilities.formatDate(value, 'Asia/Taipei', 'yyyy-MM-dd');
   }
-  return String(value).trim();
+  const s = String(value).trim();
+  // 「付款日期」是財務直接在試算表手動輸入的（其他日期欄都是網頁自動寫入固定格式），
+  // 容許用 - 或 / 當分隔符、月/日不補零（例如 "2026/8/13"），一律正規化成 yyyy-MM-dd，
+  // 避免因為格式差一點跟其他地方逐字比對（例如付款月份彙總）就抓不到，卻不會有任何錯誤提示。
+  const m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+  if (m) {
+    return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+  }
+  return s;
 }
 
 function jsonOut_(obj) {
