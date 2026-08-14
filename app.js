@@ -955,11 +955,13 @@ function openDetailModal(id, { mode }) {
     <div id="modalActions"></div>
   `;
 
+  // 這顆按鈕只會在 !r.cloudSynced 時出現（見 cloudStatusHtml），所以一定是 "create"：
+  // 還沒同步成功過，不會有已核准的審核結果需要保護。
   const retryBtn = document.getElementById("btnRetrySync");
   if (retryBtn) retryBtn.addEventListener("click", async () => {
     retryBtn.disabled = true;
     retryBtn.textContent = "同步中…";
-    await syncRecordToCloud(r, r.cloudSynced ? "update" : "create");
+    await syncRecordToCloud(r, "create");
     openDetailModal(id, { mode }); // 重新整理畫面顯示最新同步狀態
   });
 
@@ -1131,18 +1133,24 @@ document.getElementById("testSyncBtn").addEventListener("click", async () => {
   }
 });
 
+// 同步狀態只能由「雲端 → 本機」單向流動（審核在 Google 試算表發生，網頁只能拉取結果）。
+// 「重新同步」按鈕只在真的還沒同步成功時才顯示——一旦 cloudSynced 是 true，代表這筆紀錄
+// 早就送到雲端了，之後任何變動（審核、付款、單據完備）都應該用「🔄 重新整理審核狀態」去拉，
+// 絕對不能再讓使用者手動觸發把本機可能已經過期的舊資料推回去，蓋掉主管剛審核完的結果。
 function cloudStatusHtml(r) {
   const config = loadSyncConfig();
   if (!config.enabled || !config.url) return "";
   const statusText = r.cloudSynced ? "已同步至 Google 試算表" : (r.cloudError ? "同步失敗：" + escapeHtml(r.cloudError) : "尚未同步");
   const linkHtml = r.cloudFileUrl ? ` ・ <a href="${escapeHtml(r.cloudFileUrl)}" target="_blank" rel="noopener">查看雲端檔案</a>` : "";
+  const retryBtnHtml = r.cloudSynced ? "" : `
+    <div class="btn-row">
+      <button class="ghost-btn" id="btnRetrySync" style="flex:1;">同步至雲端</button>
+    </div>`;
   return `
     <div class="confidence-banner ${r.cloudSynced ? "high" : "low"}">
       ☁ ${statusText}${linkHtml}
     </div>
-    <div class="btn-row">
-      <button class="ghost-btn" id="btnRetrySync" style="flex:1;">${r.cloudSynced ? "重新同步" : "同步至雲端"}</button>
-    </div>
+    ${retryBtnHtml}
   `;
 }
 

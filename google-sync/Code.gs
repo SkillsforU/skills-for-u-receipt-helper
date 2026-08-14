@@ -430,13 +430,15 @@ function findRowById_(sheet, id, idCol) {
   return -1;
 }
 
+// 網頁端的「重新同步」按鈕在 record 從沒建立成功時會呼叫這個動作。
+// 一旦列已經存在，代表當初的 create 早就成功了——審核狀態／審核人／審核時間／退回原因
+// 只會由 Google 試算表那邊的審核流程更動（單向：Sheets → 網頁），絕對不能讓網頁端拿本機
+// 可能已經過期的舊副本（例如主管審核完但這台瀏覽器還沒重新整理過）反向蓋掉試算表上的結果。
+// 所以這裡刻意「什麼欄位都不動」，只確認這筆紀錄存在即可。
 function updateRow_(sheet, record) {
   const rowIndex = findRowById_(sheet, record.id, MASTER_RECORD_ID_COL);
-  if (rowIndex === -1) return createRow_(sheet, record);
-  sheet.getRange(rowIndex, MASTER_STATUS_COL, 1, 4).setValues([[
-    statusLabel_(record.status), record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
-  ]]);
-  return { ok: true };
+  if (rowIndex === -1) return createRow_(sheet, record); // 從沒建立成功過，補建立
+  return { ok: true, note: '此紀錄已存在於總表，審核狀態由 Google 試算表的審核流程管理，未變更任何欄位。' };
 }
 
 // 給「上傳紀錄」頁按「重新整理審核狀態」用：回傳總表每一筆的審核狀態與付款日期
