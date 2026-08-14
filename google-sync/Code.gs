@@ -492,6 +492,26 @@ function formatDateOnly_(value) {
   return s;
 }
 
+// 簡單觸發條件：只要有人直接在試算表編輯儲存格就會自動執行，不需要另外設定排程。
+// 「付款日期」很自然會被打成沒有年份的簡寫（例如「8/14」），這裡在編輯的當下、
+// 用當下真正的年份把它補成完整的 yyyy-MM-dd 直接存回儲存格——
+// 刻意不做成「讀取時才推算年份」，那樣隔年才讀到同一格會用當時的年份誤判，資料反而悄悄跑掉。
+function onEdit(e) {
+  try {
+    const range = e && e.range;
+    if (!range || range.getSheet().getName() !== SHEET_NAME) return;
+    if (range.getColumn() !== MASTER_PAYDATE_COL || range.getNumColumns() !== 1 || range.getNumRows() !== 1) return;
+    const value = range.getValue();
+    if (!value || Object.prototype.toString.call(value) === '[object Date]') return;
+    const bare = String(value).trim().match(/^(\d{1,2})[-\/](\d{1,2})$/); // 只有月/日、沒有年份
+    if (!bare) return;
+    const year = new Date().getFullYear();
+    range.setValue(year + '-' + bare[1].padStart(2, '0') + '-' + bare[2].padStart(2, '0'));
+  } catch (err) {
+    console.error('onEdit 自動補年份失敗（不影響其他功能）：' + err);
+  }
+}
+
 function jsonOut_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
