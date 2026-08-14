@@ -835,6 +835,25 @@ document.getElementById("refreshStatusBtn").addEventListener("click", async (e) 
   btn.disabled = false;
 });
 
+// 只清這台瀏覽器的本機快取，不會動到雲端／Google 試算表上的任何資料。
+// 已經同步過雲端的紀錄清掉沒差（雲端還有一份）；還沒同步成功的紀錄清掉就真的找不回來了，
+// 所以先數一下有幾筆是這種情況，警語要講清楚，不能讓人以為這只是清「顯示」而已。
+document.getElementById("clearLocalBtn").addEventListener("click", () => {
+  const records = loadRecords();
+  if (records.length === 0) { showToast("目前沒有本機紀錄可清除"); return; }
+  const unsyncedCount = records.filter(r => !r.cloudSynced).length;
+  const warning = unsyncedCount > 0
+    ? `其中有 ${unsyncedCount} 筆還沒同步到雲端，清除後這幾筆會完全遺失、無法復原。`
+    : `這 ${records.length} 筆都已經同步到雲端，清除本機不影響雲端資料。`;
+  const confirmed = window.confirm(
+    `確定要清除這個瀏覽器上的 ${records.length} 筆本機上傳紀錄嗎？\n\n${warning}\n\n此動作無法復原。`
+  );
+  if (!confirmed) return;
+  localStorage.removeItem(STORAGE_KEY);
+  renderMineView();
+  showToast("已清除本機紀錄");
+});
+
 function renderMineView() {
   populateRecordFilterOptions();
   const all = loadRecords();
