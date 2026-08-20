@@ -891,7 +891,7 @@ function onReviewStatusEdit_(e) {
 
     const rowData = sheet.getRange(row, 1, 1, REVIEW_HEADERS.length).getValues()[0];
     const uploader = rowData[1];
-    const invoiceDate = rowData[2];
+    const invoiceDate = formatDateOnly_(rowData[2]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
     const amount = rowData[3];
     const items = rowData[4];
     const vendor = rowData[5];
@@ -899,8 +899,11 @@ function onReviewStatusEdit_(e) {
 
     // 這個處理函式是共用的（每份審核表都裝同一個），要靠觸發來源的試算表 ID 反查是哪個專案
     const ssId = e.source ? e.source.getId() : sheet.getParent().getId();
-    const project = loadConfig_().projects.find(function (p) { return p.reviewSheetId === ssId; });
-    const projectName = project ? project.name : '（未知專案）';
+    const allProjects = loadConfig_().projects;
+    const project = allProjects.find(function (p) { return p.reviewSheetId === ssId; });
+    // 暫時的除錯資訊：對不到專案時，把實際比對的兩邊原始值印出來，抓到原因後會拿掉這段。
+    const projectName = project ? project.name
+      : '（未知專案｜除錯：ssId=' + ssId + '｜已知審核表ID=' + allProjects.map(function (p) { return p.name + ':' + p.reviewSheetId; }).join('，') + '）';
 
     const person = personByName_(uploader);
     const mention = (person && person.slackId) ? '<@' + person.slackId + '>' : (uploader || '（未知申請人）') + '（尚未設定 Slack ID，不會跳通知）';
