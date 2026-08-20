@@ -730,6 +730,14 @@ function applyProjectPermissions_(ss, project) {
       SpreadsheetApp.newDataValidation().requireValueInList(approverNames, true).setAllowInvalid(false).build()
     );
   }
+  // 「單據完備」的勾選框在 Sheets 底層也是靠資料驗證實作的，上面那行清空資料驗證會連它一起清掉，
+  // 儲存格裡的 true/false 值不會不見，只是顯示樣式變回純文字——這裡補回勾選框樣式。
+  // 用 setDataValidation 而不是 insertCheckboxes()：後者會把整個範圍每一格都寫入實際的 false 值，
+  // 讓 appendRow() 誤以為這些列「有資料」，新資料就會被擠到最後一列後面而不是接在第 2 列
+  // （這個系統今天稍早才踩過同一個坑）。setDataValidation 只設定顯示規則，不會動到既有的值。
+  sheet.getRange(2, REVIEW_COMPLETE_COL, maxRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireCheckbox().build()
+  );
 
   // 4. 裝一個「安裝式觸發條件」在這份審核表上，主管一按下「已退回」立刻通知申請人（見 onReviewStatusEdit_）。
   //    這是獨立於每天的總表同步之外的機制——退件通知要即時，不代表總表同步也要改成即時，兩件事分開處理。
