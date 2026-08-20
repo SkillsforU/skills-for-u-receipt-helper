@@ -114,9 +114,37 @@ const PROJECT_STATUS_ENDED = '已結束';
    設定分頁讀寫（人員設定 / 專案設定）
    ============================================================ */
 let _configCache = null; // 同一次執行內只讀一次，避免重複讀表
+const MASTER_SPREADSHEET_ID_PROP_ = 'masterSpreadsheetId';
+
+// 可靠取得「總表」本身，不管目前這次執行是被什麼觸發的。
+// SpreadsheetApp.getActiveSpreadsheet() 平常在選單、doPost（網頁應用程式）裡確實會拿到總表，
+// 但裝在「各專案審核表」上的安裝式觸發條件（onReviewStatusEdit_）觸發時，「使用中的試算表」
+// 其實是引發這次編輯的審核表本身，不是總表——這裡如果照舊呼叫 getActiveSpreadsheet()，
+// 讀「專案設定」等分頁會在審核表裡找不到、誤以為是空的，甚至把設定分頁新建在審核表裡面
+// （就是這次退件通知讀不到任何審核表ID的真正原因）。改成用快取起來的總表 ID 明確指定，
+// 不管從哪個情境呼叫都會拿到同一份。
+function getMasterSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const cachedId = props.getProperty(MASTER_SPREADSHEET_ID_PROP_);
+  if (cachedId) {
+    try {
+      return SpreadsheetApp.openById(cachedId);
+    } catch (e) {
+      // 快取的 ID 失效了（例如總表被搬到別的帳號），往下重新偵測
+    }
+  }
+  // 還沒快取過：這裡假設當下執行環境的「使用中試算表」是正確的（選單、doPost 都是這樣），
+  // 抓到後存進 Script Properties，之後任何情境（包括審核表上的觸發條件）都能穩定指到同一份。
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (!active) {
+    throw new Error('無法判斷總表試算表。請先從總表本身執行一次選單「① 建立/更新設定與審核表」來初始化。');
+  }
+  props.setProperty(MASTER_SPREADSHEET_ID_PROP_, active.getId());
+  return active;
+}
 
 function getOrCreateSheet_(name, headers, seedRows) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getMasterSpreadsheet_();
   let sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
@@ -354,7 +382,7 @@ function recognizeReceipt_(images) {
    總表寫入
    ============================================================ */
 function getSheet_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getMasterSpreadsheet_(); // 理由同 getOrCreateSheet_：不能假設「使用中的試算表」一定是總表
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
   if (sheet.getLastRow() === 0) {
@@ -579,6 +607,35 @@ function setupProjectReviewSheets() {
     '\n\n已結束、略過的專案（' + skipped.length + '）：\n' + (skipped.join('\n') || '（無）') +
     '\n\n各審核表的網址可在「' + PROJECTS_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。\n' +
     '要異動人員或專案，直接編輯「' + PEOPLE_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME + '」分頁後再執行一次這個選單即可。'
+  );
+}
+
+// 一次性清理用：退件即時通知的舊版本有個 bug（getActiveSpreadsheet() 在審核表的觸發條件裡
+// 會誤判成審核表自己），導致「人員設定」「專案設定」「預算項目設定」被誤建在各專案審核表裡面，
+// 裡面填的是寫死的預設種子資料，不是總表的真實內容。這個問題已經修好（見 getMasterSpreadsheet_），
+// 但已經被誤建出來的分頁不會自動消失，跑這個選單一次把它們清掉即可，清完可以刪掉這個選單項目。
+function cleanupStrayConfigSheetsInReviewSheets() {
+  const strayNames = [PEOPLE_SHEET_NAME, PROJECTS_SHEET_NAME, BUDGET_SHEET_NAME];
+  const removed = [];
+  const errors = [];
+  loadConfig_().projects.forEach(function (project) {
+    if (!project.reviewSheetId) return;
+    try {
+      const ss = SpreadsheetApp.openById(project.reviewSheetId);
+      strayNames.forEach(function (name) {
+        const sheet = ss.getSheetByName(name);
+        if (sheet) {
+          ss.deleteSheet(sheet);
+          removed.push(project.name + '：' + name);
+        }
+      });
+    } catch (e) {
+      errors.push(project.name + '：' + e);
+    }
+  });
+  SpreadsheetApp.getUi().alert(
+    '清理完成。\n\n已移除（' + removed.length + '）：\n' + (removed.join('\n') || '（沒有找到需要清理的分頁）') +
+    (errors.length ? '\n\n發生錯誤：\n' + errors.join('\n') : '')
   );
 }
 
@@ -914,11 +971,8 @@ function onReviewStatusEdit_(e) {
 
     // 這個處理函式是共用的（每份審核表都裝同一個），要靠觸發來源的試算表 ID 反查是哪個專案
     const ssId = e.source ? e.source.getId() : sheet.getParent().getId();
-    const allProjects = loadConfig_().projects;
-    const project = allProjects.find(function (p) { return p.reviewSheetId === ssId; });
-    // 暫時的除錯資訊：對不到專案時，把實際比對的兩邊原始值印出來，抓到原因後會拿掉這段。
-    const projectName = project ? project.name
-      : '（未知專案｜除錯：ssId=' + ssId + '｜已知審核表ID=' + allProjects.map(function (p) { return p.name + ':' + p.reviewSheetId; }).join('，') + '）';
+    const project = loadConfig_().projects.find(function (p) { return p.reviewSheetId === ssId; });
+    const projectName = project ? project.name : '（未知專案）';
 
     const person = personByName_(uploader);
     const mention = (person && person.slackId) ? '<@' + person.slackId + '>' : (uploader || '（未知申請人）') + '（尚未設定 Slack ID，不會跳通知）';
@@ -1034,6 +1088,13 @@ function isReviewReminderDay_() {
 }
 
 function onOpen() {
+  // onOpen 只會在總表本身被打開時觸發，這是最不會弄錯的時機，順便把總表 ID 快取起來
+  // （見 getMasterSpreadsheet_），讓審核表上的觸發條件之後執行時能直接拿到，不用等它自己去猜。
+  try {
+    PropertiesService.getScriptProperties().setProperty(MASTER_SPREADSHEET_ID_PROP_, SpreadsheetApp.getActiveSpreadsheet().getId());
+  } catch (e) {
+    // 簡單觸發條件的權限較受限，這裡失敗也不影響選單顯示；之後跑選單時 getMasterSpreadsheet_() 還是會自己補上快取
+  }
   SpreadsheetApp.getUi()
     .createMenu('核銷小幫手')
     .addItem('① 建立/更新設定與審核表', 'setupProjectReviewSheets')
@@ -1042,6 +1103,8 @@ function onOpen() {
     .addItem('立即同步審核結果 / 付款日期', 'syncApprovalsNow')
     .addItem('立即發送待審提醒到 Slack', 'sendPendingDigestToSlack')
     .addItem('💰 立即發送付款通知到 Slack', 'sendPaymentDigestToSlack')
+    .addSeparator()
+    .addItem('🧹 清理審核表裡誤建的設定分頁（一次性，清完可刪除這項）', 'cleanupStrayConfigSheetsInReviewSheets')
     .addToUi();
 }
 
