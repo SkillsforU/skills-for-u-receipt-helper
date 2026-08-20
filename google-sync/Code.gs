@@ -822,6 +822,8 @@ function notifyUrgentToSlack_(record, fileUrl) {
   postToSlack_(lines.filter(Boolean).join('\n'));
 }
 
+const REJECT_NOTIFY_DELAY_MS = 20000; // 給審核人一點時間把「審核備註」的退回原因打完，見下方說明
+
 // 安裝式觸發條件的進入點（由 ensureReviewEditTrigger_ 裝在每份審核表上，主管編輯時自動執行）。
 // 只在「審核狀態」欄被改成「已退回」的當下觸發，即時通知申請人、帶上退回原因——
 // 跟總表的每日同步是分開的兩件事，這裡不管總表有沒有同步到，一被退回就會發。
@@ -836,6 +838,20 @@ function onReviewStatusEdit_(e) {
 
     const sheet = range.getSheet();
     const row = range.getRow();
+
+    // 使用習慣通常是先把「審核狀態」改成已退回，才回頭在旁邊的「審核備註」打退回原因——
+    // 這裡的觸發點只在狀態欄被改動的當下，如果立刻讀取，原因欄多半還是空的。
+    // 所以刻意先在背景等一小段時間（不會卡住試算表畫面，審核人可以照常繼續打字），
+    // 再讀取當下最新的原因內容一起送出。
+    //
+    // 這裡故意不用「建立一個延後執行的一次性觸發條件」這種更精準的做法：Apps Script
+    // 每個專案最多只有 20 個觸發條件，一次性觸發條件要靠程式自己在執行完後刪除，
+    // 萬一哪次刪除失敗（執行中斷、程式出錯），觸發條件會越堆越多，一旦爆表會讓包括
+    // 每日審核同步在內的所有排程整個失效，而且不會有任何警示。用 sleep 換取「絕對不會
+    // 多佔用任何觸發條件額度」，代價是如果審核人打退回原因花超過這段等待時間，
+    // 這次通知還是會用讀取當下的內容送出（可能還是空的）。
+    Utilities.sleep(REJECT_NOTIFY_DELAY_MS);
+
     const rowData = sheet.getRange(row, 1, 1, REVIEW_HEADERS.length).getValues()[0];
     const uploader = rowData[1];
     const invoiceDate = rowData[2];
