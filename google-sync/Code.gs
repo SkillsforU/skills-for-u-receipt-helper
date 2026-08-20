@@ -582,6 +582,19 @@ function setupProjectReviewSheets() {
   );
 }
 
+// 標題列、凍結、日期欄純文字格式——不管是「全新建立」還是「既有但被清空」的審核表都要補上，
+// 兩種情況共用同一段邏輯，避免像這次一樣：總表有這道防線、審核表卻漏掉，
+// 有人手動清空審核表內容（連標題一起刪）之後，系統就再也長不出標題列。
+function setupReviewSheetHeaders_(sheet) {
+  sheet.appendRow(REVIEW_HEADERS);
+  sheet.setFrozenRows(1);
+  // 避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
+  sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
+  sheet.getRange(2, 14, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
+  sheet.getRange(2, 20, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+  // 單據完備勾選框改成每寫入一列才對那列設定（見 appendToProjectReviewSheet_），不在這裡對整欄一次設定。
+}
+
 function getOrCreateProjectSpreadsheet_(project) {
   if (project.reviewSheetId) {
     try {
@@ -598,6 +611,9 @@ function getOrCreateProjectSpreadsheet_(project) {
           '」分頁裡這個專案的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
         );
       }
+      const existingSheet = existing.getSheets()[0];
+      // 有人手動把整份審核表的內容清空（連標題列一起刪）時，補回標題，跟總表 getSheet_() 是同一個防線。
+      if (existingSheet.getLastRow() === 0) setupReviewSheetHeaders_(existingSheet);
       return existing;
     } catch (e) {
       if (String(e).indexOf('目前在垃圾桶裡') !== -1) throw e; // 上面主動拋出的錯誤要讓它往外傳，不能被下面的 catch 吞掉
@@ -607,13 +623,7 @@ function getOrCreateProjectSpreadsheet_(project) {
   const ss = SpreadsheetApp.create('單據審核 - ' + project.name);
   const sheet = ss.getSheets()[0];
   sheet.setName('待審核單據');
-  sheet.appendRow(REVIEW_HEADERS);
-  sheet.setFrozenRows(1);
-  // 同一個原因：避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
-  sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-  sheet.getRange(2, 14, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
-  sheet.getRange(2, 20, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-  // 單據完備勾選框同樣改成每寫入一列才對那列設定（見 appendToProjectReviewSheet_），不在這裡對整欄一次設定。
+  setupReviewSheetHeaders_(sheet);
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
   // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
