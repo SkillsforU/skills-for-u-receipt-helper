@@ -177,6 +177,11 @@ function personByEmail_(email) {
   for (let i = 0; i < list.length; i++) if (list[i].email && list[i].email === email) return list[i];
   return null;
 }
+function personByName_(name) {
+  const list = loadConfig_().people;
+  for (let i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+  return null;
+}
 function approverDisplayName_(email) {
   const p = personByEmail_(email);
   return p ? p.name : email;
@@ -616,6 +621,19 @@ function applyProjectPermissions_(ss, project) {
       SpreadsheetApp.newDataValidation().requireValueInList(approverNames, true).setAllowInvalid(false).build()
     );
   }
+
+  // 4. 裝一個「安裝式觸發條件」在這份審核表上，主管一按下「已退回」立刻通知申請人（見 onReviewStatusEdit_）。
+  //    這是獨立於每天的總表同步之外的機制——退件通知要即時，不代表總表同步也要改成即時，兩件事分開處理。
+  ensureReviewEditTrigger_(ss);
+}
+
+// 確保每份審核表都裝了退件即時通知的觸發條件，重複執行這個選單不會裝出好幾個重複的。
+function ensureReviewEditTrigger_(ss) {
+  const already = ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'onReviewStatusEdit_' && t.getTriggerSourceId() === ss.getId();
+  });
+  if (already) return;
+  ScriptApp.newTrigger('onReviewStatusEdit_').forSpreadsheet(ss).onEdit().create();
 }
 
 function appendToProjectReviewSheet_(record, fileUrl) {
@@ -802,6 +820,49 @@ function notifyUrgentToSlack_(record, fileUrl) {
     url ? '前往審核：' + url : '',
   ];
   postToSlack_(lines.filter(Boolean).join('\n'));
+}
+
+// 安裝式觸發條件的進入點（由 ensureReviewEditTrigger_ 裝在每份審核表上，主管編輯時自動執行）。
+// 只在「審核狀態」欄被改成「已退回」的當下觸發，即時通知申請人、帶上退回原因——
+// 跟總表的每日同步是分開的兩件事，這裡不管總表有沒有同步到，一被退回就會發。
+// 刻意只做這一件事：不處理同一筆多次退回的疊加/彙整，也不做逾期未補件的二次提醒（範圍外，日後再議）。
+function onReviewStatusEdit_(e) {
+  try {
+    if (!e || !e.range) return;
+    const range = e.range;
+    if (range.getSheet().getName() !== '待審核單據') return;
+    if (range.getColumn() !== REVIEW_EDITABLE_START_COL || range.getNumColumns() !== 1 || range.getNumRows() !== 1) return;
+    if (range.getValue() !== '已退回') return;
+
+    const sheet = range.getSheet();
+    const row = range.getRow();
+    const rowData = sheet.getRange(row, 1, 1, REVIEW_HEADERS.length).getValues()[0];
+    const uploader = rowData[1];
+    const invoiceDate = rowData[2];
+    const amount = rowData[3];
+    const items = rowData[4];
+    const vendor = rowData[5];
+    const rejectReason = rowData[REVIEW_EDITABLE_START_COL + 1] || '（審核人未填寫原因）';
+
+    // 這個處理函式是共用的（每份審核表都裝同一個），要靠觸發來源的試算表 ID 反查是哪個專案
+    const ssId = e.source ? e.source.getId() : sheet.getParent().getId();
+    const project = loadConfig_().projects.find(function (p) { return p.reviewSheetId === ssId; });
+    const projectName = project ? project.name : '（未知專案）';
+
+    const person = personByName_(uploader);
+    const mention = (person && person.slackId) ? '<@' + person.slackId + '>' : (uploader || '（未知申請人）') + '（尚未設定 Slack ID，不會跳通知）';
+
+    const lines = [
+      '↩️ *您的單據被退回，請補件後重新上傳*　' + mention,
+      '專案：' + projectName,
+      '發票日期：' + (invoiceDate || '—') + '　金額：NT$ ' + (amount || 0),
+      '內容：' + (items || vendor || '—'),
+      '退回原因：' + rejectReason,
+    ];
+    postToSlack_(lines.join('\n'));
+  } catch (err) {
+    console.error('退件即時通知失敗：' + err);
+  }
 }
 
 // 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel> 發一句提醒 + 各專案審核表連結
