@@ -71,35 +71,40 @@ const SEED_PROJECTS = [
    ============================================================ */
 // 總表欄位順序。調整時 createRow_ 的寫入順序與下面的欄位位置常數要一起改。
 const HEADERS = [
-  '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途',
+  '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
   '所屬期間', '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期',
   '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
 const MASTER_PROJECT_COL = 3;
-const MASTER_PERIOD_COL = 9;
-const MASTER_STATUS_COL = 16;    // 狀態、審核人、審核時間、退回原因＝第 16~19 欄（四欄連續）
-const MASTER_COMPLETE_COL = 20;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
-const MASTER_PAYDATE_COL = 21;   // 付款日期，由財務手動填，會同步到各專案審核表
-const MASTER_FILE_URL_COL = 23;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
-const MASTER_RECORD_ID_COL = 24;
+const MASTER_PERIOD_COL = 10;
+const MASTER_STATUS_COL = 17;    // 狀態、審核人、審核時間、退回原因＝第 17~20 欄（四欄連續）
+const MASTER_COMPLETE_COL = 21;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
+const MASTER_PAYDATE_COL = 22;   // 付款日期，由財務手動填，會同步到各專案審核表
+const MASTER_FILE_URL_COL = 24;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 25;
 
 // 各專案審核表的欄位。除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。
 const REVIEW_HEADERS = [
-  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途',
+  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
   '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '憑證連結',
   '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
 ];
-const REVIEW_EDITABLE_START_COL = 15; // 審核狀態
+const REVIEW_EDITABLE_START_COL = 16; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
-const REVIEW_COMPLETE_COL = 18;       // 單據完備，由總表同步過來（後勤在總表勾選）
-const REVIEW_PAYDATE_COL = 19;        // 由總表同步過來，審核人不能改
-const REVIEW_RECORD_ID_COL = 20;
+const REVIEW_COMPLETE_COL = 19;       // 單據完備，由總表同步過來（後勤在總表勾選）
+const REVIEW_PAYDATE_COL = 20;        // 由總表同步過來，審核人不能改
+const REVIEW_RECORD_ID_COL = 21;
 
 const PEOPLE_SHEET_NAME = '人員設定';
 const PROJECTS_SHEET_NAME = '專案設定';
+const BUDGET_SHEET_NAME = '預算項目設定';
 const PEOPLE_HEADERS = ['姓名', 'Email', 'Slack個人ID'];
 const PROJECTS_HEADERS = ['專案名稱', '審核人Email（逗號分隔）', '狀態', '憑證資料夾ID', '審核表ID（自動產生，勿手動修改）', '審核表連結'];
+const BUDGET_HEADERS = ['專案/中心', '預算類別', '預算項目', '對應會計科目'];
+// 上傳時真的不知道該歸哪一項時的保底選項，每個專案的下拉都會自動附加這個，
+// 不需要在「預算項目設定」分頁裡手動幫每個專案各加一列。
+const UNSPECIFIED_BUDGET_ITEM = '不確定預算項目';
 
 const STATUS_OPTIONS = ['待審核', '已核准', '已退回'];
 const PROJECT_STATUS_ACTIVE = '進行中';
@@ -132,6 +137,7 @@ function loadConfig_() {
 
   const peopleSheet = getOrCreateSheet_(PEOPLE_SHEET_NAME, PEOPLE_HEADERS, SEED_PEOPLE);
   const projectsSheet = getOrCreateSheet_(PROJECTS_SHEET_NAME, PROJECTS_HEADERS, SEED_PROJECTS);
+  const budgetSheet = getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []);
 
   const people = [];
   const peopleLast = peopleSheet.getLastRow();
@@ -160,8 +166,32 @@ function loadConfig_() {
     });
   }
 
-  _configCache = { people: people, projects: projects, projectsSheet: projectsSheet };
+  // 依「專案/中心」分組，一個專案對到一份預算項目清單；找不到對應專案的列不會擋住其他資料，單純略過。
+  const budgetItemsByProject = {};
+  const budgetLast = budgetSheet.getLastRow();
+  if (budgetLast >= 2) {
+    budgetSheet.getRange(2, 1, budgetLast - 1, BUDGET_HEADERS.length).getValues().forEach(function (r) {
+      const project = String(r[0] || '').trim();
+      const item = String(r[2] || '').trim();
+      if (!project || !item) return; // 專案/中心、預算項目都是必填，缺一就跳過這列
+      if (!budgetItemsByProject[project]) budgetItemsByProject[project] = [];
+      budgetItemsByProject[project].push({
+        category: String(r[1] || '').trim(),
+        item: item,
+        glCode: String(r[3] || '').trim(),
+      });
+    });
+  }
+
+  _configCache = { people: people, projects: projects, projectsSheet: projectsSheet, budgetItemsByProject: budgetItemsByProject };
   return _configCache;
+}
+
+// 給網頁「預算項目」下拉用：該專案設定表裡的項目，永遠加上「不確定預算項目」保底選項。
+function budgetItemsForProject_(projectName) {
+  const list = (loadConfig_().budgetItemsByProject[projectName] || []).map(function (b) { return b.item; });
+  list.push(UNSPECIFIED_BUDGET_ITEM);
+  return list;
 }
 
 function findProject_(name) {
@@ -242,10 +272,17 @@ function doGet(e) {
 // 給網頁抓「上傳人」「所屬專案」下拉選單用；專案只回傳進行中的
 function getConfigForApp_() {
   const cfg = loadConfig_();
+  // 每個進行中專案各自的預算項目清單（已含「不確定預算項目」保底選項），
+  // 讓網頁選了專案後，「預算項目」下拉能跟著換成該專案自己的清單。
+  const budgetItemsByProject = {};
+  activeProjects_().forEach(function (p) {
+    budgetItemsByProject[p.name] = budgetItemsForProject_(p.name);
+  });
   return {
     ok: true,
     uploaders: cfg.people.map(function (p) { return p.name; }),
     projects: activeProjects_().map(function (p) { return p.name; }),
+    budgetItemsByProject: budgetItemsByProject,
   };
 }
 
@@ -326,10 +363,10 @@ function getSheet_() {
     // 不先設成純文字格式，Sheets 會自動把它們轉成真正的日期儲存格，
     // 之後程式讀回來就會變成 Date 物件而不是原本的字串（例如資料夾名稱變成一長串英文日期）。
     sheet.getRange(2, 4, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-    sheet.getRange(2, 9, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 所屬期間
-    sheet.getRange(2, 15, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
-    sheet.getRange(2, 18, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
-    sheet.getRange(2, 21, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+    sheet.getRange(2, 10, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 所屬期間
+    sheet.getRange(2, 16, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
+    sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
+    sheet.getRange(2, 22, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
     // 「單據完備」勾選框改成「每寫入一列才對那一列設定」（見 createRow_ 的 setCompleteCheckbox_），
     // 不在這裡對整欄一次設定——避免任何指令把 2~1000 列都當成「有資料」，害 appendRow() 把
     // 新資料接到第 1000 列後面而不是第 2 列。
@@ -396,7 +433,7 @@ function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate,
-    record.amount, record.items, record.vendor, record.purpose, record.period,
+    record.amount, record.items, record.vendor, record.purpose, record.budgetItem || '', record.period,
     record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
@@ -574,8 +611,8 @@ function getOrCreateProjectSpreadsheet_(project) {
   sheet.setFrozenRows(1);
   // 同一個原因：避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
   sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-  sheet.getRange(2, 13, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
-  sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+  sheet.getRange(2, 14, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
+  sheet.getRange(2, 20, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
   // 單據完備勾選框同樣改成每寫入一列才對那列設定（見 appendToProjectReviewSheet_），不在這裡對整欄一次設定。
   saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
 
@@ -649,7 +686,7 @@ function appendToProjectReviewSheet_(record, fileUrl) {
   const sheet = ss.getSheets()[0];
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.invoiceDate, record.amount,
-    record.items, record.vendor, record.purpose,
+    record.items, record.vendor, record.purpose, record.budgetItem || '',
     record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
     '待審核', '', '', '', '', record.id,

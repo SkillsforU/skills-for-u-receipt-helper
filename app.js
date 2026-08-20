@@ -9,8 +9,10 @@ const CONFIDENCE_THRESHOLD = 80; // 低於此門檻於畫面上醒目標示，�
 
 const UPLOADERS_KEY = "skillsForU_uploaders_v1";
 const PROJECTS_KEY = "skillsForU_projects_v1";
+const BUDGET_ITEMS_KEY = "skillsForU_budgetItems_v1"; // { [專案名稱]: string[] }，跟名單一樣是雲端快取，離線時仍能沿用上次抓到的
 const DEFAULT_UPLOADERS = ["黃偉翔", "胡琬茜", "鐘梓豪", "林新樺", "張晏瑄", "王嘉麗", "羅禎瑩", "李唐", "郭采媛"];
 const DEFAULT_PROJECTS = ["組織發展中心", "高雄技職年會", "臺灣技職教育年會", "組織行銷中心", "人才培育中心"];
+const UNSPECIFIED_BUDGET_ITEM = "不確定預算項目"; // 跟 Code.gs 的 UNSPECIFIED_BUDGET_ITEM 保持一致
 
 /* ---------------- 資料存取 ---------------- */
 function loadRecords() {
@@ -85,6 +87,17 @@ function loadProjects() {
 function saveProjects(list) {
   localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
 }
+function loadBudgetItemsByProject() {
+  try {
+    const raw = localStorage.getItem(BUDGET_ITEMS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+function saveBudgetItemsByProject(map) {
+  localStorage.setItem(BUDGET_ITEMS_KEY, JSON.stringify(map || {}));
+}
 
 // 名單是否由試算表管理（啟用雲端同步就是）
 function listsManagedByCloud() {
@@ -106,7 +119,9 @@ async function fetchListsFromCloud() {
     if (!data || !data.ok) return { ok: false, error: (data && data.error) || "未知錯誤" };
     if (Array.isArray(data.uploaders)) saveUploaders(data.uploaders);
     if (Array.isArray(data.projects)) saveProjects(data.projects);
+    if (data.budgetItemsByProject && typeof data.budgetItemsByProject === "object") saveBudgetItemsByProject(data.budgetItemsByProject);
     populateUploaderAndProjectSelects();
+    populateBudgetItemOptions(projectSelect.value);
     return { ok: true, uploaders: data.uploaders, projects: data.projects };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -122,6 +137,20 @@ function populateUploaderAndProjectSelects() {
     loadProjects().map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
   if (loadUploaders().includes(currentUploader)) uploaderSelect.value = currentUploader;
   if (loadProjects().includes(currentProject)) projectSelect.value = currentProject;
+}
+
+// 預算項目清單依「所屬專案」而定，切換專案時要跟著換選項。
+// 沒設定雲端同步、或該專案在「預算項目設定」裡還沒有任何項目時，退回成只有「不確定預算項目」可選，
+// 不會擋住上傳（必填規則見 submitRecord），只是那筆之後在對照表裡歸不到細項。
+function populateBudgetItemOptions(projectName) {
+  const f_budgetItem = document.getElementById("f_budgetItem");
+  const current = f_budgetItem.value;
+  const items = (loadBudgetItemsByProject()[projectName] || []).slice();
+  if (!items.includes(UNSPECIFIED_BUDGET_ITEM)) items.push(UNSPECIFIED_BUDGET_ITEM);
+  const placeholder = projectName ? "請選擇預算項目" : "請先選擇上方的所屬專案";
+  f_budgetItem.innerHTML = `<option value="">${placeholder}</option>` +
+    items.map(i => `<option value="${escapeHtml(i)}">${escapeHtml(i)}</option>`).join("");
+  if (items.includes(current)) f_budgetItem.value = current;
 }
 
 /* ---------------- 小工具 ---------------- */
@@ -341,6 +370,7 @@ function downscaleImage(dataUrl, maxDim) {
 
 uploaderSelect.addEventListener("change", updateStartButtonState);
 projectSelect.addEventListener("change", updateStartButtonState);
+projectSelect.addEventListener("change", () => populateBudgetItemOptions(projectSelect.value));
 function updateStartButtonState() {
   startOcrBtn.disabled = !(selectedFile && uploaderSelect.value && projectSelect.value);
 }
@@ -657,6 +687,7 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_vendor.value = guesses.vendor || "";
   f_items.value = "";
   f_purpose.value = "";
+  populateBudgetItemOptions(projectSelect.value); // 專案在上傳這步就選好了，這裡直接依它填出對應的預算項目清單
   f_payMethod.value = "";
   f_payeeVendor.value = "";
   f_paymentDetail.value = "";
@@ -715,6 +746,8 @@ function suggestFileName(record, originalName) {
 function submitRecord() {
   if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
   if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
+  const f_budgetItem = document.getElementById("f_budgetItem");
+  if (!f_budgetItem.value) { showToast("請選擇預算項目（真的不知道可以選「不確定預算項目」）"); f_budgetItem.focus(); return; }
   if (!f_payMethod.value) { showToast("請選擇付款方式"); f_payMethod.focus(); return; }
   const payMethod = f_payMethod.value;
   if (payMethod === PAY_METHOD_MEMBER && !f_payeePerson.value) {
@@ -769,6 +802,7 @@ function submitRecord() {
     vendor: f_vendor.value.trim(),
     items: f_items.value.trim(),
     purpose: f_purpose.value.trim(),
+    budgetItem: f_budgetItem.value,
     payMethod: payMethod,
     payee: payee,
     paymentDetail: paymentDetail,
@@ -958,6 +992,7 @@ function openDetailModal(id, { mode }) {
       <dt>金額</dt><dd>${fmtMoney(r.amount)}</dd>
       <dt>發票內容</dt><dd>${escapeHtml(r.items || "—")}</dd>
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
+      <dt>預算項目</dt><dd>${escapeHtml(r.budgetItem || "—")}</dd>
       <dt>付款方式</dt><dd>${escapeHtml(r.payMethod || "—")}</dd>
       ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
       ${r.paymentDetail ? `<dt>付款資訊</dt><dd>${escapeHtml(r.paymentDetail)}</dd>` : ""}
@@ -1011,10 +1046,10 @@ function exportCsv() {
   const records = loadRecords();
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
   // 欄位順序對齊 google-sync/Code.gs 的 HEADERS，貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "所屬期間", "付款方式", "收款對象", "付款資訊", "信用卡紙本確認", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "憑證檔名", "紀錄ID"];
+  const headers = ["上傳時間", "上傳者", "所屬專案", "發票日期", "金額", "單據內容", "公司名稱", "用途", "預算項目", "所屬期間", "付款方式", "收款對象", "付款資訊", "信用卡紙本確認", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "憑證檔名", "紀錄ID"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.invoiceDate, r.amount,
-    r.items, r.vendor, r.purpose, r.period,
+    r.items, r.vendor, r.purpose, r.budgetItem || "", r.period,
     r.payMethod || "", r.payee || "", r.paymentDetail || "", r.cardConfirmNote || "",
     r.urgent ? "緊急" : "一般", r.expectedPayoutDate || "", statusLabel(r.status),
     r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason,
@@ -1390,6 +1425,7 @@ document.getElementById("newProjectInput").addEventListener("keydown", (e) => {
 /* ---------------- 初始化 ---------------- */
 applySetupLinkIfPresent();
 populateUploaderAndProjectSelects();
+populateBudgetItemOptions(projectSelect.value);
 switchView("upload");
 // 啟用雲端同步時，開頁面就在背景抓一次最新名單；抓不到（離線等）就沿用上次的快取，不擋使用
 if (listsManagedByCloud()) fetchListsFromCloud();

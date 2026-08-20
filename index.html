@@ -96,6 +96,13 @@
           <label class="field-label">發票內容 / 品項摘要</label>
           <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
         </div>
+        <!-- 預算項目清單依「所屬專案」而定，選項在切換上傳人/專案那一步就會先抓好（見 app.js 的 populateBudgetItemOptions） -->
+        <div class="form-field span-2">
+          <label class="field-label">預算項目 <span class="req">*</span></label>
+          <select id="f_budgetItem" class="select-input">
+            <option value="">請先選擇上方的所屬專案</option>
+          </select>
+        </div>
         <div class="form-field span-2">
           <label class="field-label">付款方式 <span class="req">*</span></label>
           <select id="f_payMethod" class="select-input">
