@@ -657,7 +657,12 @@ function applyProjectPermissions_(ss, project) {
     sheet.getRange(2, REVIEW_EDITABLE_START_COL, sheet.getMaxRows() - 1, REVIEW_EDITABLE_COL_COUNT),
   ]);
 
-  // 3. 審核狀態、審核人做成下拉選單，避免打錯字導致同步比對失敗
+  // 3. 審核狀態、審核人做成下拉選單，避免打錯字導致同步比對失敗。
+  //    先把整張表「所有」既有的資料驗證清掉，再重新套用到目前正確的欄位位置——
+  //    這幾天欄位順序改過兩次（審核狀態從第 12 欄→15 欄→16 欄），如果不先清空，
+  //    每次改版只會在新位置多加一條規則，舊位置的下拉選單永遠不會消失，
+  //    多個欄位（甚至標題列，因為更早期的版本範圍是從第 1 列開始）就會疊出好幾代下拉選單。
+  sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearDataValidations();
   const maxRows = sheet.getMaxRows() - 1;
   sheet.getRange(2, REVIEW_EDITABLE_START_COL, maxRows, 1).setDataValidation(
     SpreadsheetApp.newDataValidation().requireValueInList(STATUS_OPTIONS, true).setAllowInvalid(false).build()
