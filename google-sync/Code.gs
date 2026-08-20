@@ -610,35 +610,6 @@ function setupProjectReviewSheets() {
   );
 }
 
-// 一次性清理用：退件即時通知的舊版本有個 bug（getActiveSpreadsheet() 在審核表的觸發條件裡
-// 會誤判成審核表自己），導致「人員設定」「專案設定」「預算項目設定」被誤建在各專案審核表裡面，
-// 裡面填的是寫死的預設種子資料，不是總表的真實內容。這個問題已經修好（見 getMasterSpreadsheet_），
-// 但已經被誤建出來的分頁不會自動消失，跑這個選單一次把它們清掉即可，清完可以刪掉這個選單項目。
-function cleanupStrayConfigSheetsInReviewSheets() {
-  const strayNames = [PEOPLE_SHEET_NAME, PROJECTS_SHEET_NAME, BUDGET_SHEET_NAME];
-  const removed = [];
-  const errors = [];
-  loadConfig_().projects.forEach(function (project) {
-    if (!project.reviewSheetId) return;
-    try {
-      const ss = SpreadsheetApp.openById(project.reviewSheetId);
-      strayNames.forEach(function (name) {
-        const sheet = ss.getSheetByName(name);
-        if (sheet) {
-          ss.deleteSheet(sheet);
-          removed.push(project.name + '：' + name);
-        }
-      });
-    } catch (e) {
-      errors.push(project.name + '：' + e);
-    }
-  });
-  SpreadsheetApp.getUi().alert(
-    '清理完成。\n\n已移除（' + removed.length + '）：\n' + (removed.join('\n') || '（沒有找到需要清理的分頁）') +
-    (errors.length ? '\n\n發生錯誤：\n' + errors.join('\n') : '')
-  );
-}
-
 // 標題列、凍結、日期欄純文字格式——不管是「全新建立」還是「既有但被清空」的審核表都要補上，
 // 兩種情況共用同一段邏輯，避免像這次一樣：總表有這道防線、審核表卻漏掉，
 // 有人手動清空審核表內容（連標題一起刪）之後，系統就再也長不出標題列。
@@ -1111,8 +1082,6 @@ function onOpen() {
     .addItem('立即同步審核結果 / 付款日期', 'syncApprovalsNow')
     .addItem('立即發送待審提醒到 Slack', 'sendPendingDigestToSlack')
     .addItem('💰 立即發送付款通知到 Slack', 'sendPaymentDigestToSlack')
-    .addSeparator()
-    .addItem('🧹 清理審核表裡誤建的設定分頁（一次性，清完可刪除這項）', 'cleanupStrayConfigSheetsInReviewSheets')
     .addToUi();
 }
 
