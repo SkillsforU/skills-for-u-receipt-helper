@@ -822,7 +822,7 @@ function notifyUrgentToSlack_(record, fileUrl) {
   postToSlack_(lines.filter(Boolean).join('\n'));
 }
 
-const REJECT_NOTIFY_DELAY_MS = 20000; // 給審核人一點時間把「審核備註」的退回原因打完，見下方說明
+const REJECT_NOTIFY_DELAY_MS = 60000; // 給審核人一點時間把「審核備註」的退回原因打完，見下方說明
 
 // 安裝式觸發條件的進入點（由 ensureReviewEditTrigger_ 裝在每份審核表上，主管編輯時自動執行）。
 // 只在「審核狀態」欄被改成「已退回」的當下觸發，即時通知申請人、帶上退回原因——
