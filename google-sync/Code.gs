@@ -703,12 +703,19 @@ function applyProjectPermissions_(ss, project) {
   }
   // 「單據完備」的勾選框在 Sheets 底層也是靠資料驗證實作的，上面那行清空資料驗證會連它一起清掉，
   // 儲存格裡的 true/false 值不會不見，只是顯示樣式變回純文字——這裡補回勾選框樣式。
-  // 用 setDataValidation 而不是 insertCheckboxes()：後者會把整個範圍每一格都寫入實際的 false 值，
-  // 讓 appendRow() 誤以為這些列「有資料」，新資料就會被擠到最後一列後面而不是接在第 2 列
-  // （這個系統今天稍早才踩過同一個坑）。setDataValidation 只設定顯示規則，不會動到既有的值。
-  sheet.getRange(2, REVIEW_COMPLETE_COL, maxRows, 1).setDataValidation(
-    SpreadsheetApp.newDataValidation().requireCheckbox().build()
-  );
+  //
+  // ⚠️ 這裡故意「只對目前真的有資料的列」補樣式（sheet.getLastRow()），不是對整個 maxRows（近千列）套用。
+  // 這個系統今天稍早才踩過這個坑，教訓是：checkbox 類型的 setDataValidation 只要套用在一大段範圍上，
+  // 空白儲存格也會被 Sheets 當成「有內容」，讓 appendRow() 誤判、把新資料擠到最後一列後面。
+  // 同一種手法用在「審核狀態」「審核人」的清單式下拉選單上完全沒事，只有 checkbox 類型會這樣，
+  // 差別在於 Sheets 對「checkbox 儲存格」的內部表示方式跟一般清單驗證不同。
+  // 之後每寫入一筆新資料，checkbox 樣式一律交給 setCompleteCheckbox_（逐列個別設定），不要再改回整欄套用。
+  const completeLastRow = sheet.getLastRow();
+  if (completeLastRow >= 2) {
+    sheet.getRange(2, REVIEW_COMPLETE_COL, completeLastRow - 1, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireCheckbox().build()
+    );
+  }
 
   // 4. 裝一個「安裝式觸發條件」在這份審核表上，主管一按下「已退回」立刻通知申請人（見 onReviewStatusEdit_）。
   //    這是獨立於每天的總表同步之外的機制——退件通知要即時，不代表總表同步也要改成即時，兩件事分開處理。
