@@ -9,9 +9,17 @@ const CONFIDENCE_THRESHOLD = 80; // 低於此門檻於畫面上醒目標示，�
 
 const UPLOADERS_KEY = "skillsForU_uploaders_v1";
 const PROJECTS_KEY = "skillsForU_projects_v1";
+const CENTERS_KEY = "skillsForU_centers_v1"; // string[]，中心名稱清單
+const PROJECTS_BY_CENTER_KEY = "skillsForU_projectsByCenter_v1"; // { [中心名稱]: string[] }，專案現在歸在中心底下
 const BUDGET_ITEMS_KEY = "skillsForU_budgetItems_v1"; // { [專案名稱]: string[] }，跟名單一樣是雲端快取，離線時仍能沿用上次抓到的
 const DEFAULT_UPLOADERS = ["黃偉翔", "胡琬茜", "鐘梓豪", "林新樺", "張晏瑄", "王嘉麗", "羅禎瑩", "李唐", "郭采媛"];
-const DEFAULT_PROJECTS = ["組織發展中心", "高雄技職年會", "臺灣技職教育年會", "組織行銷中心", "人才培育中心"];
+const DEFAULT_PROJECTS = ["組織發展中心", "組織行銷中心", "人才培育中心"];
+const DEFAULT_CENTERS = ["組織發展中心", "組織行銷中心", "人才培育中心"];
+const DEFAULT_PROJECTS_BY_CENTER = {
+  "組織發展中心": ["組織發展中心"],
+  "組織行銷中心": ["組織行銷中心"],
+  "人才培育中心": ["人才培育中心"],
+};
 const UNSPECIFIED_BUDGET_ITEM = "不確定預算項目"; // 跟 Code.gs 的 UNSPECIFIED_BUDGET_ITEM 保持一致
 
 /* ---------------- 資料存取 ---------------- */
@@ -87,6 +95,28 @@ function loadProjects() {
 function saveProjects(list) {
   localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
 }
+function loadCenters() {
+  try {
+    const raw = localStorage.getItem(CENTERS_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_CENTERS.slice();
+  } catch (e) {
+    return DEFAULT_CENTERS.slice();
+  }
+}
+function saveCenters(list) {
+  localStorage.setItem(CENTERS_KEY, JSON.stringify(list));
+}
+function loadProjectsByCenter() {
+  try {
+    const raw = localStorage.getItem(PROJECTS_BY_CENTER_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_PROJECTS_BY_CENTER;
+  } catch (e) {
+    return DEFAULT_PROJECTS_BY_CENTER;
+  }
+}
+function saveProjectsByCenter(map) {
+  localStorage.setItem(PROJECTS_BY_CENTER_KEY, JSON.stringify(map || {}));
+}
 function loadBudgetItemsByProject() {
   try {
     const raw = localStorage.getItem(BUDGET_ITEMS_KEY);
@@ -119,6 +149,8 @@ async function fetchListsFromCloud() {
     if (!data || !data.ok) return { ok: false, error: (data && data.error) || "未知錯誤" };
     if (Array.isArray(data.uploaders)) saveUploaders(data.uploaders);
     if (Array.isArray(data.projects)) saveProjects(data.projects);
+    if (Array.isArray(data.centers)) saveCenters(data.centers);
+    if (data.projectsByCenter && typeof data.projectsByCenter === "object") saveProjectsByCenter(data.projectsByCenter);
     if (data.budgetItemsByProject && typeof data.budgetItemsByProject === "object") saveBudgetItemsByProject(data.budgetItemsByProject);
     populateUploaderAndProjectSelects();
     populateBudgetItemOptions(projectSelect.value);
@@ -128,15 +160,28 @@ async function fetchListsFromCloud() {
   }
 }
 
+// 專案現在歸在中心底下：先選中心，「所屬專案」下拉再依這個中心過濾。
 function populateUploaderAndProjectSelects() {
   const currentUploader = uploaderSelect.value;
-  const currentProject = projectSelect.value;
+  const currentCenter = centerSelect.value;
   uploaderSelect.innerHTML = '<option value="">請選擇上傳人</option>' +
     loadUploaders().map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
-  projectSelect.innerHTML = '<option value="">請選擇專案</option>' +
-    loadProjects().map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  centerSelect.innerHTML = '<option value="">請選擇中心</option>' +
+    loadCenters().map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
   if (loadUploaders().includes(currentUploader)) uploaderSelect.value = currentUploader;
-  if (loadProjects().includes(currentProject)) projectSelect.value = currentProject;
+  if (loadCenters().includes(currentCenter)) centerSelect.value = currentCenter;
+  populateProjectOptionsForCenter(centerSelect.value);
+}
+
+// 依選定的中心，重新產生「所屬專案」下拉；還沒選中心就停用，避免選到不知道歸哪個中心的專案。
+function populateProjectOptionsForCenter(centerName) {
+  const currentProject = projectSelect.value;
+  const projects = centerName ? (loadProjectsByCenter()[centerName] || []) : [];
+  projectSelect.disabled = !centerName;
+  projectSelect.innerHTML = centerName
+    ? '<option value="">請選擇專案</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")
+    : '<option value="">請先選擇上方的所屬中心</option>';
+  if (projects.includes(currentProject)) projectSelect.value = currentProject;
 }
 
 // 預算項目清單依「所屬專案」而定，切換專案時要跟著換選項。
@@ -224,6 +269,7 @@ const dzFilename = document.getElementById("dzFilename");
 const dzRemoveBtn = document.getElementById("dzRemoveBtn");
 const startOcrBtn = document.getElementById("startOcrBtn");
 const uploaderSelect = document.getElementById("uploaderSelect");
+const centerSelect = document.getElementById("centerSelect");
 const projectSelect = document.getElementById("projectSelect");
 
 let selectedFile = null;      // 原始 File
@@ -371,6 +417,12 @@ function downscaleImage(dataUrl, maxDim) {
 uploaderSelect.addEventListener("change", updateStartButtonState);
 projectSelect.addEventListener("change", updateStartButtonState);
 projectSelect.addEventListener("change", () => populateBudgetItemOptions(projectSelect.value));
+// 切換中心時，「所屬專案」跟「預算項目」的選項都要跟著重新產生（切中心一定代表換了專案，即使之後選同名的專案也一樣）
+centerSelect.addEventListener("change", () => {
+  populateProjectOptionsForCenter(centerSelect.value);
+  populateBudgetItemOptions(projectSelect.value);
+  updateStartButtonState();
+});
 function updateStartButtonState() {
   startOcrBtn.disabled = !(selectedFile && uploaderSelect.value && projectSelect.value);
 }

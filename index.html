@@ -37,9 +37,15 @@
         <option value="">請選擇上傳人</option>
       </select>
 
+      <label class="field-label">所屬中心</label>
+      <select id="centerSelect" class="select-input">
+        <option value="">請選擇中心</option>
+      </select>
+
+      <!-- 選項依上面選的中心而定（見 app.js 的 populateProjectOptionsForCenter），選中心前這裡先停用 -->
       <label class="field-label">所屬專案</label>
-      <select id="projectSelect" class="select-input">
-        <option value="">請選擇專案</option>
+      <select id="projectSelect" class="select-input" disabled>
+        <option value="">請先選擇上方的所屬中心</option>
       </select>
 
       <div class="dropzone" id="dropzone">

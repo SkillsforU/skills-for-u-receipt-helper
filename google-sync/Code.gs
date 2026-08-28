@@ -1,5 +1,10 @@
 /**
- * Skills for U｜核銷小幫手 — Google Sheets / Drive 同步 + 專案審核 + Slack 通知
+ * Skills for U｜核銷小幫手 — Google Sheets / Drive 同步 + 中心審核 + Slack 通知
+ *
+ * ── 組織架構 ───────────────────────────────────────────────
+ * 「中心」是最上層（例如組織發展中心、組織行銷中心、人才培育中心），審核表現在「一個中心一份」，
+ * 底下的「專案」共用同一份審核表，靠「所屬專案」欄分辨每一列屬於哪個專案。審核人也是設在中心層級，
+ * 一個中心底下所有專案都由同一批人審核。Drive 資料夾結構是「中心／專案／年月」。
  *
  * ── 第一次設定 ─────────────────────────────────────────────
  * 1. 開一個 Google 試算表（這份就是「總表」），選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去。
@@ -7,19 +12,24 @@
  * 3. 右上角「部署」→「新增部署作業」→「網頁應用程式」：執行身分「我」、誰可以存取「任何人」。
  *    把拿到的 /exec 網址跟 SECRET_TOKEN 貼到「核銷小幫手」網頁的「雲端同步設定」。
  * 4. 重新整理總表，上方會多一個「核銷小幫手」選單，點「① 建立/更新設定與審核表」。
- *    這會建立「人員設定」「專案設定」兩個分頁（第一次會用下面的種子名單預填），
- *    並依「專案設定」幫每個進行中的專案建立獨立審核試算表、設好權限、分享給審核人。
+ *    這會建立「人員設定」「中心設定」「專案設定」「預算項目設定」「會計科目設定」幾個分頁
+ *    （第一次會用下面的種子名單預填），並依「中心設定」幫每個進行中的中心建立審核試算表、設好權限、分享給審核人。
  * 5. 點「② 設定自動排程」安裝定時任務。
  *
- * ── 之後要異動人員或專案，不用再改程式碼 ──────────────────
- * 直接編輯總表的「人員設定」「專案設定」分頁即可，改完再點一次「① 建立/更新設定與審核表」。
- * 專案結束就把「狀態」改成「已結束」：上傳選單不再出現、Slack 提醒會跳過，
+ * ── 之後要異動人員、中心或專案，不用再改程式碼 ──────────────
+ * 直接編輯總表對應的設定分頁即可，改完再點一次「① 建立/更新設定與審核表」。
+ * 中心或專案結束就把「狀態」改成「已結束」：上傳選單不再出現、Slack 提醒會跳過，
  * 但審核表與歷史資料都保留（稽核用），不會被刪除。
  *
+ * ── 表格版面 ───────────────────────────────────────────────
+ * 總表跟各中心審核表都是「第 1 列留給人工填寫的標註（例如哪些欄位是自動帶入、哪些要手動填、由誰填），
+ * 第 2 列才是真正的欄位標題，資料從第 3 列開始」。程式只會讀寫第 3 列以後，不會去動第 1 列。
+ *
  * ── 權限模型 ───────────────────────────────────────────────
- * 每個專案有自己獨立的試算表，只分享給該專案的審核人（編輯者）。
+ * 每個中心有自己獨立的審核試算表，只分享給該中心的審核人（編輯者）。
  * 表內除了「審核狀態／審核人／審核備註」三欄之外全部鎖定，
  * 所以審核人只能改審核結果，不能竄改單據原始資料或付款日期。
+ * ⚠️ 這是 Google Sheets 平台本身的限制：檔案「擁有者」永遠能繞過這個保護，不受影響。
  *
  * ── 安全性提醒 ─────────────────────────────────────────────
  * 網頁應用程式設成「任何人」可存取，代表拿到網址 + SECRET_TOKEN 就能寫資料進來。
@@ -57,51 +67,66 @@ const SEED_PEOPLE = [
   ['羅禎瑩', '', ''],
   ['李唐', '', ''],
 ];
-const SEED_PROJECTS = [
-  // [專案名稱, 審核人Email（逗號分隔）, 狀態, 憑證資料夾ID]
+// 中心是新的最上層：審核表現在「一個中心一份」，底下的專案共用同一份審核表，
+// 用「所屬專案」欄位標示每一列屬於哪個專案。審核人也改設在中心層級。
+const SEED_CENTERS = [
+  // [中心名稱, 審核人Email（逗號分隔）, 狀態, 主資料夾ID]
   ['組織發展中心', 'ceo@skillsforu.org, rosyhu@skillsforu.org', '進行中', ''],
-  ['高雄技職年會', 'ceo@skillsforu.org, rein@skillsforu.org', '進行中', ''],
-  ['臺灣技職教育年會', 'ceo@skillsforu.org, daphnekuo@skillsforu.org', '進行中', ''],
   ['組織行銷中心', 'ceo@skillsforu.org', '進行中', ''],
   ['人才培育中心', 'ceo@skillsforu.org', '進行中', ''],
+];
+const SEED_PROJECTS = [
+  // [專案名稱, 所屬中心, 狀態, 憑證資料夾ID]
+  // 每個中心先各自帶一個跟中心同名的「一般行政」專案，代表「不屬於任何特定專案、算中心的一般開銷」。
+  ['組織發展中心', '組織發展中心', '進行中', ''],
+  ['組織行銷中心', '組織行銷中心', '進行中', ''],
+  ['人才培育中心', '人才培育中心', '進行中', ''],
 ];
 
 /* ============================================================
    欄位定義
    ============================================================ */
 // 總表欄位順序。調整時 createRow_ 的寫入順序與下面的欄位位置常數要一起改。
+// 第 1 列留給人工填寫的「自動帶入／手動填寫（誰）」標註，程式不會去動它；
+// 標題實際寫在第 2 列，真正的資料從第 3 列開始（見 getSheet_ / findRowById_ 等處的列位置）。
 const HEADERS = [
   '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
   '所屬期間', '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期',
-  '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '憑證檔名', '憑證雲端連結',
+  '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
 const MASTER_PROJECT_COL = 3;
 const MASTER_PERIOD_COL = 10;
 const MASTER_STATUS_COL = 17;    // 狀態、審核人、審核時間、退回原因＝第 17~20 欄（四欄連續）
 const MASTER_COMPLETE_COL = 21;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
-const MASTER_PAYDATE_COL = 22;   // 付款日期，由財務手動填，會同步到各專案審核表
-const MASTER_FILE_URL_COL = 24;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
-const MASTER_RECORD_ID_COL = 25;
+const MASTER_PAYDATE_COL = 22;   // 付款日期，由財務手動填，會同步到各中心審核表
+const MASTER_GLCODE_COL = 23;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
+const MASTER_FILE_URL_COL = 25;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 26;
 
-// 各專案審核表的欄位。除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。
+// 中心審核表的欄位（一個中心一份，底下所有專案共用同一份，靠「所屬專案」欄分辨）。
+// 除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。第 1 列同樣留給人工標註，標題在第 2 列，資料第 3 列起。
 const REVIEW_HEADERS = [
-  '上傳時間', '上傳者', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
+  '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
   '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '憑證連結',
   '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
 ];
-const REVIEW_EDITABLE_START_COL = 16; // 審核狀態
+const REVIEW_EDITABLE_START_COL = 17; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
-const REVIEW_COMPLETE_COL = 19;       // 單據完備，由總表同步過來（後勤在總表勾選）
-const REVIEW_PAYDATE_COL = 20;        // 由總表同步過來，審核人不能改
-const REVIEW_RECORD_ID_COL = 21;
+const REVIEW_COMPLETE_COL = 20;       // 單據完備，由總表同步過來（後勤在總表勾選）
+const REVIEW_PAYDATE_COL = 21;        // 由總表同步過來，審核人不能改
+const REVIEW_RECORD_ID_COL = 22;
 
 const PEOPLE_SHEET_NAME = '人員設定';
+const CENTERS_SHEET_NAME = '中心設定';
 const PROJECTS_SHEET_NAME = '專案設定';
 const BUDGET_SHEET_NAME = '預算項目設定';
+const GLCODE_SHEET_NAME = '會計科目設定';
 const PEOPLE_HEADERS = ['姓名', 'Email', 'Slack個人ID'];
-const PROJECTS_HEADERS = ['專案名稱', '審核人Email（逗號分隔）', '狀態', '憑證資料夾ID', '審核表ID（自動產生，勿手動修改）', '審核表連結'];
+const CENTERS_HEADERS = ['中心名稱', '審核人Email（逗號分隔）', '狀態', '主資料夾ID', '審核表ID（自動產生，勿手動修改）', '審核表連結'];
+const PROJECTS_HEADERS = ['專案名稱', '所屬中心', '狀態', '憑證資料夾ID'];
 const BUDGET_HEADERS = ['專案/中心', '預算類別', '預算項目', '對應會計科目'];
+const GLCODE_HEADERS = ['會計科目']; // 財務自己維護這張清單，總表「會計科目」欄的下拉選單直接讀這裡（會自動跟著清單增減）
 // 上傳時真的不知道該歸哪一項時的保底選項，每個專案的下拉都會自動附加這個，
 // 不需要在「預算項目設定」分頁裡手動幫每個專案各加一列。
 const UNSPECIFIED_BUDGET_ITEM = '不確定預算項目';
@@ -164,6 +189,7 @@ function loadConfig_() {
   if (_configCache) return _configCache;
 
   const peopleSheet = getOrCreateSheet_(PEOPLE_SHEET_NAME, PEOPLE_HEADERS, SEED_PEOPLE);
+  const centersSheet = getOrCreateSheet_(CENTERS_SHEET_NAME, CENTERS_HEADERS, SEED_CENTERS);
   const projectsSheet = getOrCreateSheet_(PROJECTS_SHEET_NAME, PROJECTS_HEADERS, SEED_PROJECTS);
   const budgetSheet = getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []);
 
@@ -177,6 +203,24 @@ function loadConfig_() {
     });
   }
 
+  // 中心是新的最上層：審核表、審核人現在都設在這一層，專案只是底下的分類標籤。
+  const centers = [];
+  const centerLast = centersSheet.getLastRow();
+  if (centerLast >= 2) {
+    centersSheet.getRange(2, 1, centerLast - 1, CENTERS_HEADERS.length).getValues().forEach(function (r, i) {
+      const name = String(r[0] || '').trim();
+      if (!name) return;
+      centers.push({
+        name: name,
+        approverEmails: String(r[1] || '').split(',').map(function (e) { return e.trim(); }).filter(Boolean),
+        status: String(r[2] || '').trim() || PROJECT_STATUS_ACTIVE,
+        folderId: String(r[3] || '').trim(),
+        reviewSheetId: String(r[4] || '').trim(),
+        rowIndex: i + 2,
+      });
+    });
+  }
+
   const projects = [];
   const projLast = projectsSheet.getLastRow();
   if (projLast >= 2) {
@@ -185,10 +229,9 @@ function loadConfig_() {
       if (!name) return;
       projects.push({
         name: name,
-        approverEmails: String(r[1] || '').split(',').map(function (e) { return e.trim(); }).filter(Boolean),
+        center: String(r[1] || '').trim(),
         status: String(r[2] || '').trim() || PROJECT_STATUS_ACTIVE,
         folderId: String(r[3] || '').trim(),
-        reviewSheetId: String(r[4] || '').trim(),
         rowIndex: i + 2,
       });
     });
@@ -211,7 +254,11 @@ function loadConfig_() {
     });
   }
 
-  _configCache = { people: people, projects: projects, projectsSheet: projectsSheet, budgetItemsByProject: budgetItemsByProject };
+  _configCache = {
+    people: people, centers: centers, projects: projects,
+    centersSheet: centersSheet, projectsSheet: projectsSheet,
+    budgetItemsByProject: budgetItemsByProject,
+  };
   return _configCache;
 }
 
@@ -230,6 +277,14 @@ function findProject_(name) {
 function activeProjects_() {
   return loadConfig_().projects.filter(function (p) { return p.status !== PROJECT_STATUS_ENDED; });
 }
+function findCenter_(name) {
+  const list = loadConfig_().centers;
+  for (let i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+  return null;
+}
+function activeCenters_() {
+  return loadConfig_().centers.filter(function (c) { return c.status !== PROJECT_STATUS_ENDED; });
+}
 function personByEmail_(email) {
   const list = loadConfig_().people;
   for (let i = 0; i < list.length; i++) if (list[i].email && list[i].email === email) return list[i];
@@ -245,11 +300,11 @@ function approverDisplayName_(email) {
   return p ? p.name : email;
 }
 
-// 把自動產生的審核表 ID / 連結寫回「專案設定」，之後就靠 ID 找檔案（搬資料夾也不會壞）
-function saveProjectReviewSheet_(project, sheetId, url) {
+// 把自動產生的審核表 ID / 連結寫回「中心設定」，之後就靠 ID 找檔案（搬資料夾也不會壞）
+function saveCenterReviewSheet_(center, sheetId, url) {
   const cfg = loadConfig_();
-  cfg.projectsSheet.getRange(project.rowIndex, 5, 1, 2).setValues([[sheetId, url]]);
-  project.reviewSheetId = sheetId;
+  cfg.centersSheet.getRange(center.rowIndex, 5, 1, 2).setValues([[sheetId, url]]);
+  center.reviewSheetId = sheetId;
 }
 
 /* ============================================================
@@ -306,10 +361,21 @@ function getConfigForApp_() {
   activeProjects_().forEach(function (p) {
     budgetItemsByProject[p.name] = budgetItemsForProject_(p.name);
   });
+  // 專案現在歸在中心底下：先選中心，「所屬專案」下拉再依這個對照表只顯示該中心的專案。
+  // 找不到所屬中心、或那個中心已經結案的專案，不會出現在任何中心底下（等於暫時無法被選到），
+  // 這是刻意的——寧可看不到，也不要讓人選到一個歸屬不明或已結案中心的專案。
+  const activeCenterNames = activeCenters_().map(function (c) { return c.name; });
+  const projectsByCenter = {};
+  activeCenterNames.forEach(function (name) { projectsByCenter[name] = []; });
+  activeProjects_().forEach(function (p) {
+    if (projectsByCenter[p.center]) projectsByCenter[p.center].push(p.name);
+  });
   return {
     ok: true,
     uploaders: cfg.people.map(function (p) { return p.name; }),
-    projects: activeProjects_().map(function (p) { return p.name; }),
+    centers: activeCenterNames,
+    projectsByCenter: projectsByCenter,
+    projects: activeProjects_().map(function (p) { return p.name; }), // 保留完整清單，供舊版快取／簡單比對用
     budgetItemsByProject: budgetItemsByProject,
   };
 }
@@ -386,20 +452,33 @@ function getSheet_() {
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(HEADERS);
+    // 第 1 列刻意留空，給人工填寫「自動帶入／手動填寫（誰）」的標註用；標題直接寫在第 2 列，
+    // 不用 appendRow（那樣會把標題寫到第 1 列去）。真正的資料從第 3 列開始寫入。
+    sheet.getRange(2, 1, 1, HEADERS.length).setValues([HEADERS]);
+    sheet.setFrozenRows(2);
     // 「發票日期」「所屬期間」存的是我們自訂格式的純文字（YYYY-MM-DD / YYYY-MM），
     // 不先設成純文字格式，Sheets 會自動把它們轉成真正的日期儲存格，
     // 之後程式讀回來就會變成 Date 物件而不是原本的字串（例如資料夾名稱變成一長串英文日期）。
-    sheet.getRange(2, 4, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-    sheet.getRange(2, 10, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 所屬期間
-    sheet.getRange(2, 16, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
-    sheet.getRange(2, 19, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 審核時間
-    sheet.getRange(2, 22, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
+    sheet.getRange(3, 4, sheet.getMaxRows() - 2, 1).setNumberFormat('@');  // 發票日期
+    sheet.getRange(3, 10, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 所屬期間
+    sheet.getRange(3, 16, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 期望撥款日期
+    sheet.getRange(3, 19, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 審核時間
+    sheet.getRange(3, 22, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 付款日期
     // 「單據完備」勾選框改成「每寫入一列才對那一列設定」（見 createRow_ 的 setCompleteCheckbox_），
-    // 不在這裡對整欄一次設定——避免任何指令把 2~1000 列都當成「有資料」，害 appendRow() 把
-    // 新資料接到第 1000 列後面而不是第 2 列。
+    // 不在這裡對整欄一次設定——避免任何指令把一大段範圍都當成「有資料」，害 appendRow() 把
+    // 新資料接到最後一列後面，而不是接在真正資料該開始的那一列。
+    applyGlCodeDropdown_(sheet);
   }
   return sheet;
+}
+
+// 「會計科目」欄的下拉選單，來源是「會計科目設定」分頁那張清單本身（活的範圍參照）——
+// 財務之後在那張清單增減科目，這裡的下拉會自動跟著變，不用重新執行任何選單或改程式碼。
+function applyGlCodeDropdown_(masterSheet) {
+  const glSheet = getOrCreateSheet_(GLCODE_SHEET_NAME, GLCODE_HEADERS, []);
+  const sourceRange = glSheet.getRange(2, 1, glSheet.getMaxRows() - 1, 1);
+  const rule = SpreadsheetApp.newDataValidation().requireValueInRange(sourceRange, true).setAllowInvalid(true).build();
+  masterSheet.getRange(3, MASTER_GLCODE_COL, masterSheet.getMaxRows() - 2, 1).setDataValidation(rule);
 }
 
 // 只對「單據完備」欄的某一列設定勾選框格式（空格仍然是空的，不會被 getLastRow 算進去）。
@@ -423,11 +502,20 @@ function findOrCreateSubfolder_(parent, name) {
   return parent.createFolder(name);
 }
 
-// 依專案找資料夾：「專案設定」有填憑證資料夾ID 就用那個現成資料夾，沒填就在主資料夾底下建同名資料夾
+// 依中心找資料夾：「中心設定」有填主資料夾ID 就用那個現成資料夾，沒填就在主資料夾底下建同名資料夾
+function getCenterFolder_(centerName) {
+  const center = findCenter_(centerName);
+  if (center && center.folderId) return DriveApp.getFolderById(center.folderId);
+  return findOrCreateSubfolder_(getRootFolder_(), centerName || '未分類中心');
+}
+
+// 依專案找資料夾，路徑是「中心／專案」：「專案設定」有填憑證資料夾ID 就直接用那個現成資料夾（不管它在哪個中心底下），
+// 沒填就在該專案所屬中心的資料夾底下建一個同名子資料夾。
 function getProjectFolder_(projectName) {
   const project = findProject_(projectName);
   if (project && project.folderId) return DriveApp.getFolderById(project.folderId);
-  return findOrCreateSubfolder_(getRootFolder_(), projectName || '未分類專案');
+  const centerFolder = getCenterFolder_(project ? project.center : '');
+  return findOrCreateSubfolder_(centerFolder, projectName || '未分類專案');
 }
 
 // 專案資料夾底下再依「所屬期間」（YYYY-MM）開 YYYYMM 子資料夾
@@ -467,15 +555,16 @@ function createRow_(sheet, record) {
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
     '', // 單據完備，由後勤人員在總表勾選
     '', // 付款日期，等財務付款後手動填
+    '', // 會計科目，由財務在總表用下拉選單手動選，網頁上傳時不會帶任何值
     record.fileName, fileUrl, record.id,
   ]);
   setCompleteCheckbox_(sheet, sheet.getLastRow(), MASTER_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
 
-  // 同步一份到該專案的審核表，供主管審核
+  // 同步一份到該中心的審核表，供主管審核
   try {
-    appendToProjectReviewSheet_(record, fileUrl);
+    appendToCenterReviewSheet_(record, fileUrl);
   } catch (err) {
-    console.error('寫入專案審核表失敗：' + err);
+    console.error('寫入中心審核表失敗：' + err);
   }
 
   // 緊急件立刻發 Slack；一般件等每月審核日提醒
@@ -492,10 +581,10 @@ function createRow_(sheet, record) {
 
 function findRowById_(sheet, id, idCol) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return -1;
-  const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+  if (lastRow < 3) return -1; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
+  const ids = sheet.getRange(3, idCol, lastRow - 2, 1).getValues();
   for (let i = 0; i < ids.length; i++) {
-    if (ids[i][0] === id) return i + 2;
+    if (ids[i][0] === id) return i + 3;
   }
   return -1;
 }
@@ -515,8 +604,8 @@ function updateRow_(sheet, record) {
 function getAllStatuses_() {
   const sheet = getSheet_();
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { ok: true, statuses: {} };
-  const values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  if (lastRow < 3) return { ok: true, statuses: {} }; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
+  const values = sheet.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
   const statuses = {};
   values.forEach(function (row) {
     const id = row[MASTER_RECORD_ID_COL - 1];
@@ -592,51 +681,53 @@ function jsonOut_(obj) {
 function setupProjectReviewSheets() {
   const created = [];
   const skipped = [];
-  activeProjects_().forEach(function (project) {
-    const ss = getOrCreateProjectSpreadsheet_(project);
-    applyProjectPermissions_(ss, project);
-    created.push(project.name);
+  activeCenters_().forEach(function (center) {
+    const ss = getOrCreateCenterSpreadsheet_(center);
+    applyCenterPermissions_(ss, center);
+    created.push(center.name);
   });
-  loadConfig_().projects.forEach(function (p) {
-    if (p.status === PROJECT_STATUS_ENDED) skipped.push(p.name);
+  loadConfig_().centers.forEach(function (c) {
+    if (c.status === PROJECT_STATUS_ENDED) skipped.push(c.name);
   });
 
   SpreadsheetApp.getUi().alert(
     '設定分頁與審核表已更新。\n\n' +
-    '進行中專案（' + created.length + '）：\n' + (created.join('\n') || '（無）') +
-    '\n\n已結束、略過的專案（' + skipped.length + '）：\n' + (skipped.join('\n') || '（無）') +
-    '\n\n各審核表的網址可在「' + PROJECTS_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。\n' +
-    '要異動人員或專案，直接編輯「' + PEOPLE_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME + '」分頁後再執行一次這個選單即可。'
+    '進行中中心（' + created.length + '）：\n' + (created.join('\n') || '（無）') +
+    '\n\n已結束、略過的中心（' + skipped.length + '）：\n' + (skipped.join('\n') || '（無）') +
+    '\n\n各中心審核表的網址可在「' + CENTERS_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。\n' +
+    '要異動人員、專案、中心或預算項目，直接編輯「' + PEOPLE_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME +
+    '」「' + CENTERS_SHEET_NAME + '」「' + BUDGET_SHEET_NAME + '」分頁後再執行一次這個選單即可。'
   );
 }
 
 // 標題列、凍結、日期欄純文字格式——不管是「全新建立」還是「既有但被清空」的審核表都要補上，
-// 兩種情況共用同一段邏輯，避免像這次一樣：總表有這道防線、審核表卻漏掉，
-// 有人手動清空審核表內容（連標題一起刪）之後，系統就再也長不出標題列。
+// 兩種情況共用同一段邏輯，避免總表有這道防線、審核表卻漏掉：有人手動清空審核表內容
+// （連標題一起刪）之後，系統就再也長不出標題列。第 1 列同總表，留給人工標註，標題寫在第 2 列，
+// 真正的資料從第 3 列開始（審核表現在一個中心一份，多個專案共用同一份表，靠「所屬專案」欄分辨）。
 function setupReviewSheetHeaders_(sheet) {
-  sheet.appendRow(REVIEW_HEADERS);
-  sheet.setFrozenRows(1);
+  sheet.getRange(2, 1, 1, REVIEW_HEADERS.length).setValues([REVIEW_HEADERS]);
+  sheet.setFrozenRows(2);
   // 避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
-  sheet.getRange(2, 3, sheet.getMaxRows() - 1, 1).setNumberFormat('@');  // 發票日期
-  sheet.getRange(2, 14, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 期望撥款日期
-  sheet.getRange(2, 20, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // 付款日期
-  // 單據完備勾選框改成每寫入一列才對那列設定（見 appendToProjectReviewSheet_），不在這裡對整欄一次設定。
+  sheet.getRange(3, 4, sheet.getMaxRows() - 2, 1).setNumberFormat('@');  // 發票日期
+  sheet.getRange(3, 15, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 期望撥款日期
+  sheet.getRange(3, 21, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 付款日期
+  // 單據完備勾選框改成每寫入一列才對那列設定（見 appendToCenterReviewSheet_），不在這裡對整欄一次設定。
 }
 
-function getOrCreateProjectSpreadsheet_(project) {
-  if (project.reviewSheetId) {
+function getOrCreateCenterSpreadsheet_(center) {
+  if (center.reviewSheetId) {
     try {
-      const existing = SpreadsheetApp.openById(project.reviewSheetId);
+      const existing = SpreadsheetApp.openById(center.reviewSheetId);
       // openById 對「已丟進垃圾桶」的檔案不會報錯，還是打得開——如果不特別檢查，
       // 系統會誤以為審核表還在，繼續往垃圾桶裡的舊檔案寫資料，新的完全不會出現在該出現的資料夾。
       // 這裡刻意不自動重建：垃圾桶裡的檔案 30 天內都還在，可能是誤刪，貿然重建
       // 會讓新舊兩份同時存在，之後有人把舊的救回來反而搞不清楚哪份才是正本。
       // 明確報錯，把「救回來」還是「清空這格讓它重建」的決定交給人來下。
-      if (DriveApp.getFileById(project.reviewSheetId).isTrashed()) {
+      if (DriveApp.getFileById(center.reviewSheetId).isTrashed()) {
         throw new Error(
-          '專案「' + project.name + '」的審核表（ID: ' + project.reviewSheetId + '）目前在垃圾桶裡，' +
-          '未自動重建。請到 Google 雲端硬碟垃圾桶把它復原，或是把「' + PROJECTS_SHEET_NAME +
-          '」分頁裡這個專案的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
+          '中心「' + center.name + '」的審核表（ID: ' + center.reviewSheetId + '）目前在垃圾桶裡，' +
+          '未自動重建。請到 Google 雲端硬碟垃圾桶把它復原，或是把「' + CENTERS_SHEET_NAME +
+          '」分頁裡這個中心的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
         );
       }
       const existingSheet = existing.getSheets()[0];
@@ -648,26 +739,26 @@ function getOrCreateProjectSpreadsheet_(project) {
       // openById 本身失敗（例如檔案被永久刪除），才走到這裡重新建立
     }
   }
-  const ss = SpreadsheetApp.create('單據審核 - ' + project.name);
+  const ss = SpreadsheetApp.create('單據審核 - ' + center.name);
   const sheet = ss.getSheets()[0];
   sheet.setName('待審核單據');
   setupReviewSheetHeaders_(sheet);
-  saveProjectReviewSheet_(project, ss.getId(), ss.getUrl());
+  saveCenterReviewSheet_(center, ss.getId(), ss.getUrl());
 
-  // 放進主資料夾下的「專案審核表」子資料夾，方便集中管理
+  // 放進主資料夾下的「中心審核表」子資料夾，方便集中管理
   try {
-    DriveApp.getFileById(ss.getId()).moveTo(findOrCreateSubfolder_(getRootFolder_(), '專案審核表'));
+    DriveApp.getFileById(ss.getId()).moveTo(findOrCreateSubfolder_(getRootFolder_(), '中心審核表'));
   } catch (e) {
     console.error('搬移審核表到資料夾失敗（不影響功能）：' + e);
   }
   return ss;
 }
 
-function applyProjectPermissions_(ss, project) {
+function applyCenterPermissions_(ss, center) {
   const sheet = ss.getSheets()[0];
 
   // 1. 分享給審核人（編輯者）
-  project.approverEmails.forEach(function (email) {
+  center.approverEmails.forEach(function (email) {
     try {
       ss.addEditor(email);
     } catch (e) {
@@ -682,22 +773,21 @@ function applyProjectPermissions_(ss, project) {
   const protection = sheet.protect().setDescription('單據資料與付款日期唯讀，僅開放審核欄位');
   protection.removeEditors(protection.getEditors());
   protection.setUnprotectedRanges([
-    sheet.getRange(2, REVIEW_EDITABLE_START_COL, sheet.getMaxRows() - 1, REVIEW_EDITABLE_COL_COUNT),
+    sheet.getRange(3, REVIEW_EDITABLE_START_COL, sheet.getMaxRows() - 2, REVIEW_EDITABLE_COL_COUNT),
   ]);
 
   // 3. 審核狀態、審核人做成下拉選單，避免打錯字導致同步比對失敗。
   //    先把整張表「所有」既有的資料驗證清掉，再重新套用到目前正確的欄位位置——
-  //    這幾天欄位順序改過兩次（審核狀態從第 12 欄→15 欄→16 欄），如果不先清空，
-  //    每次改版只會在新位置多加一條規則，舊位置的下拉選單永遠不會消失，
-  //    多個欄位（甚至標題列，因為更早期的版本範圍是從第 1 列開始）就會疊出好幾代下拉選單。
+  //    這幾天欄位順序改過好幾次，如果不先清空，每次改版只會在新位置多加一條規則，
+  //    舊位置的下拉選單永遠不會消失，多個欄位就會疊出好幾代下拉選單。
   sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearDataValidations();
-  const maxRows = sheet.getMaxRows() - 1;
-  sheet.getRange(2, REVIEW_EDITABLE_START_COL, maxRows, 1).setDataValidation(
+  const maxRows = sheet.getMaxRows() - 2;
+  sheet.getRange(3, REVIEW_EDITABLE_START_COL, maxRows, 1).setDataValidation(
     SpreadsheetApp.newDataValidation().requireValueInList(STATUS_OPTIONS, true).setAllowInvalid(false).build()
   );
-  const approverNames = project.approverEmails.map(approverDisplayName_);
+  const approverNames = center.approverEmails.map(approverDisplayName_);
   if (approverNames.length > 0) {
-    sheet.getRange(2, REVIEW_EDITABLE_START_COL + 1, maxRows, 1).setDataValidation(
+    sheet.getRange(3, REVIEW_EDITABLE_START_COL + 1, maxRows, 1).setDataValidation(
       SpreadsheetApp.newDataValidation().requireValueInList(approverNames, true).setAllowInvalid(false).build()
     );
   }
@@ -705,14 +795,14 @@ function applyProjectPermissions_(ss, project) {
   // 儲存格裡的 true/false 值不會不見，只是顯示樣式變回純文字——這裡補回勾選框樣式。
   //
   // ⚠️ 這裡故意「只對目前真的有資料的列」補樣式（sheet.getLastRow()），不是對整個 maxRows（近千列）套用。
-  // 這個系統今天稍早才踩過這個坑，教訓是：checkbox 類型的 setDataValidation 只要套用在一大段範圍上，
+  // 這個系統踩過這個坑，教訓是：checkbox 類型的 setDataValidation 只要套用在一大段範圍上，
   // 空白儲存格也會被 Sheets 當成「有內容」，讓 appendRow() 誤判、把新資料擠到最後一列後面。
   // 同一種手法用在「審核狀態」「審核人」的清單式下拉選單上完全沒事，只有 checkbox 類型會這樣，
   // 差別在於 Sheets 對「checkbox 儲存格」的內部表示方式跟一般清單驗證不同。
   // 之後每寫入一筆新資料，checkbox 樣式一律交給 setCompleteCheckbox_（逐列個別設定），不要再改回整欄套用。
   const completeLastRow = sheet.getLastRow();
-  if (completeLastRow >= 2) {
-    sheet.getRange(2, REVIEW_COMPLETE_COL, completeLastRow - 1, 1).setDataValidation(
+  if (completeLastRow >= 3) {
+    sheet.getRange(3, REVIEW_COMPLETE_COL, completeLastRow - 2, 1).setDataValidation(
       SpreadsheetApp.newDataValidation().requireCheckbox().build()
     );
   }
@@ -731,7 +821,7 @@ function ensureReviewEditTrigger_(ss) {
   ScriptApp.newTrigger('onReviewStatusEdit_').forSpreadsheet(ss).onEdit().create();
 }
 
-function appendToProjectReviewSheet_(record, fileUrl) {
+function appendToCenterReviewSheet_(record, fileUrl) {
   const project = findProject_(record.project);
   if (!project) {
     // 專案不在「專案設定」裡：不要沉默失敗，明確記錄下來，方便從執行紀錄查到
@@ -740,10 +830,17 @@ function appendToProjectReviewSheet_(record, fileUrl) {
   if (project.status === PROJECT_STATUS_ENDED) {
     throw new Error('專案「' + record.project + '」已標記為已結束，未建立審核列');
   }
-  const ss = getOrCreateProjectSpreadsheet_(project);
+  const center = findCenter_(project.center);
+  if (!center) {
+    throw new Error('專案「' + record.project + '」設定的所屬中心「' + project.center + '」不在「' + CENTERS_SHEET_NAME + '」分頁中，未建立審核列');
+  }
+  if (center.status === PROJECT_STATUS_ENDED) {
+    throw new Error('中心「' + center.name + '」已標記為已結束，未建立審核列');
+  }
+  const ss = getOrCreateCenterSpreadsheet_(center);
   const sheet = ss.getSheets()[0];
   sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.invoiceDate, record.amount,
+    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate, record.amount,
     record.items, record.vendor, record.purpose, record.budgetItem || '',
     record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
@@ -758,36 +855,36 @@ function appendToProjectReviewSheet_(record, fileUrl) {
 function syncApprovalsToMaster() {
   const master = getSheet_();
   const lastRow = master.getLastRow();
-  if (lastRow < 2) return 0;
+  if (lastRow < 3) return 0; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
 
-  const all = master.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const all = master.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
   const rowById = {};
   all.forEach(function (row, i) {
     const id = row[MASTER_RECORD_ID_COL - 1];
-    if (id) rowById[id] = i + 2;
+    if (id) rowById[id] = i + 3;
   });
 
   let updated = 0;
 
-  loadConfig_().projects.forEach(function (project) {
-    if (!project.reviewSheetId) return;
+  loadConfig_().centers.forEach(function (center) {
+    if (!center.reviewSheetId) return;
     let sheet;
     try {
-      sheet = SpreadsheetApp.openById(project.reviewSheetId).getSheets()[0];
+      sheet = SpreadsheetApp.openById(center.reviewSheetId).getSheets()[0];
     } catch (e) {
-      console.error('開啟 ' + project.name + ' 審核表失敗：' + e);
+      console.error('開啟 ' + center.name + ' 審核表失敗：' + e);
       return;
     }
     const rLast = sheet.getLastRow();
-    if (rLast < 2) return;
-    const rows = sheet.getRange(2, 1, rLast - 1, REVIEW_HEADERS.length).getValues();
+    if (rLast < 3) return;
+    const rows = sheet.getRange(3, 1, rLast - 2, REVIEW_HEADERS.length).getValues();
 
     rows.forEach(function (row, idx) {
       const recordId = row[REVIEW_RECORD_ID_COL - 1];
       if (!recordId) return;
       const masterRow = rowById[recordId];
       if (!masterRow) return;
-      const masterData = all[masterRow - 2];
+      const masterData = all[masterRow - 3];
 
       // (A) 審核結果：審核表 → 總表
       const status = row[REVIEW_EDITABLE_START_COL - 1];
@@ -822,7 +919,7 @@ function syncApprovalsToMaster() {
       const masterComplete = masterData[MASTER_COMPLETE_COL - 1] === true;
       const reviewComplete = row[REVIEW_COMPLETE_COL - 1] === true;
       if (masterComplete !== reviewComplete) {
-        sheet.getRange(idx + 2, REVIEW_COMPLETE_COL).setValue(masterComplete);
+        sheet.getRange(idx + 3, REVIEW_COMPLETE_COL).setValue(masterComplete);
         updated++;
       }
 
@@ -830,7 +927,7 @@ function syncApprovalsToMaster() {
       const masterPaid = formatDateOnly_(masterData[MASTER_PAYDATE_COL - 1]);
       const reviewPaid = formatDateOnly_(row[REVIEW_PAYDATE_COL - 1]);
       if (masterPaid && masterPaid !== reviewPaid) {
-        sheet.getRange(idx + 2, REVIEW_PAYDATE_COL).setValue(masterPaid);
+        sheet.getRange(idx + 3, REVIEW_PAYDATE_COL).setValue(masterPaid);
         updated++;
       }
     });
@@ -874,19 +971,26 @@ function postToSlack_(text) {
   });
 }
 
+// 審核人、審核表現在都設在「中心」層級，這些函式的參數還是專案名稱（呼叫端都是拿 record.project 來用），
+// 所以先查這個專案屬於哪個中心，再去查中心的審核人／審核表——呼叫端完全不用改。
+function centerOfProject_(projectName) {
+  const project = findProject_(projectName);
+  return project ? findCenter_(project.center) : null;
+}
+
 // 純文字顯示用（不會觸發通知）
 function projectApproverMentionText_(projectName) {
-  const project = findProject_(projectName);
-  if (!project || project.approverEmails.length === 0) return '（未設定審核人）';
-  return project.approverEmails.map(approverDisplayName_).join('、');
+  const center = centerOfProject_(projectName);
+  if (!center || center.approverEmails.length === 0) return '（未設定審核人）';
+  return center.approverEmails.map(approverDisplayName_).join('、');
 }
 
 // 真正會 tag 到人、讓對方跳通知的版本，只用在「緊急」單據。
 // 一般彙總刻意不用這個，避免例行提醒打擾審核人。
 function projectApproverPingText_(projectName) {
-  const project = findProject_(projectName);
-  if (!project || project.approverEmails.length === 0) return '（未設定審核人）';
-  return project.approverEmails.map(function (email) {
+  const center = centerOfProject_(projectName);
+  if (!center || center.approverEmails.length === 0) return '（未設定審核人）';
+  return center.approverEmails.map(function (email) {
     const person = personByEmail_(email);
     return (person && person.slackId) ? '<@' + person.slackId + '>'
       : approverDisplayName_(email) + '（尚未設定 Slack ID，不會跳通知）';
@@ -894,10 +998,10 @@ function projectApproverPingText_(projectName) {
 }
 
 function reviewSheetUrl_(projectName) {
-  const project = findProject_(projectName);
-  if (!project || !project.reviewSheetId) return '';
+  const center = centerOfProject_(projectName);
+  if (!center || !center.reviewSheetId) return '';
   try {
-    return SpreadsheetApp.openById(project.reviewSheetId).getUrl();
+    return SpreadsheetApp.openById(center.reviewSheetId).getUrl();
   } catch (e) {
     return '';
   }
@@ -929,6 +1033,7 @@ function onReviewStatusEdit_(e) {
     const range = e.range;
     if (range.getSheet().getName() !== '待審核單據') return;
     if (range.getColumn() !== REVIEW_EDITABLE_START_COL || range.getNumColumns() !== 1 || range.getNumRows() !== 1) return;
+    if (range.getRow() < 3) return; // 第 1 列標註、第 2 列標題，不會是真正的資料列
     if (range.getValue() !== '已退回') return;
 
     const sheet = range.getSheet();
@@ -949,16 +1054,12 @@ function onReviewStatusEdit_(e) {
 
     const rowData = sheet.getRange(row, 1, 1, REVIEW_HEADERS.length).getValues()[0];
     const uploader = rowData[1];
-    const invoiceDate = formatDateOnly_(rowData[2]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
-    const amount = rowData[3];
-    const items = rowData[4];
-    const vendor = rowData[5];
+    const projectName = rowData[2] || '（未知專案）'; // 現在一份審核表裝多個專案，專案名稱直接讀這一列自己的「所屬專案」欄，不用再反查是哪份試算表
+    const invoiceDate = formatDateOnly_(rowData[3]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
+    const amount = rowData[4];
+    const items = rowData[5];
+    const vendor = rowData[6];
     const rejectReason = rowData[REVIEW_EDITABLE_START_COL + 1] || '（審核人未填寫原因）';
-
-    // 這個處理函式是共用的（每份審核表都裝同一個），要靠觸發來源的試算表 ID 反查是哪個專案
-    const ssId = e.source ? e.source.getId() : sheet.getParent().getId();
-    const project = loadConfig_().projects.find(function (p) { return p.reviewSheetId === ssId; });
-    const projectName = project ? project.name : '（未知專案）';
 
     const person = personByName_(uploader);
     const mention = (person && person.slackId) ? '<@' + person.slackId + '>' : (uploader || '（未知申請人）') + '（尚未設定 Slack ID，不會跳通知）';
@@ -976,12 +1077,15 @@ function onReviewStatusEdit_(e) {
   }
 }
 
-// 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel> 發一句提醒 + 各專案審核表連結
+// 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel> 發一句提醒 + 各中心審核表連結
+// （審核表現在一個中心一份，列中心而不是列專案，不然同中心底下的專案會重複列出同一個連結）
 function sendPendingDigestToSlack() {
   const lines = ['📋 <!channel> 今天是各位主管的審核日，請記得審核喔！', ''];
-  activeProjects_().forEach(function (project) {
-    const url = reviewSheetUrl_(project.name);
-    lines.push('• ' + project.name + (url ? ' → ' + url : '（尚未建立審核表，先執行選單「① 建立/更新設定與審核表」）'));
+  activeCenters_().forEach(function (center) {
+    const url = center.reviewSheetId ? (function () {
+      try { return SpreadsheetApp.openById(center.reviewSheetId).getUrl(); } catch (e) { return ''; }
+    })() : '';
+    lines.push('• ' + center.name + (url ? ' → ' + url : '（尚未建立審核表，先執行選單「① 建立/更新設定與審核表」）'));
   });
   postToSlack_(lines.join('\n'));
 }
@@ -996,12 +1100,12 @@ function sendPaymentDigestToSlack() {
   const master = getSheet_();
   const lastRow = master.getLastRow();
   const ui = SpreadsheetApp.getUi();
-  if (lastRow < 2) {
+  if (lastRow < 3) { // 第 1 列標註、第 2 列標題，資料從第 3 列開始
     ui.alert('目前總表沒有任何資料。');
     return;
   }
 
-  const values = master.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  const values = master.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
   const thisMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
   const byProject = {};
   let total = 0;
