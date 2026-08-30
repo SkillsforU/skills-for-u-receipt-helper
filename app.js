@@ -462,7 +462,7 @@ async function runOcr() {
     startOcrBtn.disabled = true;
     ocrProgress.hidden = false;
     ocrProgressFill.style.width = "50%";
-    ocrProgressLabel.textContent = "雲端辨識中（Gemini，PDF）…";
+    ocrProgressLabel.textContent = "雲端辨識中（Gemini，PDF）…可能需要 1~2 分鐘，請耐心等候";
     // 有轉檔好的壓縮圖片就用它（快很多），沒有（例如轉檔還沒完成或失敗）就退回送整份原始 PDF
     const cloud = await cloudOcrRecognize(selectedPdfPreviewImages || selectedPdfDataUrl);
     ocrProgress.hidden = true;
@@ -1346,7 +1346,9 @@ async function refreshRecordStatuses() {
   }
 }
 
-const CLOUD_OCR_TIMEOUT_MS = 45000; // 逾時就直接判定失敗、退回本機離線辨識，避免無上限空等
+const CLOUD_OCR_TIMEOUT_MS = 120000; // 逾時就直接判定失敗、退回本機離線辨識，避免無上限空等
+// PDF 常常比單張照片慢很多（Gemini 要先解析頁面），實測有正常成功但花了 1 分 46 秒的案例，
+// 45 秒太短、會誤把「還在跑、最後會成功」的辨識判定成失敗，所以拉長到 2 分鐘。
 
 // data 可以是單一張圖片/PDF 的 dataURL 字串，也可以是多張圖片 dataURL 組成的陣列（PDF 轉圖片後的多頁）
 async function cloudOcrRecognize(data) {
