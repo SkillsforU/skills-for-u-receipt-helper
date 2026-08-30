@@ -679,6 +679,11 @@ function jsonOut_(obj) {
    建立 / 更新各專案審核表
    ============================================================ */
 function setupProjectReviewSheets() {
+  // 「會計科目設定」不會被 loadConfig_() 讀到（沒有任何程式邏輯需要讀它的內容，只有下拉選單要用它），
+  // 明確在這裡確保它存在，不要只靠總表第一次建立時順便建立——不然像這次一樣，
+  // 先跑①、總表還沒建立過的話，會計科目設定根本不會被建出來，讓人以為選單漏做了什麼。
+  getOrCreateSheet_(GLCODE_SHEET_NAME, GLCODE_HEADERS, []);
+
   const created = [];
   const skipped = [];
   activeCenters_().forEach(function (center) {
