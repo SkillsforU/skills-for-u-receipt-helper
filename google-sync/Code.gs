@@ -114,6 +114,11 @@ const MASTER_GLCODE_COL = 23;    // 會計科目，財務手動選（下拉選�
 const MASTER_FILE_URL_COL = 25;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
 const MASTER_RECORD_ID_COL = 26;
 
+// 中心審核表裡實際放單據資料的分頁名稱。程式一律用這個名字去找分頁，
+// 不能假設它是「這份試算表的第一個分頁」——如果有人在前面手動加了別的分頁
+// （例如放使用說明），單據就會寫錯地方，而且不會有任何錯誤提示（真實發生過一次）。
+const REVIEW_SHEET_NAME = '待審核單據';
+
 // 中心審核表的欄位（一個中心一份，底下所有專案共用同一份，靠「所屬專案」欄分辨）。
 // 除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。第 1 列同樣留給人工標註，標題在第 2 列，資料第 3 列起。
 const REVIEW_HEADERS = [
@@ -752,6 +757,13 @@ function setupReviewSheetHeaders_(sheet) {
   // 單據完備勾選框改成每寫入一列才對那列設定（見 appendToCenterReviewSheet_），不在這裡對整欄一次設定。
 }
 
+// 靠名字找到中心審核表裡實際放單據的分頁，不管它現在排第幾個。
+// 找不到（理論上不該發生，保留給非常舊的檔案或極端情況）才退回抓第一個分頁，
+// 至少不會直接整個掛掉；正常情況下都應該用得到 REVIEW_SHEET_NAME 那個分頁。
+function getReviewSheet_(ss) {
+  return ss.getSheetByName(REVIEW_SHEET_NAME) || ss.getSheets()[0];
+}
+
 function getOrCreateCenterSpreadsheet_(center) {
   if (center.reviewSheetId) {
     try {
@@ -768,7 +780,7 @@ function getOrCreateCenterSpreadsheet_(center) {
           '」分頁裡這個中心的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
         );
       }
-      const existingSheet = existing.getSheets()[0];
+      const existingSheet = getReviewSheet_(existing);
       // 有人手動把整份審核表的內容清空（連標題列一起刪）時，補回標題，跟總表 getSheet_() 是同一個防線。
       if (existingSheet.getLastRow() === 0) setupReviewSheetHeaders_(existingSheet);
       return existing;
@@ -778,8 +790,8 @@ function getOrCreateCenterSpreadsheet_(center) {
     }
   }
   const ss = SpreadsheetApp.create('單據審核 - ' + center.name);
-  const sheet = ss.getSheets()[0];
-  sheet.setName('待審核單據');
+  const sheet = ss.getSheets()[0]; // 全新建立的試算表只有一個分頁，這裡就是要幫它命名，不用查名字
+  sheet.setName(REVIEW_SHEET_NAME);
   setupReviewSheetHeaders_(sheet);
   saveCenterReviewSheet_(center, ss.getId(), ss.getUrl());
 
@@ -793,7 +805,7 @@ function getOrCreateCenterSpreadsheet_(center) {
 }
 
 function applyCenterPermissions_(ss, center) {
-  const sheet = ss.getSheets()[0];
+  const sheet = getReviewSheet_(ss);
 
   // 1. 分享給審核人（編輯者）
   center.approverEmails.forEach(function (email) {
@@ -907,7 +919,7 @@ function appendToCenterReviewSheet_(record, fileUrl) {
     throw new Error('中心「' + center.name + '」已標記為已結束，未建立審核列');
   }
   const ss = getOrCreateCenterSpreadsheet_(center);
-  const sheet = ss.getSheets()[0];
+  const sheet = getReviewSheet_(ss);
   sheet.appendRow([
     formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate, record.amount,
     record.items, record.vendor, record.purpose, record.budgetItem || '',
@@ -939,7 +951,7 @@ function syncApprovalsToMaster() {
     if (!center.reviewSheetId) return;
     let sheet;
     try {
-      sheet = SpreadsheetApp.openById(center.reviewSheetId).getSheets()[0];
+      sheet = getReviewSheet_(SpreadsheetApp.openById(center.reviewSheetId));
     } catch (e) {
       console.error('開啟 ' + center.name + ' 審核表失敗：' + e);
       return;
@@ -1095,7 +1107,7 @@ function onReviewStatusEdit_(e) {
   try {
     if (!e || !e.range) return;
     const range = e.range;
-    if (range.getSheet().getName() !== '待審核單據') return;
+    if (range.getSheet().getName() !== REVIEW_SHEET_NAME) return;
     if (range.getColumn() !== REVIEW_EDITABLE_START_COL || range.getNumColumns() !== 1 || range.getNumRows() !== 1) return;
     if (range.getRow() < 3) return; // 第 1 列標註、第 2 列標題，不會是真正的資料列
     if (range.getValue() !== '已退回') return;
