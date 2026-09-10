@@ -95,9 +95,19 @@ const HEADERS = [
   '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目', '憑證檔名', '憑證雲端連結',
   '紀錄ID',
 ];
+// ⚠️ 欄位位置一律用下面這些常數，程式各處都不要再直接寫死數字。
+// 這樣之後調整 HEADERS 順序時，只要改這一區的數字，其他地方會自動跟著對；
+// 漏改一個寫死的數字會讓資料靜靜寫到隔壁欄，而且完全不會報錯——這裡是唯一的真相來源。
+// （注意：改這裡「不會」搬動試算表上已經存在的舊資料，那仍然要人工在 Sheets 裡處理。）
 const MASTER_PROJECT_COL = 3;
+const MASTER_INVOICE_DATE_COL = 4;
+const MASTER_AMOUNT_COL = 5;
 const MASTER_PERIOD_COL = 10;
-const MASTER_STATUS_COL = 17;    // 狀態、審核人、審核時間、退回原因＝第 17~20 欄（四欄連續）
+const MASTER_EXPECTED_PAYOUT_COL = 16;
+const MASTER_STATUS_COL = 17;    // 狀態、審核人、審核時間、退回原因＝第 17~20 欄（四欄連續，同步時整批寫入）
+const MASTER_REVIEWER_COL = 18;
+const MASTER_REVIEWED_AT_COL = 19;
+const MASTER_REJECT_REASON_COL = 20;
 const MASTER_COMPLETE_COL = 21;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
 const MASTER_PAYDATE_COL = 22;   // 付款日期，由財務手動填，會同步到各中心審核表
 const MASTER_GLCODE_COL = 23;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
@@ -111,8 +121,17 @@ const REVIEW_HEADERS = [
   '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '憑證連結',
   '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
 ];
+const REVIEW_UPLOADER_COL = 2;
+const REVIEW_PROJECT_COL = 3;
+const REVIEW_INVOICE_DATE_COL = 4;
+const REVIEW_AMOUNT_COL = 5;
+const REVIEW_ITEMS_COL = 6;
+const REVIEW_VENDOR_COL = 7;
+const REVIEW_EXPECTED_PAYOUT_COL = 15;
 const REVIEW_EDITABLE_START_COL = 17; // 審核狀態
-const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註
+const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註（三欄連續，保護範圍靠這個開洞）
+const REVIEW_REVIEWER_COL = 18;
+const REVIEW_NOTE_COL = 19;
 const REVIEW_COMPLETE_COL = 20;       // 單據完備，由總表同步過來（後勤在總表勾選）
 const REVIEW_PAYDATE_COL = 21;        // 由總表同步過來，審核人不能改
 const REVIEW_RECORD_ID_COL = 22;
@@ -124,6 +143,7 @@ const BUDGET_SHEET_NAME = '預算項目設定';
 const GLCODE_SHEET_NAME = '會計科目設定';
 const PEOPLE_HEADERS = ['姓名', 'Email', 'Slack個人ID'];
 const CENTERS_HEADERS = ['中心名稱', '審核人Email（逗號分隔）', '狀態', '主資料夾ID', '審核表ID（自動產生，勿手動修改）', '審核表連結'];
+const CENTERS_REVIEW_SHEET_ID_COL = 5; // 審核表ID、審核表連結＝第 5~6 欄（兩欄連續，saveCenterReviewSheet_ 一次寫入）
 const PROJECTS_HEADERS = ['專案名稱', '所屬中心', '狀態', '憑證資料夾ID'];
 const BUDGET_HEADERS = ['專案/中心', '預算類別', '預算項目', '對應會計科目'];
 const GLCODE_HEADERS = ['會計科目']; // 財務自己維護這張清單，總表「會計科目」欄的下拉選單直接讀這裡（會自動跟著清單增減）
@@ -303,7 +323,7 @@ function approverDisplayName_(email) {
 // 把自動產生的審核表 ID / 連結寫回「中心設定」，之後就靠 ID 找檔案（搬資料夾也不會壞）
 function saveCenterReviewSheet_(center, sheetId, url) {
   const cfg = loadConfig_();
-  cfg.centersSheet.getRange(center.rowIndex, 5, 1, 2).setValues([[sheetId, url]]);
+  cfg.centersSheet.getRange(center.rowIndex, CENTERS_REVIEW_SHEET_ID_COL, 1, 2).setValues([[sheetId, url]]);
   center.reviewSheetId = sheetId;
 }
 
@@ -459,11 +479,12 @@ function getSheet_() {
     // 「發票日期」「所屬期間」存的是我們自訂格式的純文字（YYYY-MM-DD / YYYY-MM），
     // 不先設成純文字格式，Sheets 會自動把它們轉成真正的日期儲存格，
     // 之後程式讀回來就會變成 Date 物件而不是原本的字串（例如資料夾名稱變成一長串英文日期）。
-    sheet.getRange(3, 4, sheet.getMaxRows() - 2, 1).setNumberFormat('@');  // 發票日期
-    sheet.getRange(3, 10, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 所屬期間
-    sheet.getRange(3, 16, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 期望撥款日期
-    sheet.getRange(3, 19, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 審核時間
-    sheet.getRange(3, 22, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 付款日期
+    [
+      MASTER_INVOICE_DATE_COL, MASTER_PERIOD_COL, MASTER_EXPECTED_PAYOUT_COL,
+      MASTER_REVIEWED_AT_COL, MASTER_PAYDATE_COL,
+    ].forEach(function (col) {
+      sheet.getRange(3, col, sheet.getMaxRows() - 2, 1).setNumberFormat('@');
+    });
     // 「單據完備」勾選框改成「每寫入一列才對那一列設定」（見 createRow_ 的 setCompleteCheckbox_），
     // 不在這裡對整欄一次設定——避免任何指令把一大段範圍都當成「有資料」，害 appendRow() 把
     // 新資料接到最後一列後面，而不是接在真正資料該開始的那一列。
@@ -612,9 +633,9 @@ function getAllStatuses_() {
     if (!id) return;
     statuses[id] = {
       status: row[MASTER_STATUS_COL - 1],
-      reviewer: row[MASTER_STATUS_COL],
-      reviewedAt: formatDateTime_(row[MASTER_STATUS_COL + 1]), // Date 安全：formatDateTime_ 對 Date 物件跟文字都能正確處理
-      rejectReason: row[MASTER_STATUS_COL + 2],
+      reviewer: row[MASTER_REVIEWER_COL - 1],
+      reviewedAt: formatDateTime_(row[MASTER_REVIEWED_AT_COL - 1]), // Date 安全：formatDateTime_ 對 Date 物件跟文字都能正確處理
+      rejectReason: row[MASTER_REJECT_REASON_COL - 1],
       receiptComplete: row[MASTER_COMPLETE_COL - 1] === true || row[MASTER_COMPLETE_COL - 1] === '是' || row[MASTER_COMPLETE_COL - 1] === 'TRUE',
       paidAt: formatDateOnly_(row[MASTER_PAYDATE_COL - 1]),
     };
@@ -686,19 +707,31 @@ function setupProjectReviewSheets() {
 
   const created = [];
   const skipped = [];
+  const strayNotes = [];
   activeCenters_().forEach(function (center) {
     const ss = getOrCreateCenterSpreadsheet_(center);
     applyCenterPermissions_(ss, center);
     created.push(center.name);
+    const stray = strayEditorsOfCenter_(ss, center);
+    if (stray.length > 0) strayNotes.push('• ' + center.name + '：' + stray.join('、'));
   });
   loadConfig_().centers.forEach(function (c) {
     if (c.status === PROJECT_STATUS_ENDED) skipped.push(c.name);
   });
 
+  // 有人「有編輯權但不在審核人名單上」時要主動講——系統不會自動收回權限（原因見 strayEditorsOfCenter_）
+  const strayBlock = strayNotes.length > 0
+    ? '\n\n⚠️ 下列人員有審核表編輯權，但不在「' + CENTERS_SHEET_NAME + '」的審核人名單上：\n' +
+      strayNotes.join('\n') +
+      '\n系統不會自動收回權限（可能是你刻意分享給會計或稽核的）。\n' +
+      '如果是離職或調動要收回，請到該審核表右上角「共用」裡手動移除。'
+    : '';
+
   SpreadsheetApp.getUi().alert(
     '設定分頁與審核表已更新。\n\n' +
     '進行中中心（' + created.length + '）：\n' + (created.join('\n') || '（無）') +
     '\n\n已結束、略過的中心（' + skipped.length + '）：\n' + (skipped.join('\n') || '（無）') +
+    strayBlock +
     '\n\n各中心審核表的網址可在「' + CENTERS_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。\n' +
     '要異動人員、專案、中心或預算項目，直接編輯「' + PEOPLE_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME +
     '」「' + CENTERS_SHEET_NAME + '」「' + BUDGET_SHEET_NAME + '」分頁後再執行一次這個選單即可。'
@@ -713,9 +746,9 @@ function setupReviewSheetHeaders_(sheet) {
   sheet.getRange(2, 1, 1, REVIEW_HEADERS.length).setValues([REVIEW_HEADERS]);
   sheet.setFrozenRows(2);
   // 避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
-  sheet.getRange(3, 4, sheet.getMaxRows() - 2, 1).setNumberFormat('@');  // 發票日期
-  sheet.getRange(3, 15, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 期望撥款日期
-  sheet.getRange(3, 21, sheet.getMaxRows() - 2, 1).setNumberFormat('@'); // 付款日期
+  [REVIEW_INVOICE_DATE_COL, REVIEW_EXPECTED_PAYOUT_COL, REVIEW_PAYDATE_COL].forEach(function (col) {
+    sheet.getRange(3, col, sheet.getMaxRows() - 2, 1).setNumberFormat('@');
+  });
   // 單據完備勾選框改成每寫入一列才對那列設定（見 appendToCenterReviewSheet_），不在這裡對整欄一次設定。
 }
 
@@ -817,6 +850,37 @@ function applyCenterPermissions_(ss, center) {
   ensureReviewEditTrigger_(ss);
 }
 
+// 盤點「有這份審核表編輯權、但不在中心設定審核人名單上」的人。
+//
+// 為什麼只回報、不自動移除：applyCenterPermissions_ 只會 addEditor，從來不會 removeEditor，
+// 所以把某個人從「中心設定」刪掉、再跑一次這個選單，他的名字雖然會從「審核人」下拉裡消失，
+// 編輯權卻還在——他照樣打得開審核表、照樣能改審核三欄。這是實際存在的漏洞（離職、調中心時尤其要注意）。
+// 但也不能反過來自動踢人：你可能刻意手動把表分享給會計、稽核或其他不該出現在審核人名單裡的人，
+// 自動移除會在你毫無察覺的情況下把他們踢掉。所以這裡只負責「講出來」，要不要處理由人決定。
+function strayEditorsOfCenter_(ss, center) {
+  const approvers = {};
+  center.approverEmails.forEach(function (e) { approvers[e.toLowerCase()] = true; });
+  let ownerEmail = '';
+  try {
+    const owner = ss.getOwner();
+    if (owner) ownerEmail = owner.getEmail().toLowerCase();
+  } catch (e) {
+    // 共用雲端硬碟上的檔案沒有單一擁有者，getOwner() 會失敗；沒有擁有者可以排除也不影響盤點
+  }
+  const stray = [];
+  try {
+    ss.getEditors().forEach(function (user) {
+      const email = user.getEmail();
+      const key = email.toLowerCase();
+      if (key === ownerEmail || approvers[key]) return;
+      stray.push(email);
+    });
+  } catch (e) {
+    console.error('盤點 ' + center.name + ' 審核表編輯者失敗（不影響其他功能）：' + e);
+  }
+  return stray;
+}
+
 // 確保每份審核表都裝了退件即時通知的觸發條件，重複執行這個選單不會裝出好幾個重複的。
 function ensureReviewEditTrigger_(ss) {
   const already = ScriptApp.getProjectTriggers().some(function (t) {
@@ -893,12 +957,12 @@ function syncApprovalsToMaster() {
 
       // (A) 審核結果：審核表 → 總表
       const status = row[REVIEW_EDITABLE_START_COL - 1];
-      const reviewer = row[REVIEW_EDITABLE_START_COL];
-      const note = row[REVIEW_EDITABLE_START_COL + 1];
+      const reviewer = row[REVIEW_REVIEWER_COL - 1];
+      const note = row[REVIEW_NOTE_COL - 1];
       const statusChanged = status && status !== '待審核' &&
         (masterData[MASTER_STATUS_COL - 1] !== status ||
-         masterData[MASTER_STATUS_COL] !== reviewer ||
-         masterData[MASTER_STATUS_COL + 2] !== note);
+         masterData[MASTER_REVIEWER_COL - 1] !== reviewer ||
+         masterData[MASTER_REJECT_REASON_COL - 1] !== note);
 
       if (statusChanged) {
         master.getRange(masterRow, MASTER_STATUS_COL, 1, 4).setValues([[
@@ -942,7 +1006,9 @@ function syncApprovalsToMaster() {
 
 function syncApprovalsNow() {
   const n = syncApprovalsToMaster();
-  SpreadsheetApp.getUi().alert('同步完成，共更新 ' + n + ' 筆（審核結果與付款日期）。');
+  // 這個數字算的是「更動過的欄位數」，不是單據筆數——同一筆單據的審核結果、單據完備、
+  // 付款日期如果一起變動，會各算一次。文案照實說，免得有人拿它當筆數對帳。
+  SpreadsheetApp.getUi().alert('同步完成，共更新 ' + n + ' 個欄位（審核結果、單據完備、付款日期）。');
 }
 
 // 從 Drive 檔案網址取出檔案 ID（getUrl() 會回傳 .../file/d/{id}/view 這種格式）
@@ -981,13 +1047,6 @@ function postToSlack_(text) {
 function centerOfProject_(projectName) {
   const project = findProject_(projectName);
   return project ? findCenter_(project.center) : null;
-}
-
-// 純文字顯示用（不會觸發通知）
-function projectApproverMentionText_(projectName) {
-  const center = centerOfProject_(projectName);
-  if (!center || center.approverEmails.length === 0) return '（未設定審核人）';
-  return center.approverEmails.map(approverDisplayName_).join('、');
 }
 
 // 真正會 tag 到人、讓對方跳通知的版本，只用在「緊急」單據。
@@ -1058,13 +1117,13 @@ function onReviewStatusEdit_(e) {
     Utilities.sleep(REJECT_NOTIFY_DELAY_MS);
 
     const rowData = sheet.getRange(row, 1, 1, REVIEW_HEADERS.length).getValues()[0];
-    const uploader = rowData[1];
-    const projectName = rowData[2] || '（未知專案）'; // 現在一份審核表裝多個專案，專案名稱直接讀這一列自己的「所屬專案」欄，不用再反查是哪份試算表
-    const invoiceDate = formatDateOnly_(rowData[3]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
-    const amount = rowData[4];
-    const items = rowData[5];
-    const vendor = rowData[6];
-    const rejectReason = rowData[REVIEW_EDITABLE_START_COL + 1] || '（審核人未填寫原因）';
+    const uploader = rowData[REVIEW_UPLOADER_COL - 1];
+    const projectName = rowData[REVIEW_PROJECT_COL - 1] || '（未知專案）'; // 現在一份審核表裝多個專案，專案名稱直接讀這一列自己的「所屬專案」欄，不用再反查是哪份試算表
+    const invoiceDate = formatDateOnly_(rowData[REVIEW_INVOICE_DATE_COL - 1]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
+    const amount = rowData[REVIEW_AMOUNT_COL - 1];
+    const items = rowData[REVIEW_ITEMS_COL - 1];
+    const vendor = rowData[REVIEW_VENDOR_COL - 1];
+    const rejectReason = rowData[REVIEW_NOTE_COL - 1] || '（審核人未填寫原因）';
 
     const person = personByName_(uploader);
     const mention = (person && person.slackId) ? '<@' + person.slackId + '>' : (uploader || '（未知申請人）') + '（尚未設定 Slack ID，不會跳通知）';
@@ -1122,9 +1181,10 @@ function sendPaymentDigestToSlack() {
     const project = row[MASTER_PROJECT_COL - 1] || '（未指定專案）';
     if (!byProject[project]) byProject[project] = { count: 0, amount: 0 };
     byProject[project].count++;
-    byProject[project].amount += Number(row[4]) || 0; // 第 5 欄＝金額
+    const amount = Number(row[MASTER_AMOUNT_COL - 1]) || 0;
+    byProject[project].amount += amount;
     total++;
-    totalAmount += Number(row[4]) || 0;
+    totalAmount += amount;
   });
 
   if (total === 0) {
@@ -1136,7 +1196,7 @@ function sendPaymentDigestToSlack() {
   Object.keys(byProject).forEach(function (project) {
     lines.push('• ' + project + '：' + byProject[project].count + ' 筆，NT$ ' + byProject[project].amount.toLocaleString('en-US'));
   });
-  lines.push('', '款項已匯出，明細可查看各專案審核表的「付款日期」欄。');
+  lines.push('', '款項已匯出，明細可查看各中心審核表的「付款日期」欄。');
   postToSlack_(lines.join('\n'));
 
   ui.alert('已發送付款通知：本月共 ' + total + ' 筆，合計 NT$ ' + totalAmount.toLocaleString('en-US') + '。');
