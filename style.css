@@ -548,3 +548,101 @@ body {
   from { opacity: 0; transform: translateX(-50%) translateY(10px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ---------- 帳號區（登入後右上角顯示登入者） ---------- */
+.account-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+.account-chip .account-name { opacity: 0.92; }
+.account-chip .link-btn {
+  background: rgba(255,255,255,0.14);
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.account-chip .link-btn:hover { background: rgba(255,255,255,0.26); }
+
+/* ---------- 登入畫面（未登入前蓋住整個畫面） ---------- */
+.login-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: linear-gradient(160deg, var(--navy) 0%, var(--navy-dark) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+  padding: 40px 32px;
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+}
+.brand-mark-lg {
+  width: 56px; height: 56px;
+  font-size: 30px;
+  border-radius: 14px;
+  margin: 0 auto 18px;
+  background: var(--navy);
+  color: #fff;
+}
+.login-title { font-size: 22px; font-weight: 800; color: var(--navy); margin-bottom: 8px; }
+.login-sub { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin-bottom: 26px; }
+.login-btn-wrap { display: flex; justify-content: center; min-height: 44px; }
+.login-hint {
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  line-height: 1.6;
+}
+
+/* ---------- 單據類型徽章 ---------- */
+.doc-badge {
+  display: inline-block;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+/* ---------- 報價單案子 ---------- */
+.quote-case-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.quote-case {
+  border: 1.5px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.quote-case-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 8px;
+}
+.quote-case-title { font-weight: 700; color: var(--navy); }
+.quote-case-proj { color: var(--text-muted); font-weight: 500; font-size: 13px; margin-left: 6px; }
+.quote-case-nums {
+  display: flex; flex-wrap: wrap; gap: 8px 18px;
+  font-size: 13px; color: var(--text-main);
+}
+.quote-case-nums b { color: var(--navy); }
+.quote-case-nums .remain-pos b { color: var(--danger); }
+.quote-case-nums .remain-zero b { color: var(--success); }

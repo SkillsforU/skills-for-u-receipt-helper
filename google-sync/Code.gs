@@ -8,9 +8,11 @@
  *
  * ── 第一次設定 ─────────────────────────────────────────────
  * 1. 開一個 Google 試算表（這份就是「總表」），選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去。
- * 2. 修改下面「機密設定區」：SECRET_TOKEN、GEMINI_API_KEY、SLACK_WEBHOOK_URL。
+ * 2. 修改下面「機密設定區」：GEMINI_API_KEY、SLACK_WEBHOOK_URL、GOOGLE_CLIENT_ID（Google 登入用戶端 ID）。
+ *    （v2 起不再需要 SECRET_TOKEN 密碼，改用「Google 登入」驗證身分。）
  * 3. 右上角「部署」→「新增部署作業」→「網頁應用程式」：執行身分「我」、誰可以存取「任何人」。
- *    把拿到的 /exec 網址跟 SECRET_TOKEN 貼到「核銷小幫手」網頁的「雲端同步設定」。
+ *    把拿到的 /exec 網址寫進前端 app.js（沒有機密，網址不再帶密碼）。
+ *    存取權雖是「任何人」，但每次寫入都會驗證 Google 登入證明，只有組織帳號（@skillsforu.org）通得過。
  * 4. 重新整理總表，上方會多一個「核銷小幫手」選單，點「① 建立/更新設定與審核表」。
  *    這會建立「人員設定」「中心設定」「專案設定」「預算項目設定」「會計科目設定」幾個分頁
  *    （第一次會用下面的種子名單預填），並依「中心設定」幫每個進行中的中心建立審核試算表、設好權限、分享給審核人。
@@ -32,9 +34,11 @@
  * ⚠️ 這是 Google Sheets 平台本身的限制：檔案「擁有者」永遠能繞過這個保護，不受影響。
  *
  * ── 安全性提醒 ─────────────────────────────────────────────
- * 網頁應用程式設成「任何人」可存取，代表拿到網址 + SECRET_TOKEN 就能寫資料進來。
- * 請勿公開分享網址與密碼；外流時改一組新的 SECRET_TOKEN 並重新部署即可失效舊的存取權。
- * GEMINI_API_KEY 與 SLACK_WEBHOOK_URL 同樣是機密，不要外流。
+ * 網頁應用程式設成「任何人」可存取，但每次寫入都會驗證 Google 登入證明（見 verifyRequestIdentity_）：
+ * 必須是本系統的用戶端 ID、Email 已驗證、且網域是 @skillsforu.org 才准寫資料。
+ * 所以就算拿到 /exec 網址也無法寫入——沒有組織帳號的有效登入就會被擋。
+ * GOOGLE_CLIENT_ID 不是機密（可公開、會寫進前端）；GEMINI_API_KEY 與 SLACK_WEBHOOK_URL 才是機密，不要外流。
+ * 要收回某人存取權：把他從 Google Workspace 停用即可，不需要像舊版那樣換密碼重部署。
  */
 
 /* ============================================================
@@ -42,7 +46,14 @@
    ============================================================ */
 const SHEET_NAME = '收支總表';     // 總表裡要寫入的分頁名稱，找不到會自動建立
 const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
-const SECRET_TOKEN = '請改成你自己的密碼字串';
+
+// v2 起改用「Google 登入」驗證身分，取代舊的 SECRET_TOKEN 密碼。
+// 前端會要求同事用組織帳號（@skillsforu.org）登入 Google，拿到一張「身分證明」(ID token)
+// 隨每次請求送來；這裡驗證那張證明是不是真的、是不是這個系統的、是不是組織網域，才准寫資料。
+// GOOGLE_CLIENT_ID 是在 Google Cloud「用戶端」建立的網頁應用程式用戶端 ID（不是機密，可公開）。
+const GOOGLE_CLIENT_ID = '367734743259-m1si6lu02113c1e53v80t4gnf40poop0.apps.googleusercontent.com';
+const ALLOWED_EMAIL_DOMAIN = 'skillsforu.org'; // 只允許這個網域的 Google 帳號使用
+const SECRET_TOKEN = '';           // 已停用（保留常數避免其他參照壞掉）；驗證改看 Google 登入
 const GEMINI_API_KEY = '';         // 留空 = 不啟用雲端 OCR
 // 預設用 gemini-flash-latest 這個別名，它會自動指向目前最新的 Flash 模型，
 // 不會因為 Google 淘汰舊版本（回傳 404 no longer available）而突然失效。
@@ -90,29 +101,47 @@ const SEED_PROJECTS = [
 // 第 1 列留給人工填寫的「自動帶入／手動填寫（誰）」標註，程式不會去動它；
 // 標題實際寫在第 2 列，真正的資料從第 3 列開始（見 getSheet_ / findRowById_ 等處的列位置）。
 const HEADERS = [
-  '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
-  '所屬期間', '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期',
-  '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目', '憑證檔名', '憑證雲端連結',
-  '紀錄ID',
+  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '單據內容', '公司名稱', '用途', '預算項目',
+  '所屬期間', '付款狀態', '付款方式', '信用卡形式', '還款對象', '收款對象', '付款資訊', '信用卡紙本確認', '關聯報價單',
+  '急迫性', '期望撥款日期', '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目',
+  '憑證檔名', '憑證雲端連結', '紀錄ID',
 ];
 // ⚠️ 欄位位置一律用下面這些常數，程式各處都不要再直接寫死數字。
 // 這樣之後調整 HEADERS 順序時，只要改這一區的數字，其他地方會自動跟著對；
 // 漏改一個寫死的數字會讓資料靜靜寫到隔壁欄，而且完全不會報錯——這裡是唯一的真相來源。
 // （注意：改這裡「不會」搬動試算表上已經存在的舊資料，那仍然要人工在 Sheets 裡處理。）
+const MASTER_UPLOAD_TIME_COL = 1;
+const MASTER_UPLOADER_COL = 2;
 const MASTER_PROJECT_COL = 3;
-const MASTER_INVOICE_DATE_COL = 4;
-const MASTER_AMOUNT_COL = 5;
-const MASTER_PERIOD_COL = 10;
-const MASTER_EXPECTED_PAYOUT_COL = 16;
-const MASTER_STATUS_COL = 17;    // 狀態、審核人、審核時間、退回原因＝第 17~20 欄（四欄連續，同步時整批寫入）
-const MASTER_REVIEWER_COL = 18;
-const MASTER_REVIEWED_AT_COL = 19;
-const MASTER_REJECT_REASON_COL = 20;
-const MASTER_COMPLETE_COL = 21;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
-const MASTER_PAYDATE_COL = 22;   // 付款日期，由財務手動填，會同步到各中心審核表
-const MASTER_GLCODE_COL = 23;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
-const MASTER_FILE_URL_COL = 25;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
-const MASTER_RECORD_ID_COL = 26;
+const MASTER_DOCTYPE_COL = 4;         // 單據類型：發票／收據／報價單
+const MASTER_INVOICE_DATE_COL = 5;
+const MASTER_AMOUNT_COL = 6;          // 本次金額（這一筆實際要付/已付的錢；分期時是單期金額）
+const MASTER_QUOTE_TOTAL_COL = 7;     // 報價總額（只有報價單會填，用來對照分期已付/尚欠）
+const MASTER_ITEMS_COL = 8;
+const MASTER_VENDOR_COL = 9;
+const MASTER_PURPOSE_COL = 10;
+const MASTER_BUDGET_ITEM_COL = 11;
+const MASTER_PERIOD_COL = 12;
+const MASTER_PAYSTATUS_COL = 13;      // 付款狀態：已付款／未付款（判斷基準＝組織的錢出去了沒）
+const MASTER_PAYMETHOD_COL = 14;      // 付款方式：組織信用卡／零用金／組織匯款
+const MASTER_CARDFORM_COL = 15;       // 信用卡形式：連結／紙本（僅未付款・組織信用卡）
+const MASTER_REPAY_TARGET_COL = 16;   // 還款對象：組織人員／外部廠商
+const MASTER_PAYEE_COL = 17;          // 收款對象：實際人名或廠商名
+const MASTER_PAYINFO_COL = 18;        // 付款資訊：帳號／刷卡連結
+const MASTER_CARD_CONFIRM_COL = 19;   // 信用卡紙本確認：兩項勾選結果
+const MASTER_LINKED_QUOTE_COL = 20;   // 關聯報價單：這筆後續款掛在哪張報價單的紀錄ID底下
+const MASTER_URGENCY_COL = 21;
+const MASTER_EXPECTED_PAYOUT_COL = 22;
+const MASTER_STATUS_COL = 23;    // 狀態、審核人、審核時間、退回原因＝連續四欄（同步時整批寫入）
+const MASTER_REVIEWER_COL = 24;
+const MASTER_REVIEWED_AT_COL = 25;
+const MASTER_REJECT_REASON_COL = 26;
+const MASTER_COMPLETE_COL = 27;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
+const MASTER_PAYDATE_COL = 28;   // 付款日期，由財務手動填，會同步到各中心審核表
+const MASTER_GLCODE_COL = 29;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
+const MASTER_FILE_NAME_COL = 30;
+const MASTER_FILE_URL_COL = 31;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 32;
 
 // 中心審核表裡實際放單據資料的分頁名稱。程式一律用這個名字去找分頁，
 // 不能假設它是「這份試算表的第一個分頁」——如果有人在前面手動加了別的分頁
@@ -122,24 +151,37 @@ const REVIEW_SHEET_NAME = '待審核單據';
 // 中心審核表的欄位（一個中心一份，底下所有專案共用同一份，靠「所屬專案」欄分辨）。
 // 除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。第 1 列同樣留給人工標註，標題在第 2 列，資料第 3 列起。
 const REVIEW_HEADERS = [
-  '上傳時間', '上傳者', '所屬專案', '發票日期', '金額', '單據內容', '公司名稱', '用途', '預算項目',
-  '付款方式', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '憑證連結',
+  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '單據內容', '公司名稱', '用途', '預算項目',
+  '付款狀態', '付款方式', '還款對象', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '關聯報價單', '憑證連結',
   '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
 ];
 const REVIEW_UPLOADER_COL = 2;
 const REVIEW_PROJECT_COL = 3;
-const REVIEW_INVOICE_DATE_COL = 4;
-const REVIEW_AMOUNT_COL = 5;
-const REVIEW_ITEMS_COL = 6;
-const REVIEW_VENDOR_COL = 7;
-const REVIEW_EXPECTED_PAYOUT_COL = 15;
-const REVIEW_EDITABLE_START_COL = 17; // 審核狀態
+const REVIEW_DOCTYPE_COL = 4;
+const REVIEW_INVOICE_DATE_COL = 5;
+const REVIEW_AMOUNT_COL = 6;
+const REVIEW_QUOTE_TOTAL_COL = 7;
+const REVIEW_ITEMS_COL = 8;
+const REVIEW_VENDOR_COL = 9;
+const REVIEW_PURPOSE_COL = 10;
+const REVIEW_BUDGET_ITEM_COL = 11;
+const REVIEW_PAYSTATUS_COL = 12;
+const REVIEW_PAYMETHOD_COL = 13;
+const REVIEW_REPAY_TARGET_COL = 14;
+const REVIEW_PAYEE_COL = 15;
+const REVIEW_PAYINFO_COL = 16;
+const REVIEW_CARD_CONFIRM_COL = 17;
+const REVIEW_URGENCY_COL = 18;
+const REVIEW_EXPECTED_PAYOUT_COL = 19;
+const REVIEW_LINKED_QUOTE_COL = 20;
+const REVIEW_FILE_URL_COL = 21;
+const REVIEW_EDITABLE_START_COL = 22; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註（三欄連續，保護範圍靠這個開洞）
-const REVIEW_REVIEWER_COL = 18;
-const REVIEW_NOTE_COL = 19;
-const REVIEW_COMPLETE_COL = 20;       // 單據完備，由總表同步過來（後勤在總表勾選）
-const REVIEW_PAYDATE_COL = 21;        // 由總表同步過來，審核人不能改
-const REVIEW_RECORD_ID_COL = 22;
+const REVIEW_REVIEWER_COL = 23;
+const REVIEW_NOTE_COL = 24;
+const REVIEW_COMPLETE_COL = 25;       // 單據完備，由總表同步過來（後勤在總表勾選）
+const REVIEW_PAYDATE_COL = 26;        // 由總表同步過來，審核人不能改
+const REVIEW_RECORD_ID_COL = 27;
 
 const PEOPLE_SHEET_NAME = '人員設定';
 const CENTERS_SHEET_NAME = '中心設定';
@@ -159,6 +201,16 @@ const UNSPECIFIED_BUDGET_ITEM = '不確定預算項目';
 const STATUS_OPTIONS = ['待審核', '已核准', '已退回'];
 const PROJECT_STATUS_ACTIVE = '進行中';
 const PROJECT_STATUS_ENDED = '已結束';
+
+// v2 付款結構與報價單相關的選項（前端下拉、後端驗證共用同一組字，避免兩邊打不一樣對不上）
+const DOC_TYPE_OPTIONS = ['發票', '收據', '報價單'];
+const DOC_TYPE_QUOTE = '報價單';        // 單據類型是報價單＝還沒補正式發票（待補），補上後會被改成發票／收據
+const PAY_STATUS_PAID = '已付款';       // 組織的錢已經出去了（組織信用卡、零用金）
+const PAY_STATUS_UNPAID = '未付款';     // 組織還沒付（組織匯款、未付款的組織信用卡）
+const PAY_STATUS_OPTIONS = [PAY_STATUS_PAID, PAY_STATUS_UNPAID];
+const REPAY_TARGET_MEMBER = '組織人員';  // 還款對象＝內部同仁（多半是代墊款）
+const REPAY_TARGET_VENDOR = '外部廠商';  // 還款對象＝外部廠商
+const REPAY_TARGET_OPTIONS = [REPAY_TARGET_MEMBER, REPAY_TARGET_VENDOR];
 
 /* ============================================================
    設定分頁讀寫（人員設定 / 專案設定）
@@ -312,8 +364,41 @@ function activeCenters_() {
 }
 function personByEmail_(email) {
   const list = loadConfig_().people;
-  for (let i = 0; i < list.length; i++) if (list[i].email && list[i].email === email) return list[i];
+  const target = String(email || '').trim().toLowerCase(); // Email 大小寫不敏感，人員設定裡打成大寫也對得到
+  if (!target) return null;
+  for (let i = 0; i < list.length; i++) if (list[i].email && list[i].email.toLowerCase() === target) return list[i];
   return null;
+}
+
+// 驗證這次請求帶來的 Google 登入身分。前端每次 POST 會附上一張 Google ID token，
+// 這裡呼叫 Google 的 tokeninfo 端點驗證它（不用在 Apps Script 裡自己做密碼學驗簽，這個端點最單純可靠）：
+//   1. aud 必須等於我們自己的用戶端 ID（證明這張證明是發給「本系統」的，不是別的網站的）
+//   2. email 必須已驗證
+//   3. 網域必須是組織網域（hd 欄或 email 結尾），把外部/私人 Google 帳號擋掉
+// 通過後回傳登入者的 email 與姓名（姓名去「人員設定」用 email 對出來）。
+function verifyRequestIdentity_(body) {
+  const idToken = body && body.idToken;
+  if (!idToken) return { ok: false, error: '尚未登入或登入已逾期，請用組織帳號重新登入。' };
+  let data;
+  try {
+    const res = UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
+      { muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return { ok: false, error: '登入驗證失敗（登入可能已逾期），請重新登入。' };
+    data = JSON.parse(res.getContentText());
+  } catch (e) {
+    return { ok: false, error: '登入驗證發生問題，請重新登入。（' + e + '）' };
+  }
+  if (data.aud !== GOOGLE_CLIENT_ID) return { ok: false, error: '登入憑證與本系統不符，請重新登入。' };
+  const email = String(data.email || '').toLowerCase();
+  const emailVerified = data.email_verified === true || data.email_verified === 'true';
+  if (!email || !emailVerified) return { ok: false, error: '無法確認你的 Email，請重新登入。' };
+  const domainOk = data.hd === ALLOWED_EMAIL_DOMAIN ||
+    email.slice(-(ALLOWED_EMAIL_DOMAIN.length + 1)) === '@' + ALLOWED_EMAIL_DOMAIN;
+  if (!domainOk) return { ok: false, error: '請用組織帳號（@' + ALLOWED_EMAIL_DOMAIN + '）登入，這個帳號無法使用本系統。' };
+  const person = personByEmail_(email);
+  return { ok: true, email: email, name: person ? person.name : email, unknownPerson: !person };
 }
 function personByName_(name) {
   const list = loadConfig_().people;
@@ -338,8 +423,11 @@ function saveCenterReviewSheet_(center, sheetId, url) {
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
-    if (body.token !== SECRET_TOKEN) {
-      return jsonOut_({ ok: false, error: 'unauthorized' });
+    // 驗證 Google 登入身分（取代舊的 SECRET_TOKEN）。authError 讓前端知道是「登入問題」，
+    // 可以引導重新登入，而不是當成一般同步失敗。
+    const auth = verifyRequestIdentity_(body);
+    if (!auth.ok) {
+      return jsonOut_({ ok: false, error: auth.error, authError: true });
     }
     if (body.action === 'ocr') {
       // imageDataUrls（陣列）＝ PDF 在瀏覽器端轉成的多頁壓縮圖片；沒有的話退回單一張 imageDataUrl
@@ -347,17 +435,30 @@ function doPost(e) {
       return jsonOut_(recognizeReceipt_(images));
     }
     if (body.action === 'getConfig') {
-      return jsonOut_(getConfigForApp_());
+      // 一併回傳「你是誰」，讓前端顯示登入者、並把上傳人自動帶成本人（不再手選）
+      const cfg = getConfigForApp_();
+      cfg.me = { email: auth.email, name: auth.name, unknownPerson: auth.unknownPerson };
+      return jsonOut_(cfg);
     }
     if (body.action === 'getStatuses') {
       return jsonOut_(getAllStatuses_());
     }
+    if (body.action === 'getAllRecords') {
+      // 「上傳紀錄」頁查全部：回傳收支總表整份，前端自己依上傳人/日期篩選、算報價單分期已付尚欠
+      return jsonOut_(getAllRecords_());
+    }
     const sheet = getSheet_();
     if (body.action === 'create') {
+      // 上傳人一律以登入者為準（後端覆蓋，前端傳什麼都不算數），避免有人冒名送單
+      if (body.record) body.record.uploader = auth.name || (body.record && body.record.uploader) || '';
       return jsonOut_(createRow_(sheet, body.record));
     }
     if (body.action === 'update') {
       return jsonOut_(updateRow_(sheet, body.record));
+    }
+    if (body.action === 'attachFinal') {
+      // 報價單補上正式發票/收據（做法 A：同一筆換單，不另開新列）
+      return jsonOut_(attachFinalDocument_(body));
     }
     return jsonOut_({ ok: false, error: 'unknown action: ' + body.action });
   } catch (err) {
@@ -573,10 +674,12 @@ function saveFile_(record) {
 
 function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
+  // 欄位順序必須跟 HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 HEADERS，並跑驗證腳本。
   sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate,
-    record.amount, record.items, record.vendor, record.purpose, record.budgetItem || '', record.period,
-    record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
+    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || '發票', record.invoiceDate,
+    record.amount, record.quoteTotal || '', record.items, record.vendor, record.purpose, record.budgetItem || '', record.period,
+    record.payStatus || '', record.payMethod || '', record.cardForm || '', record.repayTarget || '', record.payee || '',
+    record.paymentDetail || '', record.cardConfirmNote || '', record.linkedQuoteId || '',
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
     '', // 單據完備，由後勤人員在總表勾選
@@ -646,6 +749,169 @@ function getAllStatuses_() {
     };
   });
   return { ok: true, statuses: statuses };
+}
+
+// 給「上傳紀錄」頁查全部用：把收支總表整份撈回來（所有人的紀錄）。這裡只忠實回傳資料，
+// 篩選（上傳人／日期區間）跟報價單分期的「已付/尚欠」計算都交給前端做，後端不預先過濾。
+function getAllRecords_() {
+  const sheet = getSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 3) return { ok: true, records: [] }; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
+  const values = sheet.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
+  const records = values.map(function (row) {
+    return {
+      id: row[MASTER_RECORD_ID_COL - 1],
+      uploadedAt: formatDateTime_(row[MASTER_UPLOAD_TIME_COL - 1]),
+      uploader: row[MASTER_UPLOADER_COL - 1],
+      project: row[MASTER_PROJECT_COL - 1],
+      docType: row[MASTER_DOCTYPE_COL - 1],
+      invoiceDate: formatDateOnly_(row[MASTER_INVOICE_DATE_COL - 1]),
+      amount: row[MASTER_AMOUNT_COL - 1],
+      quoteTotal: row[MASTER_QUOTE_TOTAL_COL - 1],
+      items: row[MASTER_ITEMS_COL - 1],
+      vendor: row[MASTER_VENDOR_COL - 1],
+      purpose: row[MASTER_PURPOSE_COL - 1],
+      budgetItem: row[MASTER_BUDGET_ITEM_COL - 1],
+      period: row[MASTER_PERIOD_COL - 1],
+      payStatus: row[MASTER_PAYSTATUS_COL - 1],
+      payMethod: row[MASTER_PAYMETHOD_COL - 1],
+      cardForm: row[MASTER_CARDFORM_COL - 1],
+      repayTarget: row[MASTER_REPAY_TARGET_COL - 1],
+      payee: row[MASTER_PAYEE_COL - 1],
+      paymentDetail: row[MASTER_PAYINFO_COL - 1],
+      linkedQuoteId: row[MASTER_LINKED_QUOTE_COL - 1],
+      urgent: row[MASTER_URGENCY_COL - 1] === '緊急',
+      expectedPayoutDate: formatDateOnly_(row[MASTER_EXPECTED_PAYOUT_COL - 1]),
+      status: row[MASTER_STATUS_COL - 1],
+      reviewer: row[MASTER_REVIEWER_COL - 1],
+      reviewedAt: formatDateTime_(row[MASTER_REVIEWED_AT_COL - 1]),
+      rejectReason: row[MASTER_REJECT_REASON_COL - 1],
+      receiptComplete: row[MASTER_COMPLETE_COL - 1] === true || row[MASTER_COMPLETE_COL - 1] === '是' || row[MASTER_COMPLETE_COL - 1] === 'TRUE',
+      paidAt: formatDateOnly_(row[MASTER_PAYDATE_COL - 1]),
+      glCode: row[MASTER_GLCODE_COL - 1],
+      fileName: row[MASTER_FILE_NAME_COL - 1],
+      fileUrl: row[MASTER_FILE_URL_COL - 1],
+    };
+  }).filter(function (r) { return r.id; });
+  return { ok: true, records: records };
+}
+
+// 報價單補上正式發票/收據（做法 A）：同一筆「換單」，不另開新列，避免金額被重複計算。
+// 一個「案子」＝這張報價單那筆（母），加上所有「關聯報價單」指到它的後續款（訂金/尾款）。
+// - 換單：把母筆的單據類型改成發票/收據、憑證換成正式發票（舊報價單搬到「報價單存查」只搬不刪），
+//   後續款也一起改單據類型，才不會還被當成「待補」。
+// - 金額核對：正式發票金額跟原本核准的（單筆＝本次金額；分期＝各期已付加總）不一致時，比照
+//   「金額不符退回重做」，把母筆狀態打回「待審核」讓主管重新確認；審核表那列也一起打回，
+//   否則隔天的 review→master 審核同步會把舊的「已核准」再推回來，等於沒退成。
+function attachFinalDocument_(body) {
+  const targetId = body.id;
+  if (!targetId) return { ok: false, error: '缺少要補件的紀錄ID' };
+  const newDocType = body.docType || '發票';
+  if (newDocType === DOC_TYPE_QUOTE) return { ok: false, error: '補件的單據類型不能還是報價單' };
+
+  const sheet = getSheet_();
+  const parentRow = findRowById_(sheet, targetId, MASTER_RECORD_ID_COL);
+  if (parentRow === -1) return { ok: false, error: '找不到要補件的報價單紀錄（ID: ' + targetId + '）' };
+
+  const lastRow = sheet.getLastRow();
+  const all = sheet.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
+  const parent = all[parentRow - 3];
+  const project = parent[MASTER_PROJECT_COL - 1];
+  const period = parent[MASTER_PERIOD_COL - 1];
+
+  // 存正式發票、把舊報價單檔案搬去存查（只搬不刪，保留軌跡）
+  const newFileUrl = saveFile_({ fileDataUrl: body.fileDataUrl, fileName: body.fileName, project: project, period: period });
+  try {
+    const oldUrl = parent[MASTER_FILE_URL_COL - 1];
+    if (oldUrl && newFileUrl) moveReceiptFile_(oldUrl, findOrCreateSubfolder_(getRootFolder_(), '報價單存查'));
+  } catch (err) {
+    console.error('搬移舊報價單到存查資料夾失敗（不影響補件）：' + err);
+  }
+
+  // 這個案子的已付合計＝母筆 + 所有掛在它底下的後續款
+  const parentAmount = Number(parent[MASTER_AMOUNT_COL - 1]) || 0;
+  let caseSum = parentAmount;
+  const childRows = [];
+  all.forEach(function (row, i) {
+    if (row[MASTER_LINKED_QUOTE_COL - 1] === targetId) {
+      caseSum += Number(row[MASTER_AMOUNT_COL - 1]) || 0;
+      childRows.push(i + 3);
+    }
+  });
+  const isStaged = childRows.length > 0;
+  const invoiceAmount = Number(body.amount);
+  const hasInvoiceAmount = body.amount !== undefined && body.amount !== null && body.amount !== '' && !isNaN(invoiceAmount);
+  const compareBase = isStaged ? caseSum : parentAmount;
+  const amountMismatch = hasInvoiceAmount && invoiceAmount !== compareBase;
+
+  // 換單：母筆的單據類型、憑證、發票日期；後續款只改單據類型（金額不動）
+  if (newFileUrl) {
+    sheet.getRange(parentRow, MASTER_FILE_NAME_COL).setValue(body.fileName || '');
+    sheet.getRange(parentRow, MASTER_FILE_URL_COL).setValue(newFileUrl);
+  }
+  sheet.getRange(parentRow, MASTER_DOCTYPE_COL).setValue(newDocType);
+  if (body.invoiceDate) sheet.getRange(parentRow, MASTER_INVOICE_DATE_COL).setValue(body.invoiceDate);
+  childRows.forEach(function (r) { sheet.getRange(r, MASTER_DOCTYPE_COL).setValue(newDocType); });
+
+  // 單筆且金額不符 → 母筆本次金額更新成發票實際金額（分期不動各期金額，只在案子層級標記提醒）
+  if (!isStaged && amountMismatch) {
+    sheet.getRange(parentRow, MASTER_AMOUNT_COL).setValue(invoiceAmount);
+  }
+
+  let reReviewed = false;
+  if (amountMismatch) {
+    const note = isStaged
+      ? '報價分期已付合計 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，請確認後重新核准。'
+      : '報價金額 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，已更新為發票金額，請重新核准。';
+    // 母筆打回待審核：狀態、審核人、審核時間、退回原因四欄連續一次寫入
+    sheet.getRange(parentRow, MASTER_STATUS_COL, 1, 4).setValues([['待審核', '', '', note]]);
+    try {
+      resetReviewRowForReReview_(targetId, project, newDocType, isStaged ? null : invoiceAmount);
+    } catch (err) {
+      console.error('把審核表打回待審核失敗：' + err);
+    }
+    reReviewed = true;
+  } else {
+    // 金額相符：把審核表的單據類型（單筆再帶金額）更新一下，審核狀態不動
+    try {
+      updateReviewDocType_(targetId, project, newDocType, isStaged ? null : compareBase);
+    } catch (err) {
+      console.error('更新審核表單據類型失敗（不影響總表）：' + err);
+    }
+  }
+
+  return { ok: true, fileUrl: newFileUrl, reReviewed: reReviewed, caseSum: caseSum, staged: isStaged };
+}
+
+// 找出某筆紀錄在「所屬中心審核表」裡的那一列，回傳 { sheet, row } 或 null
+function findReviewRowForRecord_(recordId, projectName) {
+  const project = findProject_(projectName);
+  if (!project) return null;
+  const center = findCenter_(project.center);
+  if (!center || !center.reviewSheetId) return null;
+  let ss;
+  try { ss = SpreadsheetApp.openById(center.reviewSheetId); } catch (e) { return null; }
+  const sheet = getReviewSheet_(ss);
+  const row = findRowById_(sheet, recordId, REVIEW_RECORD_ID_COL);
+  return row === -1 ? null : { sheet: sheet, row: row };
+}
+
+// 補件金額相符：只更新審核表的單據類型（單筆再帶本次金額），審核狀態維持不動
+function updateReviewDocType_(recordId, projectName, docType, amountOrNull) {
+  const loc = findReviewRowForRecord_(recordId, projectName);
+  if (!loc) return;
+  loc.sheet.getRange(loc.row, REVIEW_DOCTYPE_COL).setValue(docType);
+  if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
+}
+
+// 補件金額不符：更新審核表單據類型/金額，並把審核三欄打回「待審核」清空另兩欄，
+// 讓主管重新看到、重新核准（否則隔天 review→master 同步會把舊的已核准推回總表）
+function resetReviewRowForReReview_(recordId, projectName, docType, amountOrNull) {
+  const loc = findReviewRowForRecord_(recordId, projectName);
+  if (!loc) return;
+  loc.sheet.getRange(loc.row, REVIEW_DOCTYPE_COL).setValue(docType);
+  if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
+  loc.sheet.getRange(loc.row, REVIEW_EDITABLE_START_COL, 1, REVIEW_EDITABLE_COL_COUNT).setValues([['待審核', '', '']]);
 }
 
 function statusLabel_(status) {
@@ -920,11 +1186,12 @@ function appendToCenterReviewSheet_(record, fileUrl) {
   }
   const ss = getOrCreateCenterSpreadsheet_(center);
   const sheet = getReviewSheet_(ss);
+  // 欄位順序必須跟 REVIEW_HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 REVIEW_HEADERS，並跑驗證腳本。
   sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.invoiceDate, record.amount,
-    record.items, record.vendor, record.purpose, record.budgetItem || '',
-    record.payMethod || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
-    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
+    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || '發票', record.invoiceDate,
+    record.amount, record.quoteTotal || '', record.items, record.vendor, record.purpose, record.budgetItem || '',
+    record.payStatus || '', record.payMethod || '', record.repayTarget || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
+    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', record.linkedQuoteId || '', fileUrl,
     '待審核', '', '', '', '', record.id,
   ]);
   setCompleteCheckbox_(sheet, sheet.getLastRow(), REVIEW_COMPLETE_COL); // 只對剛寫入的這一列設勾選框

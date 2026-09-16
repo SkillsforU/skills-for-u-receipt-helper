@@ -19,8 +19,11 @@
       <button class="tab-btn active" data-view="upload">上傳單據</button>
       <button class="tab-btn" data-view="mine">上傳紀錄</button>
       <button class="tab-btn" data-view="lists">名單設定</button>
-      <button class="tab-btn" data-view="sync">雲端同步設定</button>
     </nav>
+    <div class="account-chip" id="accountChip" hidden>
+      <span class="account-name" id="accountName"></span>
+      <button class="link-btn" id="signOutBtn">登出</button>
+    </div>
   </div>
 </header>
 
@@ -46,6 +49,13 @@
       <label class="field-label">所屬專案</label>
       <select id="projectSelect" class="select-input" disabled>
         <option value="">請先選擇上方的所屬中心</option>
+      </select>
+
+      <label class="field-label">單據類型</label>
+      <select id="docTypeSelect" class="select-input">
+        <option value="發票">發票</option>
+        <option value="收據">收據</option>
+        <option value="報價單">報價單（先付款、之後再補正式發票）</option>
       </select>
 
       <div class="dropzone" id="dropzone">
@@ -90,6 +100,22 @@
           <label class="field-label">金額 <span class="req">*</span> <span class="field-flag" id="flag-amount"></span></label>
           <input type="number" id="f_amount" class="text-input" placeholder="0" min="0" step="1">
         </div>
+
+        <!-- 這是某張報價單的後續款嗎？（系統上有未結案報價單時才出現，見 app.js 的 populateLinkedQuoteOptions） -->
+        <div class="form-field span-2" id="linkedQuoteField" hidden>
+          <label class="field-label">這是某張報價單的後續款嗎？</label>
+          <select id="f_linkedQuote" class="select-input">
+            <option value="">不是，這是獨立的一筆</option>
+          </select>
+          <p class="field-hint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」，上面的「金額」填這次要付的部分。</p>
+        </div>
+
+        <!-- 報價總額：單據類型為報價單、且不是別張報價單的後續款時出現 -->
+        <div class="form-field span-2" id="quoteTotalField" hidden>
+          <label class="field-label">報價總額 <span class="req">*</span></label>
+          <input type="number" id="f_quoteTotal" class="text-input" placeholder="這張報價單的總金額" min="0" step="1">
+          <p class="field-hint">分期付款時，「金額」填這次要付的（例如訂金），「報價總額」填整張報價的總額。</p>
+        </div>
         <div class="form-field">
           <label class="field-label">活動 / 用途說明</label>
           <input type="text" id="f_purpose" class="text-input" placeholder="例如：7 月理監事會議餐費">
@@ -109,38 +135,64 @@
             <option value="">請先選擇上方的所屬專案</option>
           </select>
         </div>
+        <!-- 付款方式改成連動式：先選付款狀態（組織的錢出去了沒）→ 付款方式 → 視情況再問細節 -->
         <div class="form-field span-2">
-          <label class="field-label">付款方式 <span class="req">*</span></label>
-          <select id="f_payMethod" class="select-input">
-            <option value="">請選擇付款方式</option>
-            <option value="組織匯款（組織人員）">組織匯款（組織人員）</option>
-            <option value="組織匯款（非組織人員）">組織匯款（非組織人員）</option>
-            <option value="組織零用金">組織零用金</option>
-            <option value="組織信用卡（連結）">組織信用卡（連結）</option>
-            <option value="組織信用卡（紙本）">組織信用卡（紙本）</option>
+          <label class="field-label">付款狀態 <span class="req">*</span></label>
+          <select id="f_payStatus" class="select-input">
+            <option value="">請選擇</option>
+            <option value="已付款">已付款（組織的錢已經付出去了）</option>
+            <option value="未付款">未付款（組織還沒付這筆錢）</option>
           </select>
         </div>
 
-        <!-- 組織匯款（組織人員）：還款對象預設帶入上傳人，但可改成別人（幫同事代送單據的情況） -->
-        <div class="form-field span-2" id="payeePersonField" hidden>
+        <!-- 付款方式：選項依「付款狀態」而定（見 app.js 的 onPayStatusChange） -->
+        <div class="form-field span-2" id="payMethodField" hidden>
+          <label class="field-label">付款方式 <span class="req">*</span></label>
+          <select id="f_payMethod" class="select-input">
+            <option value="">請先選擇付款狀態</option>
+          </select>
+        </div>
+
+        <!-- 信用卡付款方式：僅「未付款・組織信用卡」會出現 -->
+        <div class="form-field span-2" id="cardFormField" hidden>
+          <label class="field-label">信用卡付款方式 <span class="req">*</span></label>
+          <select id="f_cardForm" class="select-input">
+            <option value="">請選擇</option>
+            <option value="連結">線上刷卡連結</option>
+            <option value="紙本">紙本刷卡</option>
+          </select>
+        </div>
+
+        <!-- 還款對象：僅「未付款・組織匯款」會出現 -->
+        <div class="form-field span-2" id="repayTargetField" hidden>
           <label class="field-label">還款對象 <span class="req">*</span></label>
+          <select id="f_repayTarget" class="select-input">
+            <option value="">請選擇</option>
+            <option value="外部廠商">外部廠商</option>
+            <option value="組織人員">組織人員（代墊款）</option>
+          </select>
+        </div>
+
+        <!-- 未付款・匯款・組織人員：選代墊款的人（預設帶登入者本人，可改成別人） -->
+        <div class="form-field span-2" id="payeePersonField" hidden>
+          <label class="field-label">代墊款的人 <span class="req">*</span></label>
           <select id="f_payeePerson" class="select-input"></select>
         </div>
 
-        <!-- 組織匯款（非組織人員）：填對方單位名稱與帳戶 -->
+        <!-- 未付款・匯款・外部廠商：填對方單位名稱 -->
         <div class="form-field span-2" id="payeeVendorField" hidden>
           <label class="field-label">戶名 <span class="req">*</span></label>
           <input type="text" id="f_payeeVendor" class="text-input" placeholder="例如：震旦行股份有限公司">
         </div>
 
-        <!-- 這個欄位在不同付款方式下重複使用：匯款帳戶 / 刷卡連結 / 卡號，標籤與提示文字會跟著切換 -->
+        <!-- 共用輸入框：匯款帳號（外部廠商）/ 刷卡連結（信用卡連結），標籤與提示會跟著切換 -->
         <div class="form-field span-2" id="paymentDetailField" hidden>
           <label class="field-label" id="paymentDetailLabel">付款資訊 <span class="req">*</span></label>
           <textarea id="f_paymentDetail" class="textarea-input" rows="2"></textarea>
           <p class="field-hint" id="paymentDetailHint"></p>
         </div>
 
-        <!-- 組織信用卡（紙本）：必須勾選兩項確認才能送出 -->
+        <!-- 未付款・信用卡・紙本：必須勾選兩項確認才能送出 -->
         <div class="form-field span-2" id="cardConfirmField" hidden>
           <label class="checkbox-row">
             <input type="checkbox" id="f_cardConfirm1">
@@ -200,10 +252,18 @@
         <select id="mineProjectFilter" class="select-input select-input-sm">
           <option value="">全部專案</option>
         </select>
-        <button class="ghost-btn ghost-btn-sm" id="refreshStatusBtn">🔄 重新整理審核狀態</button>
+        <input type="date" id="mineDateFrom" class="text-input select-input-sm" title="上傳日期（起）">
+        <input type="date" id="mineDateTo" class="text-input select-input-sm" title="上傳日期（迄）">
+        <button class="ghost-btn ghost-btn-sm" id="refreshStatusBtn">🔄 重新載入</button>
         <button class="ghost-btn ghost-btn-sm" id="exportCsvBtn">匯出 CSV</button>
-        <button class="ghost-btn ghost-btn-sm ghost-btn-danger" id="clearLocalBtn">清除本機紀錄</button>
       </div>
+
+      <!-- 報價單案子：未結案報價單的已付／尚欠，以及「補上正式發票」入口 -->
+      <div id="quoteCasesSection" hidden>
+        <h2 class="card-title-sm" style="margin-top:8px;">報價單案子（待補正式發票 / 分期追蹤）</h2>
+        <div id="quoteCasesList" class="quote-case-list"></div>
+      </div>
+
       <div id="mineList" class="record-list"></div>
       <div class="empty-state" id="mineEmpty" hidden>目前還沒有任何上傳紀錄</div>
     </div>
@@ -241,73 +301,18 @@
     </div>
   </section>
 
-  <!-- ============ 雲端同步設定 ============ -->
-  <section class="view" id="view-sync" hidden>
-    <div class="card">
-      <h1 class="card-title">雲端同步設定</h1>
-      <p class="card-sub">連接你自己部署的 Google Apps Script，把上傳單據自動寫入 Google 試算表，憑證照片存進 Google Drive</p>
-
-      <label class="field-label">
-        <input type="checkbox" id="syncEnabled"> 啟用雲端同步
-      </label>
-
-      <label class="field-label">Apps Script 網頁應用程式網址（結尾 /exec）</label>
-      <input type="text" id="syncUrl" class="text-input" placeholder="https://script.google.com/macros/s/.../exec">
-
-      <label class="field-label">密碼字串（要跟 Apps Script 裡的 SECRET_TOKEN 一致）</label>
-      <input type="password" id="syncToken" class="text-input" placeholder="請輸入你設定的密碼字串">
-
-      <label class="field-label" style="margin-top:24px;">
-        <input type="checkbox" id="cloudOcrEnabled"> 使用雲端 OCR（透過同一組 Apps Script + Gemini 辨識，效果比離線辨識好）
-      </label>
-
-      <div class="btn-row">
-        <button class="ghost-btn" id="testSyncBtn">測試連線</button>
-        <button class="primary-btn" id="saveSyncBtn">儲存設定</button>
-      </div>
-
-      <div class="confidence-banner" id="syncStatusBanner" hidden></div>
-
-      <div class="btn-row" style="margin-top:24px;">
-        <button class="ghost-btn" id="generateSetupLinkBtn" style="flex:1;">產生給同事的一次性設定連結</button>
-      </div>
-      <div id="setupLinkBox" hidden style="margin-top:14px;">
-        <label class="field-label">設定連結（複製整段傳給同事，他們點開一次即可自動套用設定）</label>
-        <input type="text" id="setupLinkOutput" class="text-input" readonly>
-        <button type="button" class="link-btn" id="copySetupLinkBtn" style="margin-top:8px;">複製連結</button>
-        <p class="list-hint">⚠️ 這串連結裡包含密碼字串，跟原始網址一樣是敏感資訊，只透過私訊／內部群組傳給要用的同事，不要貼在公開頁面或大型群組。</p>
-      </div>
-
-      <details class="raw-ocr-toggle" style="margin-top:24px;">
-        <summary>還沒設定過？查看部署步驟</summary>
-        <div class="sync-help">
-          <ol>
-            <li>開一個 Google 試算表（或用現有的收支表）。</li>
-            <li>選單「擴充功能」→「Apps Script」，把專案資料夾裡 <code>google-sync/Code.gs</code> 的內容整份貼進去。</li>
-            <li>把程式碼裡的 <code>SECRET_TOKEN</code> 改成你自己的密碼字串，跟上面填的要一樣。</li>
-            <li>右上角「部署」→「新增部署作業」→類型選「網頁應用程式」，執行身分選「我」，誰可以存取選「任何人」。</li>
-            <li>複製部署後的網址（結尾 /exec），貼到上面「Apps Script 網頁應用程式網址」欄位。</li>
-            <li>按「測試連線」確認成功，再按「儲存設定」。之後上傳與審核都會自動同步。</li>
-          </ol>
-          <p>⚠️ 這個網址一旦設成「任何人」可存取就是公開的，請不要把網址和密碼分享出去；外流的話回 Apps Script 換一個新密碼重新部署即可。</p>
-        </div>
-      </details>
-
-      <details class="raw-ocr-toggle">
-        <summary>想開啟「雲端 OCR」？多做這幾步</summary>
-        <div class="sync-help">
-          <ol>
-            <li>到 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> 用同一個 Google 帳號登入，申請一組 Gemini API 金鑰（有免費額度）。</li>
-            <li>回到 Apps Script 編輯器，把 <code>GEMINI_API_KEY</code> 改成你剛申請的金鑰，存檔後重新部署（部署→管理部署作業→編輯→版本選「新版本」）。</li>
-            <li>回到這頁，勾選「使用雲端 OCR」，按「儲存設定」。之後「開始辨識」就會改用 Gemini，辨識失敗時會自動退回本機離線辨識，不會卡住。</li>
-          </ol>
-          <p>⚠️ Gemini API 金鑰也是敏感資訊，一樣不要把 <code>Code.gs</code> 或部署網址分享出去。</p>
-        </div>
-      </details>
-    </div>
-  </section>
-
 </main>
+
+<!-- ============ 登入畫面（未登入前蓋住整個畫面）============ -->
+<div class="login-gate" id="loginGate">
+  <div class="login-card">
+    <span class="brand-mark brand-mark-lg">S</span>
+    <h1 class="login-title">Skills for U｜核銷小幫手</h1>
+    <p class="login-sub">請用組織 Google 帳號（@skillsforu.org）登入後使用</p>
+    <div class="login-btn-wrap"><div id="googleSignInBtn"></div></div>
+    <p class="login-hint" id="loginHint" hidden></p>
+  </div>
+</div>
 
 <!-- ============ 單據詳情 / 審核 Modal ============ -->
 <div class="modal-overlay" id="detailModal" hidden>
@@ -319,6 +324,7 @@
 
 <div class="toast" id="toast" hidden></div>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="app.js"></script>
