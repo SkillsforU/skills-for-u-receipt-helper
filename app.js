@@ -1216,14 +1216,9 @@ function receiptReminderHtml(r, sk) {
 function recordItemHtml(r, { showUploader }) {
   const sk = recStatusKey(r);
   const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
-  // r._localOnly 只代表「這台瀏覽器上、後端上次撈回來的清單裡還看不到它」，
-  // 不代表真的沒同步——剛送出的那幾秒內，雲端可能早就寫入成功了，只是還沒重新整理清單。
-  // 一定要看 r.cloudSynced 才知道實際同不同步，不然會像這次一樣，總表明明有資料卻一直顯示未同步。
-  const localBadge = r._localOnly
-    ? (r.cloudSynced
-        ? `<span class="cloud-badge synced">☁ 已同步（清單尚待整理）</span>`
-        : `<span class="cloud-badge unsynced">☁ 未同步</span>`)
-    : "";
+  // r._localOnly 只代表「這台瀏覽器上、後端上次撈回來的清單裡還看不到它」，不代表真的沒同步——
+  // 已經同步成功的話，跟正式清單裡的紀錄沒有差別，不需要額外標示，只有真的還沒同步成功才提醒。
+  const localBadge = (r._localOnly && !r.cloudSynced) ? `<span class="cloud-badge unsynced">☁ 未同步</span>` : "";
   const docBadge = (r.docType && r.docType !== "發票") ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
   return `
     <div class="record-item" data-id="${escapeHtml(r.id)}">
