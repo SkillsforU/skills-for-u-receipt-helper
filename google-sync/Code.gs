@@ -1228,10 +1228,93 @@ function appendToCenterReviewSheet_(record, fileUrl) {
 /* ============================================================
    同步：審核結果（審核表→總表）＋ 付款日期（總表→審核表）
    ============================================================ */
-function syncApprovalsToMaster() {
+// 把一列總表的原始資料，轉成 appendToCenterReviewSheet_ 需要的「record」物件形狀，
+// 給 backfillMissingReviewRows_ 補寫審核列用——那個函式平常吃的是網頁送來的 record，
+// 這裡是從已經存在總表裡的資料反推回去，欄位名稱要對得上。
+// uploadedAt 這裡給的是總表存的「yyyy-MM-dd HH:mm」文字，appendToCenterReviewSheet_
+// 內部會再用 formatDateTime_() 包一次、用 new Date() 去解析——V8 認得這個格式，沒問題。
+function recordFromMasterRow_(row) {
+  return {
+    id: row[MASTER_RECORD_ID_COL - 1],
+    uploadedAt: row[MASTER_UPLOAD_TIME_COL - 1],
+    uploader: row[MASTER_UPLOADER_COL - 1],
+    project: row[MASTER_PROJECT_COL - 1],
+    docType: row[MASTER_DOCTYPE_COL - 1] || '發票',
+    invoiceDate: formatDateOnly_(row[MASTER_INVOICE_DATE_COL - 1]),
+    amount: row[MASTER_AMOUNT_COL - 1],
+    quoteTotal: row[MASTER_QUOTE_TOTAL_COL - 1],
+    items: row[MASTER_ITEMS_COL - 1],
+    vendor: row[MASTER_VENDOR_COL - 1],
+    purpose: row[MASTER_PURPOSE_COL - 1],
+    budgetItem: row[MASTER_BUDGET_ITEM_COL - 1],
+    payStatus: row[MASTER_PAYSTATUS_COL - 1],
+    payMethod: row[MASTER_PAYMETHOD_COL - 1],
+    repayTarget: row[MASTER_REPAY_TARGET_COL - 1],
+    payee: row[MASTER_PAYEE_COL - 1],
+    paymentDetail: row[MASTER_PAYINFO_COL - 1],
+    cardConfirmNote: row[MASTER_CARD_CONFIRM_COL - 1],
+    linkedQuoteId: row[MASTER_LINKED_QUOTE_COL - 1],
+    urgent: row[MASTER_URGENCY_COL - 1] === '緊急',
+    expectedPayoutDate: formatDateOnly_(row[MASTER_EXPECTED_PAYOUT_COL - 1]),
+  };
+}
+
+// 補齊「總表有、但該去的中心審核表卻沒有」的列。
+//
+// 為什麼會發生：createRow_ 寫完總表後，會另外呼叫 appendToCenterReviewSheet_ 寫進審核表，
+// 但那段是包在 try/catch 裡、失敗只會寫進 Apps Script 的執行紀錄，不會讓整個請求失敗
+// （設計上是刻意的：總表才是最重要的那份，不能因為審核表那邊出狀況就連總表都寫不進去）。
+// 代價是這個失敗前端完全看不到、使用者也不知道要去哪裡補——真實發生過：組織發展中心少了
+// 好幾筆，總表卻是完整的，按「立即同步審核結果」也沒用（那個函式原本只更新「已經在審核表
+// 裡的列」，不會幫忙補上「總表有、審核表沒有」的列）。這裡就是專門補這個洞。
+function backfillMissingReviewRows_() {
   const master = getSheet_();
   const lastRow = master.getLastRow();
-  if (lastRow < 3) return 0; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
+  if (lastRow < 3) return 0;
+  const all = master.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
+
+  // 每個中心審核表目前已經有哪些紀錄ID，先收集起來，才知道總表裡哪些列是漏掉的
+  const existingIdsByCenter = {};
+  loadConfig_().centers.forEach(function (center) {
+    if (!center.reviewSheetId) return;
+    try {
+      const sheet = getReviewSheet_(SpreadsheetApp.openById(center.reviewSheetId));
+      const rLast = sheet.getLastRow();
+      const ids = rLast >= 3
+        ? sheet.getRange(3, REVIEW_RECORD_ID_COL, rLast - 2, 1).getValues().map(function (r) { return r[0]; })
+        : [];
+      existingIdsByCenter[center.name] = new Set(ids);
+    } catch (e) {
+      console.error('讀取 ' + center.name + ' 審核表既有紀錄失敗（略過補齊這個中心）：' + e);
+    }
+  });
+
+  let backfilled = 0;
+  all.forEach(function (row) {
+    const id = row[MASTER_RECORD_ID_COL - 1];
+    if (!id) return;
+    const project = findProject_(row[MASTER_PROJECT_COL - 1]);
+    if (!project || project.status === PROJECT_STATUS_ENDED) return; // 已結束的略過，跟 appendToCenterReviewSheet_ 邏輯一致
+    const center = findCenter_(project.center);
+    if (!center || center.status === PROJECT_STATUS_ENDED) return;
+    const idSet = existingIdsByCenter[center.name];
+    if (!idSet || idSet.has(id)) return; // 這個中心讀取失敗、或這筆本來就已經在審核表裡了
+    try {
+      appendToCenterReviewSheet_(recordFromMasterRow_(row), row[MASTER_FILE_URL_COL - 1]);
+      idSet.add(id); // 同一次執行內記得補過了，避免萬一資料有重複紀錄ID時補兩次
+      backfilled++;
+    } catch (err) {
+      console.error('補齊審核表列失敗（紀錄ID ' + id + '）：' + err);
+    }
+  });
+  return backfilled;
+}
+
+function syncApprovalsToMaster() {
+  const backfilled = backfillMissingReviewRows_();
+  const master = getSheet_();
+  const lastRow = master.getLastRow();
+  if (lastRow < 3) return { updated: 0, backfilled: backfilled }; // 第 1 列標註、第 2 列標題，資料從第 3 列開始
 
   const all = master.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
   const rowById = {};
@@ -1308,14 +1391,17 @@ function syncApprovalsToMaster() {
       }
     });
   });
-  return updated;
+  return { updated: updated, backfilled: backfilled };
 }
 
 function syncApprovalsNow() {
-  const n = syncApprovalsToMaster();
-  // 這個數字算的是「更動過的欄位數」，不是單據筆數——同一筆單據的審核結果、單據完備、
-  // 付款日期如果一起變動，會各算一次。文案照實說，免得有人拿它當筆數對帳。
-  SpreadsheetApp.getUi().alert('同步完成，共更新 ' + n + ' 個欄位（審核結果、單據完備、付款日期）。');
+  const result = syncApprovalsToMaster();
+  // 「更新 N 個欄位」算的是欄位數不是單據筆數（同一筆單據的審核結果、單據完備、付款日期
+  // 如果一起變動，會各算一次）；「補齊 N 列」是總表有、但審核表原本沒有的列，這次自動補上了。
+  const backfillNote = result.backfilled > 0
+    ? '\n\n⚠️ 另外發現 ' + result.backfilled + ' 筆總表有、但審核表原本沒有的紀錄，已自動補上（可能是先前寫入審核表時失敗留下的缺漏）。'
+    : '';
+  SpreadsheetApp.getUi().alert('同步完成，共更新 ' + result.updated + ' 個欄位（審核結果、單據完備、付款日期）。' + backfillNote);
 }
 
 // 從 Drive 檔案網址取出檔案 ID（getUrl() 會回傳 .../file/d/{id}/view 這種格式）

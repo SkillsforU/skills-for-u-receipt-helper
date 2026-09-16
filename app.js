@@ -703,16 +703,47 @@ function populatePayeePersonOptions() {
    「關聯報價單」讓後續款（尾款）掛到同一張報價單的案子底下一起算「已付/尚欠」。 */
 const DOC_TYPE_QUOTE = "報價單";
 let openQuotesCache = []; // 系統上「未結案」的報價單（單據類型還是報價單、且本身不是別張的後續款）
+let quoteRecordsSnapshot = []; // 全部紀錄（含每張報價單底下的後續款），用來即時算「已付多少、會不會超過報價總額」
 
 async function refreshOpenQuotes() {
-  if (!isSignedIn()) { openQuotesCache = []; return; }
+  if (!isSignedIn()) { openQuotesCache = []; quoteRecordsSnapshot = []; return; }
   try {
     const data = await cloudPost("getAllRecords");
     if (data && data.ok && Array.isArray(data.records)) {
+      quoteRecordsSnapshot = data.records;
       openQuotesCache = data.records.filter(r => r.docType === DOC_TYPE_QUOTE && !r.linkedQuoteId);
     }
   } catch (e) { /* 撈不到就沿用上一次的，不擋上傳 */ }
 }
+
+// 算某張報價單案子「目前已經付了多少」（母筆 + 所有掛在它底下的後續款），不含現在正在填的這一筆
+function quoteCasePaidSoFar(quoteId) {
+  return quoteRecordsSnapshot
+    .filter(r => r.id === quoteId || r.linkedQuoteId === quoteId)
+    .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+}
+
+// 送出前即時檢查：這筆加上案子裡已經付的錢，會不會超過報價總額——只是提醒，不擋送出，
+// 因為有時候後續加購、追加預算是真的會讓總額變動，最終認定還是在補正式發票那一步。
+function updateQuoteOverpayWarning() {
+  const banner = document.getElementById("quoteOverpayWarning");
+  const quoteId = f_linkedQuote.value;
+  const thisAmount = Number(f_amount.value) || 0;
+  if (!quoteId || thisAmount <= 0) { banner.hidden = true; return; }
+  const parent = quoteRecordsSnapshot.find(r => r.id === quoteId);
+  const total = parent ? Number(parent.quoteTotal) || 0 : 0;
+  if (!total) { banner.hidden = true; return; }
+  const paidBefore = quoteCasePaidSoFar(quoteId);
+  const paidAfter = paidBefore + thisAmount;
+  if (paidAfter > total) {
+    banner.hidden = false;
+    banner.textContent = `⚠️ 這筆之前已付 NT$${paidBefore.toLocaleString("en-US")}，本次付款 NT$${thisAmount.toLocaleString("en-US")}，超過報價總額 NT$${total.toLocaleString("en-US")}，請確認金額。`;
+  } else {
+    banner.hidden = true;
+  }
+}
+f_amount.addEventListener("input", updateQuoteOverpayWarning);
+f_linkedQuote.addEventListener("change", updateQuoteOverpayWarning);
 
 function populateLinkedQuoteOptions() {
   const cur = f_linkedQuote.value;
@@ -835,7 +866,8 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_quoteTotal.value = "";
   f_linkedQuote.value = "";
   updateQuoteFields();
-  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); });
+  document.getElementById("quoteOverpayWarning").hidden = true;
+  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); updateQuoteOverpayWarning(); });
 
   setFlag("flag-date", !!guesses.date);
   setFlag("flag-amount", !!guesses.amount);
@@ -897,6 +929,12 @@ function submitRecord() {
       showToast("報價單請填「報價總額」"); f_quoteTotal.focus(); return;
     }
     quoteTotal = Number(f_quoteTotal.value);
+  } else if (linkedQuoteId) {
+    // 後續款（訂金/尾款）也把原本那張報價單的報價總額一起帶進去，純粹是方便財務在總表
+    // 對帳時，同一個案子的每一列都看得到報價總額是多少，不用另外回頭找母筆——
+    // 不是新的「真相來源」，真正的總額還是以母筆那筆為準，這裡只是複製一份方便查看。
+    const parentQuote = quoteRecordsSnapshot.find(r => r.id === linkedQuoteId);
+    if (parentQuote && parentQuote.quoteTotal) quoteTotal = Number(parentQuote.quoteTotal);
   }
 
   const payStatus = f_payStatus.value;
@@ -1242,9 +1280,12 @@ function receiptReminderHtml(r, sk) {
 function recordItemHtml(r, { showUploader }) {
   const sk = recStatusKey(r);
   const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
-  // r._localOnly 只代表「這台瀏覽器上、後端上次撈回來的清單裡還看不到它」，不代表真的沒同步——
-  // 已經同步成功的話，跟正式清單裡的紀錄沒有差別，不需要額外標示，只有真的還沒同步成功才提醒。
-  const localBadge = (r._localOnly && !r.cloudSynced) ? `<span class="cloud-badge unsynced">☁ 未同步</span>` : "";
+  // 從後端撈回來的紀錄一定是已經同步的（不然不會在清單裡）；本機這台瀏覽器剛送出、
+  // 還沒出現在後端清單裡的（_localOnly），要看 r.cloudSynced 才知道實際同不同步。
+  // 之前拿掉的只是「（清單尚待整理）」那句過渡文字，不是整個「已同步」圖示，這裡補回來。
+  const cloudBadge = (r._localOnly && !r.cloudSynced)
+    ? `<span class="cloud-badge unsynced">☁ 未同步</span>`
+    : `<span class="cloud-badge synced">☁ 已同步</span>`;
   const docBadge = (r.docType && r.docType !== "發票") ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
   return `
     <div class="record-item" data-id="${escapeHtml(r.id)}">
@@ -1260,7 +1301,7 @@ function recordItemHtml(r, { showUploader }) {
       </div>
       <div style="text-align:right;flex-shrink:0;">
         <div class="record-amount">${fmtMoney(r.amount)}</div>
-        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${sk}">${statusLabel(sk)}</span>${r.paidAt ? ` <span class="paid-badge">💰 已付款</span>` : ""} ${localBadge}</div>
+        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${sk}">${statusLabel(sk)}</span>${r.paidAt ? ` <span class="paid-badge">💰 已付款</span>` : ""} ${cloudBadge}</div>
       </div>
     </div>`;
 }
