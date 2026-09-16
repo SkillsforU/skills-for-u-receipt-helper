@@ -573,11 +573,23 @@ function recognizeReceipt_(images) {
 /* ============================================================
    總表寫入
    ============================================================ */
+// 判斷「第 2 列（標題列）本身是不是空的」，不能用 sheet.getLastRow() === 0 來判斷「要不要初始化」。
+// 真實發生過的事故：第 1 列的人工標註只要有任何文字，getLastRow() 就會變成 1（不是 0），
+// 讓「標題還沒寫」被誤判成「已經初始化過」而跳過——後果不只是標題沒補上，appendRow() 還會
+// 因此把下一筆新資料直接接到第 2 列（標題該在的位置），不是第 3 列，資料整個位移了一格。
+// 這裡只在第 2 列「確實整列空白」時才動手寫標題，不會覆蓋任何已經在那裡的內容（不管是舊標題
+// 還是不小心跑錯位置的真實資料），避免自動修復反而砸掉資料——真的錯位了要靠人工插入空白列修正。
+function headerRowBlank_(sheet, numCols) {
+  if (sheet.getLastRow() < 2) return true;
+  const row2 = sheet.getRange(2, 1, 1, numCols).getValues()[0];
+  return row2.every(function (v) { return String(v || '').trim() === ''; });
+}
+
 function getSheet_() {
   const ss = getMasterSpreadsheet_(); // 理由同 getOrCreateSheet_：不能假設「使用中的試算表」一定是總表
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
-  if (sheet.getLastRow() === 0) {
+  if (headerRowBlank_(sheet, HEADERS.length)) {
     // 第 1 列刻意留空，給人工填寫「自動帶入／手動填寫（誰）」的標註用；標題直接寫在第 2 列，
     // 不用 appendRow（那樣會把標題寫到第 1 列去）。真正的資料從第 3 列開始寫入。
     sheet.getRange(2, 1, 1, HEADERS.length).setValues([HEADERS]);
@@ -1048,7 +1060,9 @@ function getOrCreateCenterSpreadsheet_(center) {
       }
       const existingSheet = getReviewSheet_(existing);
       // 有人手動把整份審核表的內容清空（連標題列一起刪）時，補回標題，跟總表 getSheet_() 是同一個防線。
-      if (existingSheet.getLastRow() === 0) setupReviewSheetHeaders_(existingSheet);
+      // 判斷方式同樣改成「第 2 列本身是不是空的」，理由見 headerRowBlank_ 的說明——
+      // 第 1 列的人工標註有內容時，getLastRow()===0 這個舊判斷法會誤判成「不用補標題」。
+      if (headerRowBlank_(existingSheet, REVIEW_HEADERS.length)) setupReviewSheetHeaders_(existingSheet);
       return existing;
     } catch (e) {
       if (String(e).indexOf('目前在垃圾桶裡') !== -1) throw e; // 上面主動拋出的錯誤要讓它往外傳，不能被下面的 catch 吞掉

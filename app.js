@@ -239,7 +239,9 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 function switchView(name) {
   Object.entries(views).forEach(([key, el]) => { el.hidden = key !== name; });
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
-  if (name === "mine") renderMineView();
+  // 每次切到這頁都重新跟後端要一次最新清單（不是只用快取），
+  // 不然剛送出的單據要等下次手動按「重新載入」才會從「未同步」變成正常顯示。
+  if (name === "mine") loadAllRecordsFromCloud();
   if (name === "lists") renderListsView();
 }
 
@@ -619,7 +621,10 @@ function paymentAllowsUrgency_() {
 f_payStatus.addEventListener("change", onPayStatusChange);
 f_payMethod.addEventListener("change", onPayMethodChange);
 f_cardForm.addEventListener("change", updatePaymentSubfields);
-f_repayTarget.addEventListener("change", updatePaymentSubfields);
+// 還款對象也會改變撥款日期的推算結果（外部廠商 20 號／組織人員 5 號），
+// 光呼叫 updatePaymentSubfields 不會重算，一定要跟著補呼叫 updatePayoutEstimate，
+// 不然要等使用者剛好去點一下「審核急迫性」（原本沒事做的按鈕）才會意外觸發到。
+f_repayTarget.addEventListener("change", () => { updatePaymentSubfields(); updatePayoutEstimate(); });
 
 // 付款狀態變了 → 重建「付款方式」下拉的選項
 function onPayStatusChange() {
@@ -876,6 +881,7 @@ function suggestFileName(record, originalName) {
 function submitRecord() {
   if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
   if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
+  if (!f_purpose.value.trim()) { showToast("請填寫活動／用途說明"); f_purpose.focus(); return; }
   const f_budgetItem = document.getElementById("f_budgetItem");
   if (!f_budgetItem.value) { showToast("請選擇預算項目（真的不知道可以選「不確定預算項目」）"); f_budgetItem.focus(); return; }
 
@@ -1124,7 +1130,7 @@ function renderQuoteCases(all) {
     const paid = [p].concat(children).reduce((s, r) => s + (Number(r.amount) || 0), 0);
     const total = Number(p.quoteTotal) || 0;
     const remain = Math.max(total - paid, 0);
-    const who = p.vendor || p.items || p.project || "報價單";
+    const who = p.vendor || p.purpose || p.project || "報價單";
     return `
       <div class="quote-case">
         <div class="quote-case-head">
@@ -1151,7 +1157,7 @@ function openAttachInvoice(caseId) {
   attachFile = { dataUrl: "", name: "" };
   modalBody.innerHTML = `
     <div class="detail-title">補上正式發票</div>
-    <div class="detail-sub">${escapeHtml(p.vendor || p.items || "報價單")}｜報價總額 ${fmtMoney(Number(p.quoteTotal) || 0)}</div>
+    <div class="detail-sub">${escapeHtml(p.vendor || p.purpose || "報價單")}｜報價總額 ${fmtMoney(Number(p.quoteTotal) || 0)}</div>
     <label class="field-label" style="margin-top:14px;">正式發票 / 收據檔案 <span class="req">*</span></label>
     <input type="file" id="attachFileInput" accept="image/*,.pdf" class="text-input">
     <label class="field-label">單據類型</label>
@@ -1210,12 +1216,19 @@ function receiptReminderHtml(r, sk) {
 function recordItemHtml(r, { showUploader }) {
   const sk = recStatusKey(r);
   const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
-  const localBadge = r._localOnly ? `<span class="cloud-badge unsynced">☁ 未同步</span>` : "";
+  // r._localOnly 只代表「這台瀏覽器上、後端上次撈回來的清單裡還看不到它」，
+  // 不代表真的沒同步——剛送出的那幾秒內，雲端可能早就寫入成功了，只是還沒重新整理清單。
+  // 一定要看 r.cloudSynced 才知道實際同不同步，不然會像這次一樣，總表明明有資料卻一直顯示未同步。
+  const localBadge = r._localOnly
+    ? (r.cloudSynced
+        ? `<span class="cloud-badge synced">☁ 已同步（清單尚待整理）</span>`
+        : `<span class="cloud-badge unsynced">☁ 未同步</span>`)
+    : "";
   const docBadge = (r.docType && r.docType !== "發票") ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
   return `
     <div class="record-item" data-id="${escapeHtml(r.id)}">
       <div class="record-main">
-        <div class="record-title">${docBadge}${escapeHtml(r.vendor || r.items || "未命名單據")}</div>
+        <div class="record-title">${docBadge}${escapeHtml(r.vendor || r.purpose || "未命名單據")}</div>
         <div class="record-meta">
           ${showUploader ? `<span>${escapeHtml(r.uploader)}</span>` : ""}
           <span>${escapeHtml(r.project)}</span>
@@ -1263,7 +1276,7 @@ function openDetailModal(id) {
 
   modalBody.innerHTML = `
     ${imgHtml}
-    <div class="detail-title">${isQuote ? '<span class="doc-badge">報價單</span> ' : ""}${escapeHtml(r.vendor || r.items || "未命名單據")}</div>
+    <div class="detail-title">${isQuote ? '<span class="doc-badge">報價單</span> ' : ""}${escapeHtml(r.vendor || r.purpose || "未命名單據")}</div>
     <div class="detail-sub">建議檔名：${escapeHtml(r.fileName || "—")}</div>
     <div class="detail-grid">
       <dt>上傳人</dt><dd>${escapeHtml(r.uploader)}</dd>

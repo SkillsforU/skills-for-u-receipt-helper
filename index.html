@@ -117,16 +117,16 @@
           <p class="field-hint">分期付款時，「金額」填這次要付的（例如訂金），「報價總額」填整張報價的總額。</p>
         </div>
         <div class="form-field">
-          <label class="field-label">活動 / 用途說明</label>
-          <input type="text" id="f_purpose" class="text-input" placeholder="例如：7 月理監事會議餐費">
+          <label class="field-label">發票內容 / 品項摘要</label>
+          <input type="text" id="f_items" class="text-input" placeholder="例如：文具用品一批">
         </div>
         <div class="form-field span-2">
           <label class="field-label">店家 / 憑證抬頭</label>
           <input type="text" id="f_vendor" class="text-input" placeholder="例如：全家便利商店">
         </div>
         <div class="form-field span-2">
-          <label class="field-label">發票內容 / 品項摘要</label>
-          <textarea id="f_items" class="textarea-input" rows="2" placeholder="例如：文具用品一批"></textarea>
+          <label class="field-label">活動 / 用途說明 <span class="req">*</span></label>
+          <textarea id="f_purpose" class="textarea-input" rows="2" placeholder="例如：7 月理監事會議餐費"></textarea>
         </div>
         <!-- 預算項目清單依「所屬專案」而定，選項在切換上傳人/專案那一步就會先抓好（見 app.js 的 populateBudgetItemOptions） -->
         <div class="form-field span-2">
