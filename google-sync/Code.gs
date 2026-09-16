@@ -546,14 +546,28 @@ function recognizeReceipt_(images) {
   };
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
-  const res = UrlFetchApp.fetch(url, {
+  const fetchOpts = {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
-  });
+  };
 
-  const status = res.getResponseCode();
+  // Gemini 免費方案偶爾會回 500/503（伺服器忙碌/過載），這是 Google 那端的暫時性問題，
+  // 通常等個一兩秒重打一次就會成功——實測沒重試時失敗率高到影響可用性，加上這個明顯改善。
+  // 只對 500/503 重試（過載/暫時故障才值得重打），429（額度用完）、4xx（請求本身有問題）
+  // 重打也不會變好，直接當作失敗回傳。最多重試 2 次，加起來頂多多等 3 秒左右，
+  // 遠低於前端 120 秒的逾時上限，不會讓使用者等到卡住的感覺。
+  const RETRYABLE_STATUSES = [500, 503];
+  const RETRY_DELAYS_MS = [1000, 2000];
+  let res = UrlFetchApp.fetch(url, fetchOpts);
+  let status = res.getResponseCode();
+  for (let i = 0; i < RETRY_DELAYS_MS.length && RETRYABLE_STATUSES.indexOf(status) !== -1; i++) {
+    Utilities.sleep(RETRY_DELAYS_MS[i]);
+    res = UrlFetchApp.fetch(url, fetchOpts);
+    status = res.getResponseCode();
+  }
+
   if (status !== 200) {
     return { ok: false, error: 'Gemini API 錯誤（狀態碼 ' + status + '）：' + res.getContentText().slice(0, 800) };
   }

@@ -55,7 +55,7 @@
       <select id="docTypeSelect" class="select-input">
         <option value="發票">發票</option>
         <option value="收據">收據</option>
-        <option value="報價單">報價單（先付款、之後再補正式發票）</option>
+        <option value="報價單">報價單（之後需補正式發票）</option>
       </select>
 
       <div class="dropzone" id="dropzone">
@@ -97,7 +97,7 @@
           <input type="text" id="f_period" class="text-input" readonly placeholder="—">
         </div>
         <div class="form-field">
-          <label class="field-label">金額 <span class="req">*</span> <span class="field-flag" id="flag-amount"></span></label>
+          <label class="field-label"><span id="f_amountLabelText">金額</span> <span class="req">*</span> <span class="field-flag" id="flag-amount"></span></label>
           <input type="number" id="f_amount" class="text-input" placeholder="0" min="0" step="1">
         </div>
 
@@ -107,14 +107,14 @@
           <select id="f_linkedQuote" class="select-input">
             <option value="">不是，這是獨立的一筆</option>
           </select>
-          <p class="field-hint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」，上面的「金額」填這次要付的部分。</p>
+          <p class="field-hint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」。</p>
         </div>
 
         <!-- 報價總額：單據類型為報價單、且不是別張報價單的後續款時出現 -->
         <div class="form-field span-2" id="quoteTotalField" hidden>
           <label class="field-label">報價總額 <span class="req">*</span></label>
           <input type="number" id="f_quoteTotal" class="text-input" placeholder="這張報價單的總金額" min="0" step="1">
-          <p class="field-hint">分期付款時，「金額」填這次要付的（例如訂金），「報價總額」填整張報價的總額。</p>
+          <p class="field-hint">分次付款時（例如先付訂金、之後再付尾款），這裡請填整張報價的總額。</p>
         </div>
         <div class="form-field">
           <label class="field-label">發票內容 / 品項摘要</label>
@@ -238,6 +238,8 @@
     <div class="card">
       <h1 class="card-title">上傳紀錄</h1>
       <p class="card-sub">查看單據上傳與審核狀態。實際的同意／退回請主管到 Google 試算表的專案審核表操作，這裡只顯示結果</p>
+
+      <div class="confidence-banner mid" id="mineLoadingHint" hidden>🔄 正在讀取最新紀錄…</div>
 
       <div class="stat-row">
         <div class="stat-pill stat-pending"><span id="statPending">0</span> 待審核</div>

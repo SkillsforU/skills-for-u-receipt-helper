@@ -612,6 +612,7 @@ body {
   padding: 10px 14px;
   line-height: 1.6;
 }
+.login-hint.login-hint-info { color: var(--navy); background: var(--page-bg); } /* 中性狀態（登入中…），不是錯誤 */
 
 /* ---------- 單據類型徽章 ---------- */
 .doc-badge {

@@ -239,9 +239,9 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 function switchView(name) {
   Object.entries(views).forEach(([key, el]) => { el.hidden = key !== name; });
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
-  // 每次切到這頁都重新跟後端要一次最新清單（不是只用快取），
-  // 不然剛送出的單據要等下次手動按「重新載入」才會從「未同步」變成正常顯示。
-  if (name === "mine") loadAllRecordsFromCloud();
+  // 快取夠新（20 秒內）就直接用快取秒開，太舊才真的重抓一次；
+  // 送出單據後那一刻已經在背景偷偷刷新過快取了（見 submitRecord），所以通常切過來就是最新的。
+  if (name === "mine") ensureMineDataFresh();
   if (name === "lists") renderListsView();
 }
 
@@ -731,6 +731,10 @@ function populateLinkedQuoteOptions() {
 function updateQuoteFields() {
   const isQuote = docTypeSelect.value === DOC_TYPE_QUOTE;
   document.getElementById("quoteTotalField").hidden = !(isQuote && !f_linkedQuote.value);
+  // 報價單相關（不管是母筆還是後續款）都把「金額」欄位的字改成「本次付款金額」，
+  // 因為分次付款時這欄裝的只是這一次要付的部分，不是整張報價的總額，字面上要講清楚。
+  const isQuoteRelated = isQuote || !!f_linkedQuote.value;
+  document.getElementById("f_amountLabelText").textContent = isQuoteRelated ? "本次付款金額" : "金額";
 }
 f_linkedQuote.addEventListener("change", updateQuoteFields);
 docTypeSelect.addEventListener("change", updateQuoteFields);
@@ -1007,7 +1011,11 @@ function submitRecord() {
   resetUrgency(); // 避免「緊急」殘留到下一筆
   uploaderSelect.value = uploaderSelect.value; // 保留上傳人，方便連續上傳
 
-  syncRecordToCloud(record, "create");
+  syncRecordToCloud(record, "create").then((res) => {
+    // 送出成功的話，順手在背景把「上傳紀錄」的快取刷新一次（不擋畫面、不用等），
+    // 這樣等使用者真的點過去看時，這筆多半已經在正式清單裡了，不會卡在「未同步」的過渡狀態。
+    if (res && res.ok) loadAllRecordsFromCloud();
+  });
 }
 
 /* ============================================================
@@ -1038,11 +1046,29 @@ function mergedRecords() {
   return server.concat(localOnly);
 }
 
+let lastRecordsLoadedAt = 0;
+const RECORDS_CACHE_MS = 20000; // 20 秒內重複切回這頁直接用快取秒開，不用每次都整個重抓（Apps Script 這一趟常常要等好幾秒）
+
+// 切到「上傳紀錄」時呼叫：快取夠新就直接用快取秒開；太舊或還沒載過才真的去後端要一次。
+function ensureMineDataFresh() {
+  if (serverRecords === null || Date.now() - lastRecordsLoadedAt > RECORDS_CACHE_MS) {
+    loadAllRecordsFromCloud();
+  } else {
+    renderMineView();
+  }
+}
+
 async function loadAllRecordsFromCloud() {
   if (!isSignedIn()) { showToast("尚未登入"); return; }
+  // 已經有舊資料的話，先把舊清單維持顯示，只在上面加一個小提示，不要整個清空變白——
+  // 不然每次重新整理都像「卡住了」，這正是使用者反映「等很久看起來沒反應」的原因之一。
+  const loadingHint = document.getElementById("mineLoadingHint");
+  if (loadingHint) loadingHint.hidden = false;
   const data = await cloudPost("getAllRecords");
+  if (loadingHint) loadingHint.hidden = true;
   if (!data || !data.ok) { showToast("載入失敗：" + ((data && data.error) || "未知錯誤")); return; }
   serverRecords = Array.isArray(data.records) ? data.records : [];
+  lastRecordsLoadedAt = Date.now();
   renderMineView();
 }
 
@@ -1402,28 +1428,44 @@ async function cloudPost(action, extra) {
   return data;
 }
 
-/* ---- 登入畫面與流程 ---- */
+/* ---- 登入畫面與流程 ----
+   Google 發的「登入證明」(ID token) 本身大約 1 小時就會過期，這是 Google 寫死的安全限制，
+   沒辦法直接調成一週那麼長。但只要瀏覽器裡 Google 帳號本身還在登入狀態（這個通常放很久，
+   跟 Gmail 一樣），就可以在背景安靜地換發新的證明，使用者完全不會看到、也不用重新點登入
+   ——這裡做的就是這件事：定時背景換發 + 開頁面時盡量安靜地自動登入，把「感覺上要一直重新
+   登入」的問題降到最低，而不是假裝能讓同一張證明本身撐更久（那個做不到）。 */
+const TOKEN_SILENT_REFRESH_MS = 45 * 60 * 1000; // 45 分鐘背景換發一次，搶在 ~1 小時到期之前
+let tokenRefreshTimer = null;
+
 function initGoogleAuth() {
   if (!(window.google && google.accounts && google.accounts.id)) return;
-  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential, auto_select: true });
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: onGoogleCredential,
+    auto_select: true,
+    use_fedcm_for_prompt: true, // Google 目前建議的做法，第三方 cookie 陸續被瀏覽器擋掉後，沒開這個容易出現「點了帳號卻沒反應」
+  });
   const btnWrap = document.getElementById("googleSignInBtn");
   if (btnWrap) {
     btnWrap.innerHTML = "";
     google.accounts.id.renderButton(btnWrap, { theme: "filled_blue", size: "large", text: "signin_with", shape: "pill", width: 260 });
   }
-  google.accounts.id.prompt(); // 有登入過的話直接跳 One Tap
+  // 有登入過的話盡量安靜地直接帶入，不用使用者自己點；先給個提示字樣，
+  // 免得使用者在這一兩秒空窗期以為畫面卡住了。保險起見最多等 4 秒就把提示收掉，
+  // 避免瀏覽器判斷「這次不顯示」時 callback 沒被呼叫、提示留在畫面上一直不消失。
+  showLoginStatus("正在確認登入狀態…");
+  const hideSoon = setTimeout(hideLoginStatus, 4000);
+  google.accounts.id.prompt(() => { clearTimeout(hideSoon); hideLoginStatus(); });
 }
 // GIS 是 async 載入的，載好會呼叫這個全域函式；萬一它比 app.js 早載好，下面初始化時也會再試一次。
 window.onGoogleLibraryLoad = initGoogleAuth;
 
 function onGoogleCredential(resp) {
   idToken = resp && resp.credential;
-  if (idToken) onSignedIn();
+  if (idToken) { showLoginStatus("登入中…"); onSignedIn(); }
 }
 
 async function onSignedIn() {
-  const hint = document.getElementById("loginHint");
-  if (hint) hint.hidden = true;
   let data;
   try {
     data = await cloudPost("getConfig"); // 同時驗證身分、抓名單、拿到「我是誰」
@@ -1436,20 +1478,47 @@ async function onSignedIn() {
     idToken = null;
     return;
   }
+  hideLoginStatus();
   applyCloudConfig(data);
   const gate = document.getElementById("loginGate");
   if (gate) gate.hidden = true;
   const chip = document.getElementById("accountChip");
   if (chip) chip.hidden = false;
+  scheduleTokenRefresh();
 }
 
+// 中性狀態（登入中…／正在確認…），跟下面的錯誤訊息共用同一個元素但顏色不同，避免看起來像出錯了
+function showLoginStatus(msg) {
+  const hint = document.getElementById("loginHint");
+  if (hint) { hint.textContent = msg; hint.className = "login-hint login-hint-info"; hint.hidden = false; }
+}
+function hideLoginStatus() {
+  const hint = document.getElementById("loginHint");
+  // 只收「中性狀態」那一種，真正的錯誤訊息（沒有 login-hint-info 這個 class）要留著讓人看到
+  if (hint && hint.classList.contains("login-hint-info")) hint.hidden = true;
+}
 function showLoginError(msg) {
   const hint = document.getElementById("loginHint");
-  if (hint) { hint.textContent = msg; hint.hidden = false; }
+  if (hint) { hint.textContent = msg; hint.className = "login-hint"; hint.hidden = false; }
+}
+
+// 背景定時安靜換發新的登入證明，使用者不會看到任何畫面變化；換發失敗也不主動打擾，
+// 反正真的過期時，下一次打 API 會收到 authError、onAuthExpired 自然會跳回登入畫面。
+function scheduleTokenRefresh() {
+  if (tokenRefreshTimer) clearInterval(tokenRefreshTimer);
+  tokenRefreshTimer = setInterval(() => {
+    if (!isSignedIn()) return;
+    try { google.accounts.id.prompt(); } catch (e) { /* 安靜失敗，等真的過期再處理 */ }
+  }, TOKEN_SILENT_REFRESH_MS);
+}
+function stopTokenRefresh() {
+  if (tokenRefreshTimer) clearInterval(tokenRefreshTimer);
+  tokenRefreshTimer = null;
 }
 
 function onAuthExpired() {
   idToken = null;
+  stopTokenRefresh();
   const gate = document.getElementById("loginGate");
   if (gate) gate.hidden = false;
   const chip = document.getElementById("accountChip");
@@ -1462,6 +1531,7 @@ function signOut() {
   try { google.accounts.id.disableAutoSelect(); } catch (e) {}
   idToken = null;
   currentUser = null;
+  stopTokenRefresh();
   const chip = document.getElementById("accountChip");
   if (chip) chip.hidden = true;
   const gate = document.getElementById("loginGate");
