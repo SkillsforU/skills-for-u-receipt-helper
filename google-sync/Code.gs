@@ -889,10 +889,13 @@ function attachFinalDocument_(body) {
     const note = isStaged
       ? '報價分期已付合計 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，請確認後重新核准。'
       : '報價金額 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，已更新為發票金額，請重新核准。';
-    // 母筆打回待審核：狀態、審核人、審核時間、退回原因四欄連續一次寫入
-    sheet.getRange(parentRow, MASTER_STATUS_COL, 1, 4).setValues([['待審核', '', '', note]]);
+    // 只寫審核表（狀態打回待審核、審核備註寫上不符原因），不直接動總表的狀態/審核人/審核時間/
+    // 退回原因——那幾欄只能從審核表同步過去，見 resetReviewRowForReReview_ 的說明。
     try {
-      resetReviewRowForReReview_(targetId, project, newDocType, isStaged ? null : invoiceAmount);
+      resetReviewRowForReReview_(targetId, project, newDocType, isStaged ? null : invoiceAmount, note);
+      // 立刻跑一次既有的「審核表→總表」同步，總表才會馬上看到這次的退回原因，
+      // 不用等到隔天的排程或有人手動按「立即同步審核結果」。
+      syncApprovalsToMaster();
     } catch (err) {
       console.error('把審核表打回待審核失敗：' + err);
     }
@@ -930,14 +933,19 @@ function updateReviewDocType_(recordId, projectName, docType, amountOrNull) {
   if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
 }
 
-// 補件金額不符：更新審核表單據類型/金額，並把審核三欄打回「待審核」清空另兩欄，
-// 讓主管重新看到、重新核准（否則隔天 review→master 同步會把舊的已核准推回總表）
-function resetReviewRowForReReview_(recordId, projectName, docType, amountOrNull) {
+// 補件金額不符：更新審核表單據類型/金額，並把審核三欄打回「待審核」、審核備註寫上不符原因，
+// 讓主管重新看到、重新核准。
+//
+// ⚠️ 這裡只寫審核表，不直接碰總表的狀態/審核人/審核時間/退回原因——那幾欄照系統的資料流向，
+// 本來就該「只能從審核表同步回總表」，不能被任何程式直接寫入，不然總表跟審核表兩邊各自有一條
+// 寫入路徑，之後兩邊對不起來也不知道該信哪邊。要讓總表看到這次的退回原因，正確做法是讓它透過
+// syncApprovalsToMaster() 的既有同步機制流過去（呼叫端會在這之後補呼叫一次），不是自己寫。
+function resetReviewRowForReReview_(recordId, projectName, docType, amountOrNull, note) {
   const loc = findReviewRowForRecord_(recordId, projectName);
   if (!loc) return;
   loc.sheet.getRange(loc.row, REVIEW_DOCTYPE_COL).setValue(docType);
   if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
-  loc.sheet.getRange(loc.row, REVIEW_EDITABLE_START_COL, 1, REVIEW_EDITABLE_COL_COUNT).setValues([['待審核', '', '']]);
+  loc.sheet.getRange(loc.row, REVIEW_EDITABLE_START_COL, 1, REVIEW_EDITABLE_COL_COUNT).setValues([['待審核', '', note || '']]);
 }
 
 function statusLabel_(status) {
@@ -1346,18 +1354,25 @@ function syncApprovalsToMaster() {
       const masterData = all[masterRow - 3];
 
       // (A) 審核結果：審核表 → 總表
+      // 這是總表狀態/審核人/審核時間/退回原因這四欄唯一合法的寫入來源——不管是人在審核表上
+      // 操作、還是系統想把某筆打回待審核重審（見 attachFinalDocument_），一律得先寫進審核表，
+      // 再靠這裡同步過去，總表本身永遠不會被其他程式直接動這四欄。
       const status = row[REVIEW_EDITABLE_START_COL - 1];
       const reviewer = row[REVIEW_REVIEWER_COL - 1];
       const note = row[REVIEW_NOTE_COL - 1];
-      const statusChanged = status && status !== '待審核' &&
+      // 以前這裡會排除 status === '待審核' 的情況（多半是「新列本來就都是待審核，兩邊沒差異」
+      // 的效能捷徑），但這樣會漏掉「已經審過、現在要因為補件金額不符被打回待審核」這種真實的
+      // 狀態轉換——總表會停在舊的「已核准」，看不出這筆其實需要重新審核。改成不管新狀態是什麼，
+      // 只要跟總表現在存的不一樣就同步過去；「待審核」狀態底下審核人/審核時間清空，因為這代表
+      // 還沒有人真正審過，不該留著上一輪的審核人跟時間造成誤會。
+      const statusChanged = status &&
         (masterData[MASTER_STATUS_COL - 1] !== status ||
          masterData[MASTER_REVIEWER_COL - 1] !== reviewer ||
          masterData[MASTER_REJECT_REASON_COL - 1] !== note);
 
       if (statusChanged) {
-        master.getRange(masterRow, MASTER_STATUS_COL, 1, 4).setValues([[
-          status, reviewer, formatDateTime_(new Date().toISOString()), note,
-        ]]);
+        const reviewedAt = status === '待審核' ? '' : formatDateTime_(new Date().toISOString());
+        master.getRange(masterRow, MASTER_STATUS_COL, 1, 4).setValues([[status, reviewer, reviewedAt, note]]);
         updated++;
 
         // 退回的憑證搬到「已退回」資料夾；改判核准則搬回原本的專案/年月資料夾。
