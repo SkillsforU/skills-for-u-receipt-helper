@@ -946,31 +946,36 @@ function getReviewSheet_(ss) {
 }
 
 function getOrCreateCenterSpreadsheet_(center) {
+  // 只有「審核表ID 完全空白」時才會自動建立全新的一份。
+  // ⚠️ 只要 ID 有填、卻打不開（永久刪除／沒有存取權／Google 暫時出錯），一律「明確報錯、不自動新建」——
+  //    自動新建會產生第二份重複的審核表，還會把「審核表ID」改指到那份空的新表，
+  //    讓原本那份（含所有審核資料）變成孤兒。真實踩過這個坑（組織發展中心跑出兩份）。
+  //    要重建的話，請人工把該中心的「審核表ID」「審核表連結」兩欄清空後再執行選單①。
   if (center.reviewSheetId) {
+    let existing;
     try {
-      const existing = SpreadsheetApp.openById(center.reviewSheetId);
-      // openById 對「已丟進垃圾桶」的檔案不會報錯，還是打得開——如果不特別檢查，
-      // 系統會誤以為審核表還在，繼續往垃圾桶裡的舊檔案寫資料，新的完全不會出現在該出現的資料夾。
-      // 這裡刻意不自動重建：垃圾桶裡的檔案 30 天內都還在，可能是誤刪，貿然重建
-      // 會讓新舊兩份同時存在，之後有人把舊的救回來反而搞不清楚哪份才是正本。
-      // 明確報錯，把「救回來」還是「清空這格讓它重建」的決定交給人來下。
-      if (DriveApp.getFileById(center.reviewSheetId).isTrashed()) {
-        throw new Error(
-          '中心「' + center.name + '」的審核表（ID: ' + center.reviewSheetId + '）目前在垃圾桶裡，' +
-          '未自動重建。請到 Google 雲端硬碟垃圾桶把它復原，或是把「' + CENTERS_SHEET_NAME +
-          '」分頁裡這個中心的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
-        );
-      }
-      const existingSheet = getReviewSheet_(existing);
-      // 有人手動把整份審核表的內容清空（連標題列一起刪）時，補回標題，跟總表 getSheet_() 是同一個防線。
-      // 判斷方式同樣改成「第 2 列本身是不是空的」，理由見 headerRowBlank_ 的說明——
-      // 第 1 列的人工標註有內容時，getLastRow()===0 這個舊判斷法會誤判成「不用補標題」。
-      if (headerRowBlank_(existingSheet, REVIEW_HEADERS.length)) setupReviewSheetHeaders_(existingSheet);
-      return existing;
+      existing = SpreadsheetApp.openById(center.reviewSheetId);
     } catch (e) {
-      if (String(e).indexOf('目前在垃圾桶裡') !== -1) throw e; // 上面主動拋出的錯誤要讓它往外傳，不能被下面的 catch 吞掉
-      // openById 本身失敗（例如檔案被永久刪除），才走到這裡重新建立
+      throw new Error(
+        '中心「' + center.name + '」的審核表（ID: ' + center.reviewSheetId + '）打不開' +
+        '（可能被永久刪除、沒有存取權，或 Google 暫時出錯），未自動重建以免產生重複的審核表。' +
+        '請確認「' + CENTERS_SHEET_NAME + '」分頁裡這個中心的「審核表ID」是否正確；' +
+        '若確定要建一份全新的，請把該中心的「審核表ID」「審核表連結」兩欄清空後再執行選單①。'
+      );
     }
+    // openById 對「已丟進垃圾桶」的檔案不會報錯，還是打得開——不特別檢查的話，會一直往垃圾桶裡的
+    // 舊檔案寫，新資料完全不會出現在該出現的地方。同樣明確報錯，不自動重建。
+    if (DriveApp.getFileById(center.reviewSheetId).isTrashed()) {
+      throw new Error(
+        '中心「' + center.name + '」的審核表（ID: ' + center.reviewSheetId + '）目前在垃圾桶裡，' +
+        '未自動重建。請到 Google 雲端硬碟垃圾桶把它復原，或是把「' + CENTERS_SHEET_NAME +
+        '」分頁裡這個中心的「審核表ID」「審核表連結」兩欄清空後再重新執行這個選單，讓系統建立全新的審核表。'
+      );
+    }
+    const existingSheet = getReviewSheet_(existing);
+    // 有人手動把整份審核表的內容清空（連標題列一起刪）時補回標題，判斷方式見 headerRowBlank_。
+    if (headerRowBlank_(existingSheet, REVIEW_HEADERS.length)) setupReviewSheetHeaders_(existingSheet);
+    return existing;
   }
   const ss = SpreadsheetApp.create('單據審核 - ' + center.name);
   const sheet = ss.getSheets()[0]; // 全新建立的試算表只有一個分頁，這裡就是要幫它命名，不用查名字
