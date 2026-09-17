@@ -46,6 +46,9 @@
    ============================================================ */
 const SHEET_NAME = '收支總表';     // 總表裡要寫入的分頁名稱，找不到會自動建立
 const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
+// 「中心審核表」存放資料夾的 ID（固定指定，避免每次靠名字找而不小心生出重複的資料夾）。
+// 留空 = 退回「在主資料夾底下用名字找/建一個『中心審核表』子資料夾」。
+const REVIEW_SHEETS_FOLDER_ID = '1yd8pwY-ZWfBreVD-qaj40J14Vs-tpqcM';
 
 // v2 起改用「Google 登入」驗證身分，取代舊的 SECRET_TOKEN 密碼。
 // 前端會要求同事用組織帳號（@skillsforu.org）登入 Google，拿到一張「身分證明」(ID token)
@@ -650,6 +653,13 @@ function getRootFolder_() {
   return DriveApp.createFolder(name);
 }
 
+// 中心審核表要放進哪個資料夾：有指定 REVIEW_SHEETS_FOLDER_ID 就用那個現成資料夾（最穩，
+// 不會靠名字找而生出重複資料夾）；沒指定才退回「在主資料夾底下用名字找/建『中心審核表』子資料夾」。
+function getReviewSheetsFolder_() {
+  if (REVIEW_SHEETS_FOLDER_ID) return DriveApp.getFolderById(REVIEW_SHEETS_FOLDER_ID);
+  return findOrCreateSubfolder_(getRootFolder_(), '中心審核表');
+}
+
 function findOrCreateSubfolder_(parent, name) {
   const it = parent.getFoldersByName(name);
   if (it.hasNext()) return it.next();
@@ -983,9 +993,9 @@ function getOrCreateCenterSpreadsheet_(center) {
   setupReviewSheetHeaders_(sheet);
   saveCenterReviewSheet_(center, ss.getId(), ss.getUrl());
 
-  // 放進主資料夾下的「中心審核表」子資料夾，方便集中管理
+  // 放進「中心審核表」資料夾（見 getReviewSheetsFolder_，有指定 ID 就用固定那個），方便集中管理
   try {
-    DriveApp.getFileById(ss.getId()).moveTo(findOrCreateSubfolder_(getRootFolder_(), '中心審核表'));
+    DriveApp.getFileById(ss.getId()).moveTo(getReviewSheetsFolder_());
   } catch (e) {
     console.error('搬移審核表到資料夾失敗（不影響功能）：' + e);
   }
