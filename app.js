@@ -978,6 +978,11 @@ function submitRecord() {
     showToast("請先上傳憑證檔案（若這筆真的沒有單據，請把「單據類型」改成『沒有單據』）");
     return;
   }
+  // 「沒有單據」一定要掛在某張報價單底下（它就是「報價單的後續款、之後補發票」），不能是獨立一筆
+  if (docType === DOC_TYPE_NONE && !linkedQuoteId) {
+    showToast("「沒有單據」必須選擇它是哪一張報價單的後續款，不能是獨立的一筆");
+    f_linkedQuote.focus(); return;
+  }
   let quoteTotal = "";
   if (docType === DOC_TYPE_QUOTE && !linkedQuoteId) {
     if (!f_quoteTotal.value || Number(f_quoteTotal.value) <= 0) {
@@ -1142,12 +1147,25 @@ function uploadDateOf(r) {
   const d = new Date(s);
   return isNaN(d.getTime()) ? "" : fmtDateYMD(d);
 }
-// 合併：後端全部 + 本機還沒同步成功的（後端找不到的），後者標記未同步，才不會讓剛上傳的看不到
+// 合併：後端全部 + 本機「還沒同步成功」的（後端找不到、且 cloudSynced 不是 true）。
+// ⚠️ 關鍵：只補「真的還沒同步成功」的本機紀錄。已經同步成功過(cloudSynced=true)卻在後端找不到的，
+//    代表它是在總表被刪掉了——這種就不要再顯示（不然會變成刪不掉的幽靈一直掛著）。
 function mergedRecords() {
   const server = serverRecords || [];
   const ids = new Set(server.map(r => r.id));
-  const localOnly = loadRecords().filter(r => !ids.has(r.id)).map(r => Object.assign({}, r, { _localOnly: true }));
+  const localOnly = loadRecords()
+    .filter(r => !ids.has(r.id) && !r.cloudSynced)
+    .map(r => Object.assign({}, r, { _localOnly: true }));
   return server.concat(localOnly);
+}
+
+// 每次成功跟後端拿到最新清單後，把本機那些「已經同步成功」的紀錄清掉：
+// 它們該有的資料都在後端了，本機留著只會佔空間、還會在總表被刪掉後變成幽靈。
+// 只保留「還沒同步成功」的，讓它們還能顯示成未同步、之後可重試。
+function pruneSyncedLocalRecords() {
+  const records = loadRecords();
+  const keep = records.filter(r => !r.cloudSynced);
+  if (keep.length !== records.length) saveRecords(keep);
 }
 
 let lastRecordsLoadedAt = 0;
@@ -1173,6 +1191,7 @@ async function loadAllRecordsFromCloud() {
   if (!data || !data.ok) { showToast("載入失敗：" + ((data && data.error) || "未知錯誤")); return; }
   serverRecords = Array.isArray(data.records) ? data.records : [];
   lastRecordsLoadedAt = Date.now();
+  pruneSyncedLocalRecords(); // 清掉本機已同步的殘留（含被總表刪掉的幽靈）
   renderMineView();
 }
 
@@ -1201,6 +1220,22 @@ document.getElementById("refreshStatusBtn").addEventListener("click", async (e) 
   await loadAllRecordsFromCloud();
   btn.textContent = originalText;
   btn.disabled = false;
+});
+
+// 清除本機暫存：把這台瀏覽器 localStorage 裡的紀錄全部清掉（不會動到雲端/總表的任何資料）。
+// 主要用途：清掉那些「總表已刪、本機還掛著」的舊測試資料。已同步的清掉沒差（雲端還有）；
+// 若有還沒同步成功的，清掉那幾筆就真的沒了，所以警語先數給使用者看。
+document.getElementById("clearLocalBtn").addEventListener("click", () => {
+  const records = loadRecords();
+  if (records.length === 0) { showToast("目前沒有本機暫存可清除"); return; }
+  const unsynced = records.filter(r => !r.cloudSynced).length;
+  const warn = unsynced > 0
+    ? `其中有 ${unsynced} 筆還沒同步成功，清除後這幾筆會真的消失、無法復原。`
+    : `這些都已經同步到雲端，清除本機不影響總表/雲端資料。`;
+  if (!window.confirm(`確定清除這台瀏覽器上的 ${records.length} 筆本機暫存嗎？\n\n${warn}\n\n（不會動到總表/雲端）`)) return;
+  localStorage.removeItem(STORAGE_KEY);
+  loadAllRecordsFromCloud();
+  showToast("已清除本機暫存");
 });
 
 function renderMineView() {
