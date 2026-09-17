@@ -254,15 +254,33 @@
         <div class="stat-pill stat-rejected"><span id="statRejected">0</span> 已退回</div>
       </div>
 
-      <div class="filter-row">
-        <select id="mineUploaderFilter" class="select-input select-input-sm">
-          <option value="">全部上傳人</option>
-        </select>
-        <select id="mineProjectFilter" class="select-input select-input-sm">
-          <option value="">全部專案</option>
-        </select>
-        <input type="date" id="mineDateFrom" class="text-input select-input-sm" title="上傳日期（起）">
-        <input type="date" id="mineDateTo" class="text-input select-input-sm" title="上傳日期（迄）">
+      <div class="filter-panel">
+        <div class="filter-title">篩選條件</div>
+        <div class="filter-fields">
+          <div class="filter-field">
+            <label class="filter-label" for="mineUploaderFilter">上傳人</label>
+            <select id="mineUploaderFilter" class="select-input select-input-sm">
+              <option value="">全部上傳人</option>
+            </select>
+          </div>
+          <div class="filter-field">
+            <label class="filter-label" for="mineProjectFilter">所屬專案</label>
+            <select id="mineProjectFilter" class="select-input select-input-sm">
+              <option value="">全部專案</option>
+            </select>
+          </div>
+          <div class="filter-field">
+            <label class="filter-label">上傳日期區間</label>
+            <div class="date-range">
+              <input type="date" id="mineDateFrom" class="text-input date-input" aria-label="起始日期">
+              <span class="date-range-sep">～</span>
+              <input type="date" id="mineDateTo" class="text-input date-input" aria-label="結束日期">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-actions">
         <button class="ghost-btn ghost-btn-sm" id="refreshStatusBtn">🔄 重新載入</button>
         <button class="ghost-btn ghost-btn-sm" id="exportCsvBtn">匯出 CSV</button>
         <button class="ghost-btn ghost-btn-sm ghost-btn-danger" id="clearLocalBtn">清除本機暫存</button>

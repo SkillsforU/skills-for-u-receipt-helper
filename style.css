@@ -647,3 +647,20 @@ body {
 .quote-case-nums b { color: var(--navy); }
 .quote-case-nums .remain-pos b { color: var(--danger); }
 .quote-case-nums .remain-zero b { color: var(--success); }
+
+/* ---------- 上傳紀錄篩選面板（重新設計，有標籤、日期用「從～到」） ---------- */
+.filter-panel {
+  background: var(--dropzone-bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 12px 16px 14px;
+  margin-bottom: 12px;
+}
+.filter-title { font-size: 12px; font-weight: 800; color: var(--navy); margin-bottom: 10px; letter-spacing: 0.03em; }
+.filter-fields { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
+.filter-field { display: flex; flex-direction: column; gap: 5px; }
+.filter-label { font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.date-range { display: flex; align-items: center; gap: 8px; }
+.date-range-sep { color: var(--text-muted); font-size: 14px; }
+.date-input { font-size: 13px; padding: 9px 12px; font-weight: 600; width: auto; }
+.filter-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
