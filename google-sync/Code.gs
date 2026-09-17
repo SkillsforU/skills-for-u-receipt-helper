@@ -100,11 +100,14 @@ const SEED_PROJECTS = [
 // 總表欄位順序。調整時 createRow_ 的寫入順序與下面的欄位位置常數要一起改。
 // 第 1 列留給人工填寫的「自動帶入／手動填寫（誰）」標註，程式不會去動它；
 // 標題實際寫在第 2 列，真正的資料從第 3 列開始（見 getSheet_ / findRowById_ 等處的列位置）。
+// 欄位順序＝ Rosy 2026-09-17 在總表上排好的版本（財務要看的欄位集中在一起）。
+// 「單據內容/發票內容」已拿掉（看憑證即可）；「確認事項」一欄身兼「信用卡紙本兩項確認」與
+// 「報價金額不符原因」（兩者幾乎不會同時發生，真的同時就把兩段文字接在一起）。
 const HEADERS = [
-  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '單據內容', '公司名稱', '用途', '預算項目',
-  '所屬期間', '付款狀態', '付款方式', '信用卡形式', '還款對象', '收款對象', '付款資訊', '信用卡紙本確認', '關聯報價單',
+  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '用途', '公司名稱',
+  '付款狀態', '付款方式', '信用卡形式', '還款對象', '收款對象', '付款資訊', '確認事項', '關聯報價單',
   '急迫性', '期望撥款日期', '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目',
-  '憑證檔名', '憑證雲端連結', '紀錄ID',
+  '預算項目', '所屬期間', '憑證檔名', '憑證雲端連結', '紀錄ID',
 ];
 // ⚠️ 欄位位置一律用下面這些常數，程式各處都不要再直接寫死數字。
 // 這樣之後調整 HEADERS 順序時，只要改這一區的數字，其他地方會自動跟著對；
@@ -113,35 +116,34 @@ const HEADERS = [
 const MASTER_UPLOAD_TIME_COL = 1;
 const MASTER_UPLOADER_COL = 2;
 const MASTER_PROJECT_COL = 3;
-const MASTER_DOCTYPE_COL = 4;         // 單據類型：發票／收據／報價單
+const MASTER_DOCTYPE_COL = 4;         // 單據類型：發票 / 收據（合一）／報價單
 const MASTER_INVOICE_DATE_COL = 5;
-const MASTER_AMOUNT_COL = 6;          // 本次金額（這一筆實際要付/已付的錢；分期時是單期金額）
-const MASTER_QUOTE_TOTAL_COL = 7;     // 報價總額（只有報價單會填，用來對照分期已付/尚欠）
-const MASTER_ITEMS_COL = 8;
+const MASTER_AMOUNT_COL = 6;          // 本次金額（這一筆實際要付/已付的錢；分次時是單次金額）
+const MASTER_QUOTE_TOTAL_COL = 7;     // 報價總額（只有報價單會填，用來對照分次已付/尚欠）
+const MASTER_PURPOSE_COL = 8;
 const MASTER_VENDOR_COL = 9;
-const MASTER_PURPOSE_COL = 10;
-const MASTER_BUDGET_ITEM_COL = 11;
-const MASTER_PERIOD_COL = 12;
-const MASTER_PAYSTATUS_COL = 13;      // 付款狀態：已付款／未付款（判斷基準＝組織的錢出去了沒）
-const MASTER_PAYMETHOD_COL = 14;      // 付款方式：組織信用卡／零用金／組織匯款
-const MASTER_CARDFORM_COL = 15;       // 信用卡形式：連結／紙本（僅未付款・組織信用卡）
-const MASTER_REPAY_TARGET_COL = 16;   // 還款對象：組織人員／外部廠商
-const MASTER_PAYEE_COL = 17;          // 收款對象：實際人名或廠商名
-const MASTER_PAYINFO_COL = 18;        // 付款資訊：帳號／刷卡連結
-const MASTER_CARD_CONFIRM_COL = 19;   // 信用卡紙本確認：兩項勾選結果
-const MASTER_LINKED_QUOTE_COL = 20;   // 關聯報價單：這筆後續款掛在哪張報價單的紀錄ID底下
-const MASTER_URGENCY_COL = 21;
-const MASTER_EXPECTED_PAYOUT_COL = 22;
-const MASTER_STATUS_COL = 23;    // 狀態、審核人、審核時間、退回原因＝連續四欄（同步時整批寫入）
-const MASTER_REVIEWER_COL = 24;
-const MASTER_REVIEWED_AT_COL = 25;
-const MASTER_REJECT_REASON_COL = 26;
-const MASTER_COMPLETE_COL = 27;  // 單據完備，由後勤人員手動勾選，放在付款日期前面
-const MASTER_PAYDATE_COL = 28;   // 付款日期，由財務手動填，會同步到各中心審核表
-const MASTER_GLCODE_COL = 29;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
-const MASTER_FILE_NAME_COL = 30;
-const MASTER_FILE_URL_COL = 31;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
-const MASTER_RECORD_ID_COL = 32;
+const MASTER_PAYSTATUS_COL = 10;      // 付款狀態：已付款／未付款（判斷基準＝組織的錢出去了沒）
+const MASTER_PAYMETHOD_COL = 11;      // 付款方式：組織信用卡／零用金／組織匯款
+const MASTER_CARDFORM_COL = 12;       // 信用卡形式：連結／紙本（僅未付款・組織信用卡）
+const MASTER_REPAY_TARGET_COL = 13;   // 還款對象：組織人員／外部廠商
+const MASTER_PAYEE_COL = 14;          // 收款對象：實際人名或廠商名
+const MASTER_PAYINFO_COL = 15;        // 付款資訊：帳號／刷卡連結
+const MASTER_CONFIRM_COL = 16;        // 確認事項：信用卡紙本兩項確認／報價金額不符原因（身兼兩用）
+const MASTER_LINKED_QUOTE_COL = 17;   // 關聯報價單：這筆後續款掛在哪張報價單的紀錄ID底下
+const MASTER_URGENCY_COL = 18;
+const MASTER_EXPECTED_PAYOUT_COL = 19;
+const MASTER_STATUS_COL = 20;    // 狀態、審核人、審核時間、退回原因＝連續四欄（同步時整批寫入）
+const MASTER_REVIEWER_COL = 21;
+const MASTER_REVIEWED_AT_COL = 22;
+const MASTER_REJECT_REASON_COL = 23;
+const MASTER_COMPLETE_COL = 24;  // 單據完備，由後勤人員手動勾選
+const MASTER_PAYDATE_COL = 25;   // 付款日期，由財務手動填，會同步到各中心審核表
+const MASTER_GLCODE_COL = 26;    // 會計科目，財務手動選（下拉選單），純總表內部使用，不同步到審核表
+const MASTER_BUDGET_ITEM_COL = 27;
+const MASTER_PERIOD_COL = 28;    // 所屬期間，決定憑證存到哪個年月資料夾
+const MASTER_FILE_NAME_COL = 29;
+const MASTER_FILE_URL_COL = 30;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
+const MASTER_RECORD_ID_COL = 31;
 
 // 中心審核表裡實際放單據資料的分頁名稱。程式一律用這個名字去找分頁，
 // 不能假設它是「這份試算表的第一個分頁」——如果有人在前面手動加了別的分頁
@@ -150,10 +152,12 @@ const REVIEW_SHEET_NAME = '待審核單據';
 
 // 中心審核表的欄位（一個中心一份，底下所有專案共用同一份，靠「所屬專案」欄分辨）。
 // 除了「審核狀態／審核人／審核備註」三欄，其餘都鎖定唯讀。第 1 列同樣留給人工標註，標題在第 2 列，資料第 3 列起。
+// 審核表欄位順序比照總表的分組（付款相關集中），拿掉「單據內容」、「信用卡紙本確認」改成「確認事項」。
+// 審核三欄（審核狀態／審核人／審核備註）必須連續，保護範圍靠 REVIEW_EDITABLE_START_COL 開洞。
 const REVIEW_HEADERS = [
-  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '單據內容', '公司名稱', '用途', '預算項目',
-  '付款狀態', '付款方式', '還款對象', '收款對象', '付款資訊', '信用卡紙本確認', '急迫性', '期望撥款日期', '關聯報價單', '憑證連結',
-  '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '紀錄ID',
+  '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '用途', '公司名稱',
+  '付款狀態', '付款方式', '信用卡形式', '還款對象', '收款對象', '付款資訊', '確認事項', '關聯報價單',
+  '急迫性', '期望撥款日期', '憑證連結', '審核狀態', '審核人', '審核備註', '單據完備', '付款日期', '預算項目', '紀錄ID',
 ];
 const REVIEW_UPLOADER_COL = 2;
 const REVIEW_PROJECT_COL = 3;
@@ -161,26 +165,26 @@ const REVIEW_DOCTYPE_COL = 4;
 const REVIEW_INVOICE_DATE_COL = 5;
 const REVIEW_AMOUNT_COL = 6;
 const REVIEW_QUOTE_TOTAL_COL = 7;
-const REVIEW_ITEMS_COL = 8;
+const REVIEW_PURPOSE_COL = 8;
 const REVIEW_VENDOR_COL = 9;
-const REVIEW_PURPOSE_COL = 10;
-const REVIEW_BUDGET_ITEM_COL = 11;
-const REVIEW_PAYSTATUS_COL = 12;
-const REVIEW_PAYMETHOD_COL = 13;
-const REVIEW_REPAY_TARGET_COL = 14;
-const REVIEW_PAYEE_COL = 15;
-const REVIEW_PAYINFO_COL = 16;
-const REVIEW_CARD_CONFIRM_COL = 17;
+const REVIEW_PAYSTATUS_COL = 10;
+const REVIEW_PAYMETHOD_COL = 11;
+const REVIEW_CARDFORM_COL = 12;
+const REVIEW_REPAY_TARGET_COL = 13;
+const REVIEW_PAYEE_COL = 14;
+const REVIEW_PAYINFO_COL = 15;
+const REVIEW_CONFIRM_COL = 16;        // 確認事項（同總表 MASTER_CONFIRM_COL）
+const REVIEW_LINKED_QUOTE_COL = 17;
 const REVIEW_URGENCY_COL = 18;
 const REVIEW_EXPECTED_PAYOUT_COL = 19;
-const REVIEW_LINKED_QUOTE_COL = 20;
-const REVIEW_FILE_URL_COL = 21;
-const REVIEW_EDITABLE_START_COL = 22; // 審核狀態
+const REVIEW_FILE_URL_COL = 20;
+const REVIEW_EDITABLE_START_COL = 21; // 審核狀態
 const REVIEW_EDITABLE_COL_COUNT = 3;  // 審核狀態、審核人、審核備註（三欄連續，保護範圍靠這個開洞）
-const REVIEW_REVIEWER_COL = 23;
-const REVIEW_NOTE_COL = 24;
-const REVIEW_COMPLETE_COL = 25;       // 單據完備，由總表同步過來（後勤在總表勾選）
-const REVIEW_PAYDATE_COL = 26;        // 由總表同步過來，審核人不能改
+const REVIEW_REVIEWER_COL = 22;
+const REVIEW_NOTE_COL = 23;            // 審核備註（主管填）
+const REVIEW_COMPLETE_COL = 24;       // 單據完備，由總表同步過來（後勤在總表勾選）
+const REVIEW_PAYDATE_COL = 25;        // 由總表同步過來，審核人不能改
+const REVIEW_BUDGET_ITEM_COL = 26;
 const REVIEW_RECORD_ID_COL = 27;
 
 const PEOPLE_SHEET_NAME = '人員設定';
@@ -203,8 +207,9 @@ const PROJECT_STATUS_ACTIVE = '進行中';
 const PROJECT_STATUS_ENDED = '已結束';
 
 // v2 付款結構與報價單相關的選項（前端下拉、後端驗證共用同一組字，避免兩邊打不一樣對不上）
-const DOC_TYPE_OPTIONS = ['發票', '收據', '報價單'];
-const DOC_TYPE_QUOTE = '報價單';        // 單據類型是報價單＝還沒補正式發票（待補），補上後會被改成發票／收據
+const DOC_TYPE_RECEIPT = '發票 / 收據';  // 發票、收據合成一個選項（要分辨看憑證即可）
+const DOC_TYPE_QUOTE = '報價單';         // 報價單＝這個案子還沒有正式發票；只要案子裡出現任何一筆是「發票 / 收據」就算發票已到
+const DOC_TYPE_OPTIONS = [DOC_TYPE_RECEIPT, DOC_TYPE_QUOTE];
 const PAY_STATUS_PAID = '已付款';       // 組織的錢已經出去了（組織信用卡、零用金）
 const PAY_STATUS_UNPAID = '未付款';     // 組織還沒付（組織匯款、未付款的組織信用卡）
 const PAY_STATUS_OPTIONS = [PAY_STATUS_PAID, PAY_STATUS_UNPAID];
@@ -456,10 +461,6 @@ function doPost(e) {
     if (body.action === 'update') {
       return jsonOut_(updateRow_(sheet, body.record));
     }
-    if (body.action === 'attachFinal') {
-      // 報價單補上正式發票/收據（做法 A：同一筆換單，不另開新列）
-      return jsonOut_(attachFinalDocument_(body));
-    }
     return jsonOut_({ ok: false, error: 'unknown action: ' + body.action });
   } catch (err) {
     // 錯誤訊息會原樣回傳給網頁端，網頁的「☁ 同步失敗：」提示會直接顯示這段文字，
@@ -702,15 +703,16 @@ function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
   // 欄位順序必須跟 HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 HEADERS，並跑驗證腳本。
   sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || '發票', record.invoiceDate,
-    record.amount, record.quoteTotal || '', record.items, record.vendor, record.purpose, record.budgetItem || '', record.period,
+    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || DOC_TYPE_RECEIPT, record.invoiceDate,
+    record.amount, record.quoteTotal || '', record.purpose, record.vendor,
     record.payStatus || '', record.payMethod || '', record.cardForm || '', record.repayTarget || '', record.payee || '',
-    record.paymentDetail || '', record.cardConfirmNote || '', record.linkedQuoteId || '',
+    record.paymentDetail || '', record.confirmNote || '', record.linkedQuoteId || '',
     record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
     record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
     '', // 單據完備，由後勤人員在總表勾選
     '', // 付款日期，等財務付款後手動填
     '', // 會計科目，由財務在總表用下拉選單手動選，網頁上傳時不會帶任何值
+    record.budgetItem || '', record.period,
     record.fileName, fileUrl, record.id,
   ]);
   setCompleteCheckbox_(sheet, sheet.getLastRow(), MASTER_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
@@ -794,7 +796,6 @@ function getAllRecords_() {
       invoiceDate: formatDateOnly_(row[MASTER_INVOICE_DATE_COL - 1]),
       amount: row[MASTER_AMOUNT_COL - 1],
       quoteTotal: row[MASTER_QUOTE_TOTAL_COL - 1],
-      items: row[MASTER_ITEMS_COL - 1],
       vendor: row[MASTER_VENDOR_COL - 1],
       purpose: row[MASTER_PURPOSE_COL - 1],
       budgetItem: row[MASTER_BUDGET_ITEM_COL - 1],
@@ -805,6 +806,7 @@ function getAllRecords_() {
       repayTarget: row[MASTER_REPAY_TARGET_COL - 1],
       payee: row[MASTER_PAYEE_COL - 1],
       paymentDetail: row[MASTER_PAYINFO_COL - 1],
+      confirmNote: row[MASTER_CONFIRM_COL - 1],
       linkedQuoteId: row[MASTER_LINKED_QUOTE_COL - 1],
       urgent: row[MASTER_URGENCY_COL - 1] === '緊急',
       expectedPayoutDate: formatDateOnly_(row[MASTER_EXPECTED_PAYOUT_COL - 1]),
@@ -822,131 +824,10 @@ function getAllRecords_() {
   return { ok: true, records: records };
 }
 
-// 報價單補上正式發票/收據（做法 A）：同一筆「換單」，不另開新列，避免金額被重複計算。
-// 一個「案子」＝這張報價單那筆（母），加上所有「關聯報價單」指到它的後續款（訂金/尾款）。
-// - 換單：把母筆的單據類型改成發票/收據、憑證換成正式發票（舊報價單搬到「報價單存查」只搬不刪），
-//   後續款也一起改單據類型，才不會還被當成「待補」。
-// - 金額核對：正式發票金額跟原本核准的（單筆＝本次金額；分期＝各期已付加總）不一致時，比照
-//   「金額不符退回重做」，把母筆狀態打回「待審核」讓主管重新確認；審核表那列也一起打回，
-//   否則隔天的 review→master 審核同步會把舊的「已核准」再推回來，等於沒退成。
-function attachFinalDocument_(body) {
-  const targetId = body.id;
-  if (!targetId) return { ok: false, error: '缺少要補件的紀錄ID' };
-  const newDocType = body.docType || '發票';
-  if (newDocType === DOC_TYPE_QUOTE) return { ok: false, error: '補件的單據類型不能還是報價單' };
-
-  const sheet = getSheet_();
-  const parentRow = findRowById_(sheet, targetId, MASTER_RECORD_ID_COL);
-  if (parentRow === -1) return { ok: false, error: '找不到要補件的報價單紀錄（ID: ' + targetId + '）' };
-
-  const lastRow = sheet.getLastRow();
-  const all = sheet.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
-  const parent = all[parentRow - 3];
-  const project = parent[MASTER_PROJECT_COL - 1];
-  const period = parent[MASTER_PERIOD_COL - 1];
-
-  // 存正式發票、把舊報價單檔案搬去存查（只搬不刪，保留軌跡）
-  const newFileUrl = saveFile_({ fileDataUrl: body.fileDataUrl, fileName: body.fileName, project: project, period: period });
-  try {
-    const oldUrl = parent[MASTER_FILE_URL_COL - 1];
-    if (oldUrl && newFileUrl) moveReceiptFile_(oldUrl, findOrCreateSubfolder_(getRootFolder_(), '報價單存查'));
-  } catch (err) {
-    console.error('搬移舊報價單到存查資料夾失敗（不影響補件）：' + err);
-  }
-
-  // 這個案子的已付合計＝母筆 + 所有掛在它底下的後續款
-  const parentAmount = Number(parent[MASTER_AMOUNT_COL - 1]) || 0;
-  let caseSum = parentAmount;
-  const childRows = [];
-  all.forEach(function (row, i) {
-    if (row[MASTER_LINKED_QUOTE_COL - 1] === targetId) {
-      caseSum += Number(row[MASTER_AMOUNT_COL - 1]) || 0;
-      childRows.push(i + 3);
-    }
-  });
-  const isStaged = childRows.length > 0;
-  const invoiceAmount = Number(body.amount);
-  const hasInvoiceAmount = body.amount !== undefined && body.amount !== null && body.amount !== '' && !isNaN(invoiceAmount);
-  const compareBase = isStaged ? caseSum : parentAmount;
-  const amountMismatch = hasInvoiceAmount && invoiceAmount !== compareBase;
-
-  // 換單：母筆的單據類型、憑證、發票日期；後續款只改單據類型（金額不動）
-  if (newFileUrl) {
-    sheet.getRange(parentRow, MASTER_FILE_NAME_COL).setValue(body.fileName || '');
-    sheet.getRange(parentRow, MASTER_FILE_URL_COL).setValue(newFileUrl);
-  }
-  sheet.getRange(parentRow, MASTER_DOCTYPE_COL).setValue(newDocType);
-  if (body.invoiceDate) sheet.getRange(parentRow, MASTER_INVOICE_DATE_COL).setValue(body.invoiceDate);
-  childRows.forEach(function (r) { sheet.getRange(r, MASTER_DOCTYPE_COL).setValue(newDocType); });
-
-  // 單筆且金額不符 → 母筆本次金額更新成發票實際金額（分期不動各期金額，只在案子層級標記提醒）
-  if (!isStaged && amountMismatch) {
-    sheet.getRange(parentRow, MASTER_AMOUNT_COL).setValue(invoiceAmount);
-  }
-
-  let reReviewed = false;
-  if (amountMismatch) {
-    const note = isStaged
-      ? '報價分期已付合計 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，請確認後重新核准。'
-      : '報價金額 NT$ ' + compareBase + ' 與正式發票 NT$ ' + invoiceAmount + ' 不符，已更新為發票金額，請重新核准。';
-    // 只寫審核表（狀態打回待審核、審核備註寫上不符原因），不直接動總表的狀態/審核人/審核時間/
-    // 退回原因——那幾欄只能從審核表同步過去，見 resetReviewRowForReReview_ 的說明。
-    try {
-      resetReviewRowForReReview_(targetId, project, newDocType, isStaged ? null : invoiceAmount, note);
-      // 立刻跑一次既有的「審核表→總表」同步，總表才會馬上看到這次的退回原因，
-      // 不用等到隔天的排程或有人手動按「立即同步審核結果」。
-      syncApprovalsToMaster();
-    } catch (err) {
-      console.error('把審核表打回待審核失敗：' + err);
-    }
-    reReviewed = true;
-  } else {
-    // 金額相符：把審核表的單據類型（單筆再帶金額）更新一下，審核狀態不動
-    try {
-      updateReviewDocType_(targetId, project, newDocType, isStaged ? null : compareBase);
-    } catch (err) {
-      console.error('更新審核表單據類型失敗（不影響總表）：' + err);
-    }
-  }
-
-  return { ok: true, fileUrl: newFileUrl, reReviewed: reReviewed, caseSum: caseSum, staged: isStaged };
-}
-
-// 找出某筆紀錄在「所屬中心審核表」裡的那一列，回傳 { sheet, row } 或 null
-function findReviewRowForRecord_(recordId, projectName) {
-  const project = findProject_(projectName);
-  if (!project) return null;
-  const center = findCenter_(project.center);
-  if (!center || !center.reviewSheetId) return null;
-  let ss;
-  try { ss = SpreadsheetApp.openById(center.reviewSheetId); } catch (e) { return null; }
-  const sheet = getReviewSheet_(ss);
-  const row = findRowById_(sheet, recordId, REVIEW_RECORD_ID_COL);
-  return row === -1 ? null : { sheet: sheet, row: row };
-}
-
-// 補件金額相符：只更新審核表的單據類型（單筆再帶本次金額），審核狀態維持不動
-function updateReviewDocType_(recordId, projectName, docType, amountOrNull) {
-  const loc = findReviewRowForRecord_(recordId, projectName);
-  if (!loc) return;
-  loc.sheet.getRange(loc.row, REVIEW_DOCTYPE_COL).setValue(docType);
-  if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
-}
-
-// 補件金額不符：更新審核表單據類型/金額，並把審核三欄打回「待審核」、審核備註寫上不符原因，
-// 讓主管重新看到、重新核准。
-//
-// ⚠️ 這裡只寫審核表，不直接碰總表的狀態/審核人/審核時間/退回原因——那幾欄照系統的資料流向，
-// 本來就該「只能從審核表同步回總表」，不能被任何程式直接寫入，不然總表跟審核表兩邊各自有一條
-// 寫入路徑，之後兩邊對不起來也不知道該信哪邊。要讓總表看到這次的退回原因，正確做法是讓它透過
-// syncApprovalsToMaster() 的既有同步機制流過去（呼叫端會在這之後補呼叫一次），不是自己寫。
-function resetReviewRowForReReview_(recordId, projectName, docType, amountOrNull, note) {
-  const loc = findReviewRowForRecord_(recordId, projectName);
-  if (!loc) return;
-  loc.sheet.getRange(loc.row, REVIEW_DOCTYPE_COL).setValue(docType);
-  if (amountOrNull !== null) loc.sheet.getRange(loc.row, REVIEW_AMOUNT_COL).setValue(amountOrNull);
-  loc.sheet.getRange(loc.row, REVIEW_EDITABLE_START_COL, 1, REVIEW_EDITABLE_COL_COUNT).setValues([['待審核', '', note || '']]);
-}
+// 報價單「補上正式發票」在新做法裡不再是特殊的「換單／自動退審」流程——它就只是「再上傳一筆
+// 發票/收據、關聯到那張報價單」而已（見前端）。系統永遠不改任何已送出的金額、也不自動退審；
+// 金額對不對、要不要追加或退回，交給人在前端處理。所以原本的 attachFinalDocument_ 及其
+// 打回審核表重審的幾個輔助函式都拿掉了。
 
 function statusLabel_(status) {
   return { pending: '待審核', approved: '已核准', rejected: '已退回' }[status] || status || '待審核';
@@ -1232,11 +1113,11 @@ function appendToCenterReviewSheet_(record, fileUrl) {
   const sheet = getReviewSheet_(ss);
   // 欄位順序必須跟 REVIEW_HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 REVIEW_HEADERS，並跑驗證腳本。
   sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || '發票', record.invoiceDate,
-    record.amount, record.quoteTotal || '', record.items, record.vendor, record.purpose, record.budgetItem || '',
-    record.payStatus || '', record.payMethod || '', record.repayTarget || '', record.payee || '', record.paymentDetail || '', record.cardConfirmNote || '',
-    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', record.linkedQuoteId || '', fileUrl,
-    '待審核', '', '', '', '', record.id,
+    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || DOC_TYPE_RECEIPT, record.invoiceDate,
+    record.amount, record.quoteTotal || '', record.purpose, record.vendor,
+    record.payStatus || '', record.payMethod || '', record.cardForm || '', record.repayTarget || '', record.payee || '', record.paymentDetail || '', record.confirmNote || '',
+    record.linkedQuoteId || '', record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', fileUrl,
+    '待審核', '', '', '', '', record.budgetItem || '', record.id,
   ]);
   setCompleteCheckbox_(sheet, sheet.getLastRow(), REVIEW_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
 }
@@ -1255,20 +1136,20 @@ function recordFromMasterRow_(row) {
     uploadedAt: row[MASTER_UPLOAD_TIME_COL - 1],
     uploader: row[MASTER_UPLOADER_COL - 1],
     project: row[MASTER_PROJECT_COL - 1],
-    docType: row[MASTER_DOCTYPE_COL - 1] || '發票',
+    docType: row[MASTER_DOCTYPE_COL - 1] || DOC_TYPE_RECEIPT,
     invoiceDate: formatDateOnly_(row[MASTER_INVOICE_DATE_COL - 1]),
     amount: row[MASTER_AMOUNT_COL - 1],
     quoteTotal: row[MASTER_QUOTE_TOTAL_COL - 1],
-    items: row[MASTER_ITEMS_COL - 1],
     vendor: row[MASTER_VENDOR_COL - 1],
     purpose: row[MASTER_PURPOSE_COL - 1],
     budgetItem: row[MASTER_BUDGET_ITEM_COL - 1],
     payStatus: row[MASTER_PAYSTATUS_COL - 1],
     payMethod: row[MASTER_PAYMETHOD_COL - 1],
+    cardForm: row[MASTER_CARDFORM_COL - 1],
     repayTarget: row[MASTER_REPAY_TARGET_COL - 1],
     payee: row[MASTER_PAYEE_COL - 1],
     paymentDetail: row[MASTER_PAYINFO_COL - 1],
-    cardConfirmNote: row[MASTER_CARD_CONFIRM_COL - 1],
+    confirmNote: row[MASTER_CONFIRM_COL - 1],
     linkedQuoteId: row[MASTER_LINKED_QUOTE_COL - 1],
     urgent: row[MASTER_URGENCY_COL - 1] === '緊急',
     expectedPayoutDate: formatDateOnly_(row[MASTER_EXPECTED_PAYOUT_COL - 1]),
@@ -1362,17 +1243,14 @@ function syncApprovalsToMaster() {
       const masterData = all[masterRow - 3];
 
       // (A) 審核結果：審核表 → 總表
-      // 這是總表狀態/審核人/審核時間/退回原因這四欄唯一合法的寫入來源——不管是人在審核表上
-      // 操作、還是系統想把某筆打回待審核重審（見 attachFinalDocument_），一律得先寫進審核表，
-      // 再靠這裡同步過去，總表本身永遠不會被其他程式直接動這四欄。
+      // 這是總表狀態/審核人/審核時間/退回原因這四欄唯一合法的寫入來源——人在審核表上操作後，
+      // 靠這裡同步過去，總表本身永遠不會被其他程式直接動這四欄。
       const status = row[REVIEW_EDITABLE_START_COL - 1];
       const reviewer = row[REVIEW_REVIEWER_COL - 1];
       const note = row[REVIEW_NOTE_COL - 1];
-      // 以前這裡會排除 status === '待審核' 的情況（多半是「新列本來就都是待審核，兩邊沒差異」
-      // 的效能捷徑），但這樣會漏掉「已經審過、現在要因為補件金額不符被打回待審核」這種真實的
-      // 狀態轉換——總表會停在舊的「已核准」，看不出這筆其實需要重新審核。改成不管新狀態是什麼，
-      // 只要跟總表現在存的不一樣就同步過去；「待審核」狀態底下審核人/審核時間清空，因為這代表
-      // 還沒有人真正審過，不該留著上一輪的審核人跟時間造成誤會。
+      // 只要審核表跟總表現在存的不一樣就同步過去（不排除「待審核」，才不會漏掉「已核准被主管
+      // 手動改回待審核」這種真實變化）；「待審核」狀態底下審核人/審核時間清空，因為這代表還沒有
+      // 人真正審過，不該留著上一輪的審核人跟時間造成誤會。
       const statusChanged = status &&
         (masterData[MASTER_STATUS_COL - 1] !== status ||
          masterData[MASTER_REVIEWER_COL - 1] !== reviewer ||
@@ -1494,7 +1372,7 @@ function notifyUrgentToSlack_(record, fileUrl) {
     '專案：' + record.project,
     '上傳者：' + record.uploader,
     '金額：NT$ ' + (record.amount || 0),
-    '用途：' + (record.purpose || record.items || '—'),
+    '用途：' + (record.purpose || record.vendor || '—'),
     fileUrl ? '憑證：' + fileUrl : '',
     url ? '前往審核：' + url : '',
   ];
@@ -1537,7 +1415,7 @@ function onReviewStatusEdit_(e) {
     const projectName = rowData[REVIEW_PROJECT_COL - 1] || '（未知專案）'; // 現在一份審核表裝多個專案，專案名稱直接讀這一列自己的「所屬專案」欄，不用再反查是哪份試算表
     const invoiceDate = formatDateOnly_(rowData[REVIEW_INVOICE_DATE_COL - 1]); // 同一個老問題：欄位有時被 Sheets 自動轉成真正的日期物件，直接印會變成一長串英文
     const amount = rowData[REVIEW_AMOUNT_COL - 1];
-    const items = rowData[REVIEW_ITEMS_COL - 1];
+    const purpose = rowData[REVIEW_PURPOSE_COL - 1];
     const vendor = rowData[REVIEW_VENDOR_COL - 1];
     const rejectReason = rowData[REVIEW_NOTE_COL - 1] || '（審核人未填寫原因）';
 
@@ -1548,7 +1426,7 @@ function onReviewStatusEdit_(e) {
       '↩️ *您的單據被退回，請補件後重新上傳*　' + mention,
       '專案：' + projectName,
       '發票日期：' + (invoiceDate || '—') + '　金額：NT$ ' + (amount || 0),
-      '內容：' + (items || vendor || '—'),
+      '用途：' + (purpose || vendor || '—'),
       '退回原因：' + rejectReason,
     ];
     postToSlack_(lines.join('\n'));

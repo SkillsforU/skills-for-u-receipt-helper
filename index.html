@@ -53,8 +53,7 @@
 
       <label class="field-label">單據類型</label>
       <select id="docTypeSelect" class="select-input">
-        <option value="發票">發票</option>
-        <option value="收據">收據</option>
+        <option value="發票 / 收據">發票 / 收據</option>
         <option value="報價單">報價單（之後需補正式發票）</option>
       </select>
 
@@ -108,6 +107,12 @@
             <option value="">不是，這是獨立的一筆</option>
           </select>
           <p class="field-hint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」。</p>
+        </div>
+
+        <!-- 金額超過報價總額時才出現：必填「不符原因」，填了才能送出（會存進總表的「確認事項」欄） -->
+        <div class="form-field span-2" id="mismatchReasonField" hidden>
+          <label class="field-label">金額不符原因 <span class="req">*</span></label>
+          <textarea id="f_mismatchReason" class="textarea-input" rows="2" placeholder="例如：廠商追加 2,000 元；或說明為何超過原報價總額"></textarea>
           <div class="confidence-banner low" id="quoteOverpayWarning" hidden></div>
         </div>
 
@@ -116,10 +121,6 @@
           <label class="field-label">報價總額 <span class="req">*</span></label>
           <input type="number" id="f_quoteTotal" class="text-input" placeholder="這張報價單的總金額" min="0" step="1">
           <p class="field-hint">分次付款時（例如先付訂金、之後再付尾款），這裡請填整張報價的總額。</p>
-        </div>
-        <div class="form-field">
-          <label class="field-label">發票內容 / 品項摘要</label>
-          <input type="text" id="f_items" class="text-input" placeholder="例如：文具用品一批">
         </div>
         <div class="form-field span-2">
           <label class="field-label">店家 / 憑證抬頭</label>

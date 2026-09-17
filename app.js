@@ -432,7 +432,7 @@ function cloudFieldsToConfirmForm(fields) {
     amount: f.amount ? Number(f.amount) : null,
     vendor: f.vendor || null,
   };
-  const rawText = f.items ? `（雲端 OCR 品項摘要）${f.items}` : "（雲端 OCR，未提供原始文字）";
+  const rawText = f.items ? `（雲端 OCR 摘要）${f.items}` : "（雲端 OCR，未提供原始文字）"; // 只當背景參考文字，不再填進表單欄位
   openConfirmForm({ rawText, confidenceMean: Number(f.confidence) || 0, guesses });
 }
 
@@ -581,7 +581,6 @@ const f_amount = document.getElementById("f_amount");
 const f_quoteTotal = document.getElementById("f_quoteTotal");
 const f_linkedQuote = document.getElementById("f_linkedQuote");
 const f_vendor = document.getElementById("f_vendor");
-const f_items = document.getElementById("f_items");
 const f_purpose = document.getElementById("f_purpose");
 const f_payStatus = document.getElementById("f_payStatus");
 const f_payMethod = document.getElementById("f_payMethod");
@@ -702,6 +701,7 @@ function populatePayeePersonOptions() {
    單據類型在上傳卡片選（發票/收據/報價單）。報價單＝先付款、之後補正式發票。
    「關聯報價單」讓後續款（尾款）掛到同一張報價單的案子底下一起算「已付/尚欠」。 */
 const DOC_TYPE_QUOTE = "報價單";
+const DOC_TYPE_RECEIPT = "發票 / 收據"; // 發票、收據合成一個選項；只要案子裡有任何一筆是這個，就算「發票已到」
 let openQuotesCache = []; // 系統上「未結案」的報價單（單據類型還是報價單、且本身不是別張的後續款）
 let quoteRecordsSnapshot = []; // 全部紀錄（含每張報價單底下的後續款），用來即時算「已付多少、會不會超過報價總額」
 
@@ -723,33 +723,42 @@ function quoteCasePaidSoFar(quoteId) {
     .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 }
 
-// 送出前即時檢查：這筆加上案子裡已經付的錢，會不會超過報價總額——只是提醒，不擋送出，
-// 因為有時候後續加購、追加預算是真的會讓總額變動，最終認定還是在補正式發票那一步。
-function updateQuoteOverpayWarning() {
-  const banner = document.getElementById("quoteOverpayWarning");
+// 這筆加上案子裡已經付的錢會不會「超過」報價總額。回傳超過與否 + 相關數字。
+// 只有「超過」才算不符（還沒付完＝正常，不算）。
+function quoteOverpayInfo() {
   const quoteId = f_linkedQuote.value;
   const thisAmount = Number(f_amount.value) || 0;
-  if (!quoteId || thisAmount <= 0) { banner.hidden = true; return; }
+  if (!quoteId || thisAmount <= 0) return { over: false };
   const parent = quoteRecordsSnapshot.find(r => r.id === quoteId);
   const total = parent ? Number(parent.quoteTotal) || 0 : 0;
-  if (!total) { banner.hidden = true; return; }
+  if (!total) return { over: false };
   const paidBefore = quoteCasePaidSoFar(quoteId);
   const paidAfter = paidBefore + thisAmount;
-  if (paidAfter > total) {
+  return { over: paidAfter > total, paidBefore: paidBefore, thisAmount: thisAmount, total: total, paidAfter: paidAfter };
+}
+
+// 金額超過報價總額 → 跳出「金額不符原因」必填欄位（填了才能送出）；沒超過就把它收起來。
+function updateMismatchField() {
+  const field = document.getElementById("mismatchReasonField");
+  const banner = document.getElementById("quoteOverpayWarning");
+  const info = quoteOverpayInfo();
+  if (info.over) {
+    field.hidden = false;
     banner.hidden = false;
-    banner.textContent = `⚠️ 這筆之前已付 NT$${paidBefore.toLocaleString("en-US")}，本次付款 NT$${thisAmount.toLocaleString("en-US")}，超過報價總額 NT$${total.toLocaleString("en-US")}，請確認金額。`;
+    banner.textContent = `⚠️ 之前已付 NT$${info.paidBefore.toLocaleString("en-US")}，本次 NT$${info.thisAmount.toLocaleString("en-US")}，合計超過報價總額 NT$${info.total.toLocaleString("en-US")}，請填寫不符原因後送出。`;
   } else {
+    field.hidden = true;
     banner.hidden = true;
   }
 }
-f_amount.addEventListener("input", updateQuoteOverpayWarning);
-f_linkedQuote.addEventListener("change", updateQuoteOverpayWarning);
+f_amount.addEventListener("input", updateMismatchField);
+f_linkedQuote.addEventListener("change", updateMismatchField);
 
 function populateLinkedQuoteOptions() {
   const cur = f_linkedQuote.value;
   f_linkedQuote.innerHTML = '<option value="">不是，這是獨立的一筆</option>' +
     openQuotesCache.map(q => {
-      const who = q.vendor || q.items || q.project || "報價單";
+      const who = q.vendor || q.purpose || q.project || "報價單";
       const total = q.quoteTotal ? `總額 NT$${Number(q.quoteTotal).toLocaleString("en-US")}` : "";
       const label = [who, total, q.uploadedAt].filter(Boolean).join("｜");
       return `<option value="${escapeHtml(q.id)}">${escapeHtml(label)}</option>`;
@@ -848,7 +857,6 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   updatePeriodField();
   f_amount.value = guesses.amount || "";
   f_vendor.value = guesses.vendor || "";
-  f_items.value = "";
   f_purpose.value = "";
   populateBudgetItemOptions(projectSelect.value); // 專案在上傳這步就選好了，這裡直接依它填出對應的預算項目清單
   f_payStatus.value = "";
@@ -866,8 +874,10 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   f_quoteTotal.value = "";
   f_linkedQuote.value = "";
   updateQuoteFields();
+  document.getElementById("f_mismatchReason").value = "";
+  document.getElementById("mismatchReasonField").hidden = true;
   document.getElementById("quoteOverpayWarning").hidden = true;
-  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); updateQuoteOverpayWarning(); });
+  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); updateMismatchField(); });
 
   setFlag("flag-date", !!guesses.date);
   setFlag("flag-amount", !!guesses.amount);
@@ -915,14 +925,22 @@ function suggestFileName(record, originalName) {
 }
 
 function submitRecord() {
+  const docType = docTypeSelect.value || DOC_TYPE_RECEIPT;
+  const linkedQuoteId = f_linkedQuote.value || "";
+
   if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
   if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
   if (!f_purpose.value.trim()) { showToast("請填寫活動／用途說明"); f_purpose.focus(); return; }
   const f_budgetItem = document.getElementById("f_budgetItem");
   if (!f_budgetItem.value) { showToast("請選擇預算項目（真的不知道可以選「不確定預算項目」）"); f_budgetItem.focus(); return; }
 
-  const docType = docTypeSelect.value || "發票";
-  const linkedQuoteId = f_linkedQuote.value || "";
+  // 沒傳檔案：只有「某張報價單的後續款」允許不傳檔（報價單只來一次、這期發票還沒到的情況）；
+  // 其他情況一定要有憑證檔。
+  const hasFile = !!(selectedImageDataUrl || selectedPdfDataUrl);
+  if (!hasFile && !linkedQuoteId) {
+    showToast("請先上傳憑證檔案（只有『報價單的後續款』才能不附檔案）");
+    return;
+  }
   let quoteTotal = "";
   if (docType === DOC_TYPE_QUOTE && !linkedQuoteId) {
     if (!f_quoteTotal.value || Number(f_quoteTotal.value) <= 0) {
@@ -976,6 +994,15 @@ function submitRecord() {
     showToast("標記緊急時，請選擇希望完成付款日期"); f_urgentDate.focus(); return;
   }
 
+  // 金額超過報價總額 → 必填「不符原因」（追加或算錯都在這裡說明，不擋送出，只要有填就好）
+  const overpay = quoteOverpayInfo();
+  const mismatchReason = document.getElementById("f_mismatchReason").value.trim();
+  if (overpay.over && !mismatchReason) {
+    showToast("本次金額超過報價總額，請填寫「金額不符原因」後再送出");
+    document.getElementById("f_mismatchReason").focus();
+    return;
+  }
+
   // 收款對象：匯款・組織人員記人名、匯款・外部廠商記戶名，其他情況無（款項已由組織支付／刷卡）
   const payee = isTransfer
     ? (repayTarget === REPAY_MEMBER ? f_payeePerson.value : f_payeeVendor.value.trim())
@@ -983,8 +1010,11 @@ function submitRecord() {
   const paymentDetail = (isTransfer && repayTarget === REPAY_VENDOR) ? f_paymentDetail.value.trim()
     : (isCardUnpaid && cardForm === CARD_FORM_LINK) ? f_paymentDetail.value.trim()
     : "";
-  const cardConfirmNote = (isCardUnpaid && cardForm === CARD_FORM_PAPER)
+  // 「確認事項」一欄身兼兩用：信用卡紙本的兩項確認、以及報價金額不符原因。
+  // 兩者幾乎不會同時發生，真的同時就把兩段用換行接起來放同一欄。
+  const cardConfirmText = (isCardUnpaid && cardForm === CARD_FORM_PAPER)
     ? "我已確認對方無法使用匯款付款；我已確認對方無法提供線上刷卡連結" : "";
+  const confirmNote = [cardConfirmText, (overpay.over ? mismatchReason : "")].filter(Boolean).join("\n");
 
   const expectedPayoutDate = urgent
     ? f_urgentDate.value
@@ -1005,7 +1035,6 @@ function submitRecord() {
     period: f_period.value,
     amount: Number(f_amount.value),
     vendor: f_vendor.value.trim(),
-    items: f_items.value.trim(),
     purpose: f_purpose.value.trim(),
     budgetItem: f_budgetItem.value,
     docType: docType,
@@ -1017,7 +1046,7 @@ function submitRecord() {
     repayTarget: repayTarget,
     payee: payee,
     paymentDetail: paymentDetail,
-    cardConfirmNote: cardConfirmNote,
+    confirmNote: confirmNote,
     urgent: urgent,
     expectedPayoutDate: expectedPayoutDate,
     confidence: Number(confirmCard.dataset.confidence || 0),
@@ -1182,29 +1211,38 @@ function renderMineView() {
   });
 }
 
-// 報價單案子：一張未結案報價單（母的單據類型還是報價單）＝待補正式發票，顯示報價總額／已請款／尚欠
+// 報價單案子：一張報價單（母）＋所有掛在它底下的後續款。顯示報價總額／已付／尚欠；
+// 只要案子裡「還沒有任何一筆是發票/收據」就顯示「⚠️ 發票還沒來」並給補發票入口。
+// 已經有發票、而且尚欠 0 的案子＝結清，不再列在這區（避免越積越長）。
 function renderQuoteCases(all) {
   const section = document.getElementById("quoteCasesSection");
   const listEl = document.getElementById("quoteCasesList");
-  const parents = all.filter(r => r.docType === DOC_TYPE_QUOTE && !r.linkedQuoteId);
-  if (parents.length === 0) { section.hidden = true; listEl.innerHTML = ""; return; }
+  const cases = all
+    .filter(r => r.docType === DOC_TYPE_QUOTE && !r.linkedQuoteId)
+    .map(p => {
+      const children = all.filter(r => r.linkedQuoteId === p.id);
+      const paid = [p].concat(children).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      const total = Number(p.quoteTotal) || 0;
+      const hasInvoice = children.some(c => c.docType === DOC_TYPE_RECEIPT);
+      return { p: p, children: children, paid: paid, total: total, remain: Math.max(total - paid, 0), hasInvoice: hasInvoice };
+    })
+    .filter(c => !c.hasInvoice || c.remain > 0); // 已補發票又付清＝結清，不再顯示
+  if (cases.length === 0) { section.hidden = true; listEl.innerHTML = ""; return; }
   section.hidden = false;
-  listEl.innerHTML = parents.map(p => {
-    const children = all.filter(r => r.linkedQuoteId === p.id);
-    const paid = [p].concat(children).reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const total = Number(p.quoteTotal) || 0;
-    const remain = Math.max(total - paid, 0);
-    const who = p.vendor || p.purpose || p.project || "報價單";
+  listEl.innerHTML = cases.map(c => {
+    const who = c.p.vendor || c.p.purpose || c.p.project || "報價單";
+    const warn = c.hasInvoice ? "" : `<span class="quote-case-warn">⚠️ 發票還沒來</span>`;
+    const attachBtn = c.hasInvoice ? "" : `<button class="ghost-btn ghost-btn-sm" data-attach="${escapeHtml(c.p.id)}">補上發票</button>`;
     return `
       <div class="quote-case">
         <div class="quote-case-head">
-          <div class="quote-case-title">${escapeHtml(who)} <span class="quote-case-proj">${escapeHtml(p.project || "")}</span></div>
-          <button class="ghost-btn ghost-btn-sm" data-attach="${escapeHtml(p.id)}">補上正式發票</button>
+          <div class="quote-case-title">${escapeHtml(who)} <span class="quote-case-proj">${escapeHtml(c.p.project || "")}</span> ${warn}</div>
+          ${attachBtn}
         </div>
         <div class="quote-case-nums">
-          <span>報價總額 <b>${fmtMoney(total)}</b></span>
-          <span>已請款 <b>${fmtMoney(paid)}</b>${children.length ? `（含 ${children.length} 筆後續款）` : ""}</span>
-          <span class="${remain > 0 ? "remain-pos" : "remain-zero"}">尚欠 <b>${fmtMoney(remain)}</b></span>
+          <span>報價總額 <b>${fmtMoney(c.total)}</b></span>
+          <span>已付 <b>${fmtMoney(c.paid)}</b>${c.children.length ? `（含 ${c.children.length} 筆後續款）` : ""}</span>
+          <span class="${c.remain > 0 ? "remain-pos" : "remain-zero"}">尚欠 <b>${fmtMoney(c.remain)}</b></span>
         </div>
       </div>`;
   }).join("");
@@ -1213,24 +1251,29 @@ function renderQuoteCases(all) {
   });
 }
 
-/* ---- 補上正式發票（把報價單換成正式發票；金額不符後端會自動退回重審）---- */
+/* ---- 補上發票：不再「換單」，就只是「補一筆發票/收據掛到這張報價單」而已（新做法）。
+   如果這時候沒有要再付錢，金額留 0＝純補文件；有付錢就填金額，超過報價總額要填不符原因。---- */
 let attachFile = { dataUrl: "", name: "" };
 function openAttachInvoice(caseId) {
   const p = (serverRecords || []).find(r => r.id === caseId);
   if (!p) { showToast("找不到這張報價單"); return; }
   attachFile = { dataUrl: "", name: "" };
   modalBody.innerHTML = `
-    <div class="detail-title">補上正式發票</div>
+    <div class="detail-title">補上正式發票 / 收據</div>
     <div class="detail-sub">${escapeHtml(p.vendor || p.purpose || "報價單")}｜報價總額 ${fmtMoney(Number(p.quoteTotal) || 0)}</div>
-    <label class="field-label" style="margin-top:14px;">正式發票 / 收據檔案 <span class="req">*</span></label>
+    <p class="field-hint" style="margin-top:8px;">補一筆正式發票 / 收據掛到這張報價單。這時候沒有要再付錢的話，金額留 0 就好。</p>
+    <label class="field-label" style="margin-top:10px;">正式發票 / 收據檔案 <span class="req">*</span></label>
     <input type="file" id="attachFileInput" accept="image/*,.pdf" class="text-input">
-    <label class="field-label">單據類型</label>
-    <select id="attachDocType" class="select-input"><option value="發票">發票</option><option value="收據">收據</option></select>
     <label class="field-label">發票 / 收據日期</label>
     <input type="date" id="attachDate" class="text-input">
-    <label class="field-label">發票金額（與原核准不符會自動退回重審）</label>
-    <input type="number" id="attachAmount" class="text-input" min="0" step="1" placeholder="填正式發票上的金額">
-    <div class="btn-row"><button class="primary-btn" id="attachSubmitBtn" style="flex:1;">送出補件</button></div>
+    <label class="field-label">本次付款金額（沒有要再付就填 0）</label>
+    <input type="number" id="attachAmount" class="text-input" min="0" step="1" value="0">
+    <div class="form-field" id="attachMismatchField" hidden style="margin-top:10px;">
+      <label class="field-label">金額不符原因 <span class="req">*</span></label>
+      <textarea id="attachMismatchReason" class="textarea-input" rows="2" placeholder="例如：廠商追加"></textarea>
+    </div>
+    <div class="confidence-banner low" id="attachOverpay" hidden style="margin-top:8px;"></div>
+    <div class="btn-row"><button class="primary-btn" id="attachSubmitBtn" style="flex:1;">送出</button></div>
   `;
   document.getElementById("attachFileInput").addEventListener("change", (e) => {
     const f = e.target.files[0];
@@ -1239,31 +1282,57 @@ function openAttachInvoice(caseId) {
     reader.onload = () => { attachFile = { dataUrl: reader.result, name: f.name }; };
     reader.readAsDataURL(f);
   });
-  document.getElementById("attachSubmitBtn").addEventListener("click", () => submitAttachInvoice(caseId));
+  document.getElementById("attachAmount").addEventListener("input", () => attachUpdateMismatch(p));
+  document.getElementById("attachSubmitBtn").addEventListener("click", () => submitAttachInvoice(p));
   detailModal.hidden = false;
 }
 
-async function submitAttachInvoice(caseId) {
-  if (!attachFile.dataUrl) { showToast("請先選擇正式發票檔案"); return; }
+function attachUpdateMismatch(p) {
+  const amount = Number(document.getElementById("attachAmount").value) || 0;
+  const total = Number(p.quoteTotal) || 0;
+  const over = !!total && (quoteCasePaidSoFar(p.id) + amount) > total;
+  document.getElementById("attachMismatchField").hidden = !over;
+  const banner = document.getElementById("attachOverpay");
+  if (over) { banner.hidden = false; banner.textContent = `⚠️ 加上之前已付合計超過報價總額 NT$${total.toLocaleString("en-US")}，請填不符原因。`; }
+  else { banner.hidden = true; }
+  return over;
+}
+
+async function submitAttachInvoice(p) {
+  if (!attachFile.dataUrl) { showToast("請先選擇正式發票 / 收據檔案"); return; }
+  const amount = Number(document.getElementById("attachAmount").value) || 0;
+  const over = attachUpdateMismatch(p);
+  const reason = document.getElementById("attachMismatchReason").value.trim();
+  if (over && !reason) { showToast("金額超過報價總額，請填寫不符原因"); document.getElementById("attachMismatchReason").focus(); return; }
+  const invoiceDate = document.getElementById("attachDate").value;
+  const record = {
+    id: uid(),
+    uploader: (currentUser && currentUser.name) || "",
+    project: p.project,
+    uploadedAt: new Date().toISOString(),
+    fileDataUrl: attachFile.dataUrl,
+    originalFileName: attachFile.name,
+    fileName: attachFile.name,
+    invoiceDate: invoiceDate,
+    period: invoiceDate ? invoiceDate.slice(0, 7) : (p.period || ""),
+    amount: amount,
+    vendor: p.vendor || "",
+    purpose: p.purpose || "",
+    budgetItem: p.budgetItem || "",
+    docType: DOC_TYPE_RECEIPT,
+    quoteTotal: Number(p.quoteTotal) || "",
+    linkedQuoteId: p.id,
+    payStatus: "", payMethod: "", cardForm: "", repayTarget: "", payee: "", paymentDetail: "",
+    confirmNote: over ? reason : "",
+    urgent: false, expectedPayoutDate: "",
+    status: "pending", reviewer: "", reviewedAt: "", rejectReason: "", receiptComplete: false,
+  };
   const btn = document.getElementById("attachSubmitBtn");
   btn.disabled = true; btn.textContent = "送出中…";
-  const data = await cloudPost("attachFinal", {
-    id: caseId,
-    docType: document.getElementById("attachDocType").value,
-    invoiceDate: document.getElementById("attachDate").value,
-    amount: document.getElementById("attachAmount").value,
-    fileName: attachFile.name,
-    fileDataUrl: attachFile.dataUrl,
-  });
-  if (!data || !data.ok) {
-    btn.disabled = false; btn.textContent = "送出補件";
-    showToast("補件失敗：" + ((data && data.error) || "未知錯誤"));
-    return;
-  }
+  const data = await cloudPost("create", { record: record });
+  if (!data || !data.ok) { btn.disabled = false; btn.textContent = "送出"; showToast("補件失敗：" + ((data && data.error) || "未知錯誤")); return; }
   closeModal();
-  showToast(data.reReviewed
-    ? "已補上正式發票，但金額與原核准不符，已退回重新審核"
-    : "已補上正式發票");
+  showToast("已補上正式發票");
   loadAllRecordsFromCloud();
 }
 
@@ -1343,16 +1412,16 @@ function openDetailModal(id) {
     <div class="detail-grid">
       <dt>上傳人</dt><dd>${escapeHtml(r.uploader)}</dd>
       <dt>所屬專案</dt><dd>${escapeHtml(r.project)}</dd>
-      <dt>單據類型</dt><dd>${escapeHtml(r.docType || "發票")}</dd>
+      <dt>單據類型</dt><dd>${escapeHtml(r.docType || DOC_TYPE_RECEIPT)}</dd>
       <dt>發票日期</dt><dd>${escapeHtml(r.invoiceDate || "—")}</dd>
       <dt>${isQuote ? "本次金額" : "金額"}</dt><dd>${fmtMoney(r.amount)}</dd>
-      ${isQuote ? `<dt>報價總額</dt><dd>${fmtMoney(Number(r.quoteTotal) || 0)}</dd>` : ""}
-      <dt>發票內容</dt><dd>${escapeHtml(r.items || "—")}</dd>
+      ${(isQuote || r.linkedQuoteId) ? `<dt>報價總額</dt><dd>${fmtMoney(Number(r.quoteTotal) || 0)}</dd>` : ""}
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
       <dt>預算項目</dt><dd>${escapeHtml(r.budgetItem || "—")}</dd>
       <dt>付款方式</dt><dd>${escapeHtml(payDesc)}</dd>
       ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
       ${r.paymentDetail ? `<dt>付款資訊</dt><dd>${escapeHtml(r.paymentDetail)}</dd>` : ""}
+      ${r.confirmNote ? `<dt>確認事項</dt><dd>${escapeHtml(r.confirmNote)}</dd>` : ""}
       <dt>期望撥款日期</dt><dd>${escapeHtml(r.expectedPayoutDate || "—")}</dd>
       <dt>付款日期</dt><dd>${r.paidAt ? escapeHtml(r.paidAt) : "尚未付款"}</dd>
       <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
@@ -1374,10 +1443,12 @@ function openDetailModal(id) {
     openDetailModal(id);
   });
 
-  // 報價單（未結案）在詳情裡也放一個「補上正式發票」入口
+  // 只有「報價單母筆、且案子還沒有任何發票/收據」才在詳情裡放「補上發票」入口
   const actions = document.getElementById("modalActions");
   let actionsHtml = "";
-  if (isQuote && !r._localOnly) {
+  const isQuoteParent = isQuote && !r.linkedQuoteId && !r._localOnly;
+  const caseHasInvoice = isQuoteParent && (serverRecords || []).some(x => x.linkedQuoteId === r.id && x.docType === DOC_TYPE_RECEIPT);
+  if (isQuoteParent && !caseHasInvoice) {
     actionsHtml += `<div class="btn-row"><button class="primary-btn" id="btnAttachInvoice" style="flex:1;">補上正式發票</button></div>`;
   }
   if (r.fileDataUrl) {
@@ -1408,15 +1479,16 @@ function downloadRecordFile(r) {
 function exportCsv() {
   const records = mineDisplay.length ? mineDisplay : mergedRecords(); // 匯出目前篩選後的清單
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
-  // 欄位順序對齊 google-sync/Code.gs 的 HEADERS（32 欄），貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "單據類型", "發票日期", "本次金額", "報價總額", "單據內容", "公司名稱", "用途", "預算項目", "所屬期間", "付款狀態", "付款方式", "信用卡形式", "還款對象", "收款對象", "付款資訊", "信用卡紙本確認", "關聯報價單", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "會計科目", "憑證檔名", "憑證雲端連結", "紀錄ID"];
+  // 欄位順序對齊 google-sync/Code.gs 的 HEADERS（31 欄），貼上收支表時才會對到同一欄
+  const headers = ["上傳時間", "上傳者", "所屬專案", "單據類型", "發票日期", "本次金額", "報價總額", "用途", "公司名稱", "付款狀態", "付款方式", "信用卡形式", "還款對象", "收款對象", "付款資訊", "確認事項", "關聯報價單", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "會計科目", "預算項目", "所屬期間", "憑證檔名", "憑證雲端連結", "紀錄ID"];
   const rows = records.map(r => [
-    fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.docType || "發票", r.invoiceDate,
-    r.amount, r.quoteTotal || "", r.items, r.vendor, r.purpose, r.budgetItem || "", r.period,
-    r.payStatus || "", r.payMethod || "", r.cardForm || "", r.repayTarget || "", r.payee || "", r.paymentDetail || "", r.cardConfirmNote || "", r.linkedQuoteId || "",
+    fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.docType || "發票 / 收據", r.invoiceDate,
+    r.amount, r.quoteTotal || "", r.purpose, r.vendor,
+    r.payStatus || "", r.payMethod || "", r.cardForm || "", r.repayTarget || "", r.payee || "", r.paymentDetail || "", r.confirmNote || "", r.linkedQuoteId || "",
     r.urgent ? "緊急" : "一般", r.expectedPayoutDate || "", statusLabel(recStatusKey(r)),
     r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason,
-    r.receiptComplete ? "是" : "否", r.paidAt || "", r.glCode || "", r.fileName, r.fileUrl || "", r.id,
+    r.receiptComplete ? "是" : "否", r.paidAt || "", r.glCode || "",
+    r.budgetItem || "", r.period, r.fileName, r.fileUrl || "", r.id,
   ]);
   const csv = [headers, ...rows]
     .map(row => row.map(cellToCsv).join(","))
