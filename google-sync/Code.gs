@@ -614,6 +614,7 @@ function getSheet_() {
   if (headerRowBlank_(sheet, HEADERS.length)) {
     // 第 1 列刻意留空，給人工填寫「自動帶入／手動填寫（誰）」的標註用；標題直接寫在第 2 列，
     // 不用 appendRow（那樣會把標題寫到第 1 列去）。真正的資料從第 3 列開始寫入。
+    sheet.getRange(2, 1, 1, sheet.getMaxColumns()).clearDataValidations(); // 寫標題前先清舊驗證，理由同 setupReviewSheetHeaders_
     sheet.getRange(2, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(2);
     // 「發票日期」「所屬期間」存的是我們自訂格式的純文字（YYYY-MM-DD / YYYY-MM），
@@ -943,6 +944,10 @@ function setupProjectReviewSheets() {
 // （連標題一起刪）之後，系統就再也長不出標題列。第 1 列同總表，留給人工標註，標題寫在第 2 列，
 // 真正的資料從第 3 列開始（審核表現在一個中心一份，多個專案共用同一份表，靠「所屬專案」欄分辨）。
 function setupReviewSheetHeaders_(sheet) {
+  // 寫標題前先把「標題列」的舊資料驗證清掉。踩過的坑：欄位重排後，某格（例如 V2）還卡著舊版
+  // 「審核狀態」的下拉驗證（只准填 待審核/已核准/已退回），這時要把新標題「審核人」寫進 V2
+  // 就會違反舊驗證、直接噴錯，害整個選單①中斷。先清掉這一列的驗證，寫標題就不會撞到。
+  sheet.getRange(2, 1, 1, sheet.getMaxColumns()).clearDataValidations();
   sheet.getRange(2, 1, 1, REVIEW_HEADERS.length).setValues([REVIEW_HEADERS]);
   sheet.setFrozenRows(2);
   // 避免「發票日期」「期望撥款日期」「付款日期」被 Sheets 自動轉成真正的日期儲存格
