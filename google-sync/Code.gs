@@ -45,10 +45,11 @@
    機密設定區（只有這裡需要改程式碼）
    ============================================================ */
 const SHEET_NAME = '收支總表';     // 總表裡要寫入的分頁名稱，找不到會自動建立
-const DRIVE_FOLDER_ID = '';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
+const DRIVE_FOLDER_ID = '16Ia8f6zt7K3Uh7FQbzKUxCYTJ35Wm-Mr';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
+
+const REVIEW_SHEETS_FOLDER_ID = '1yd8pwY-ZWfBreVD-qaj40J14Vs-tpqcM';
 // 「中心審核表」存放資料夾的 ID（固定指定，避免每次靠名字找而不小心生出重複的資料夾）。
 // 留空 = 退回「在主資料夾底下用名字找/建一個『中心審核表』子資料夾」。
-const REVIEW_SHEETS_FOLDER_ID = '1yd8pwY-ZWfBreVD-qaj40J14Vs-tpqcM';
 
 // v2 起改用「Google 登入」驗證身分，取代舊的 SECRET_TOKEN 密碼。
 // 前端會要求同事用組織帳號（@skillsforu.org）登入 Google，拿到一張「身分證明」(ID token)
