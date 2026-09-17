@@ -1109,6 +1109,14 @@ function getOrCreateCenterSpreadsheet_(center) {
 function applyCenterPermissions_(ss, center) {
   const sheet = getReviewSheet_(ss);
 
+  // 0. 每次跑選單「①」都把標題列刷新成目前最新的完整欄位。
+  //    真實踩過的坑：如果這份審核表是在某個「欄位比較少」的舊版程式碼部署期間被建立的，
+  //    第 2 列已經有一部分（舊的、比較短的）標題、不是空的，getOrCreateCenterSpreadsheet_ 裡
+  //    「只在整列空白才補標題」的防線就不會動它，導致後面新增的那幾欄永遠沒有標題。
+  //    這裡在「①」流程無條件重寫標題列（只動第 2 列跟欄位格式，不碰第 3 列以後的資料），
+  //    讓標題一定跟現在的 REVIEW_HEADERS 對齊。
+  setupReviewSheetHeaders_(sheet);
+
   // 1. 分享給審核人（編輯者）
   center.approverEmails.forEach(function (email) {
     try {
