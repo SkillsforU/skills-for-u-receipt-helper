@@ -1323,8 +1323,8 @@ function renderQuoteCases(all) {
   });
 }
 
-/* ---- 補上發票：不再「換單」，就只是「補一筆發票/收據掛到這張報價單」而已（新做法）。
-   如果這時候沒有要再付錢，金額留 0＝純補文件；有付錢就填金額，超過報價總額要填不符原因。---- */
+/* ---- 補上發票：就只是「把正式發票 / 收據這份憑證掛到這張報價單」而已，不涉及付款。
+   所以不問金額（金額固定 0）——要付錢請走正常上傳流程（單據類型選發票/收據、選關聯報價單、填金額）。---- */
 let attachFile = { dataUrl: "", name: "" };
 function openAttachInvoice(caseId) {
   const p = (serverRecords || []).find(r => r.id === caseId);
@@ -1333,18 +1333,11 @@ function openAttachInvoice(caseId) {
   modalBody.innerHTML = `
     <div class="detail-title">補上正式發票 / 收據</div>
     <div class="detail-sub">${escapeHtml(p.vendor || p.purpose || "報價單")}｜報價總額 ${fmtMoney(Number(p.quoteTotal) || 0)}</div>
-    <p class="field-hint" style="margin-top:8px;">補一筆正式發票 / 收據掛到這張報價單。這時候沒有要再付錢的話，金額留 0 就好。</p>
+    <p class="field-hint" style="margin-top:8px;">把正式發票 / 收據掛到這張報價單當憑證，不涉及付款。若還有款項要付，請走正常的「上傳單據」流程。</p>
     <label class="field-label" style="margin-top:10px;">正式發票 / 收據檔案 <span class="req">*</span></label>
     <input type="file" id="attachFileInput" accept="image/*,.pdf" class="text-input">
     <label class="field-label">發票 / 收據日期</label>
     <input type="date" id="attachDate" class="text-input">
-    <label class="field-label">本次付款金額（沒有要再付就填 0）</label>
-    <input type="number" id="attachAmount" class="text-input" min="0" step="1" value="0">
-    <div class="form-field" id="attachMismatchField" hidden style="margin-top:10px;">
-      <label class="field-label">金額不符原因 <span class="req">*</span></label>
-      <textarea id="attachMismatchReason" class="textarea-input" rows="2" placeholder="例如：廠商追加"></textarea>
-    </div>
-    <div class="confidence-banner low" id="attachOverpay" hidden style="margin-top:8px;"></div>
     <div class="btn-row"><button class="primary-btn" id="attachSubmitBtn" style="flex:1;">送出</button></div>
   `;
   document.getElementById("attachFileInput").addEventListener("change", (e) => {
@@ -1354,28 +1347,12 @@ function openAttachInvoice(caseId) {
     reader.onload = () => { attachFile = { dataUrl: reader.result, name: f.name }; };
     reader.readAsDataURL(f);
   });
-  document.getElementById("attachAmount").addEventListener("input", () => attachUpdateMismatch(p));
   document.getElementById("attachSubmitBtn").addEventListener("click", () => submitAttachInvoice(p));
   detailModal.hidden = false;
 }
 
-function attachUpdateMismatch(p) {
-  const amount = Number(document.getElementById("attachAmount").value) || 0;
-  const total = Number(p.quoteTotal) || 0;
-  const over = !!total && (quoteCasePaidSoFar(p.id) + amount) > total;
-  document.getElementById("attachMismatchField").hidden = !over;
-  const banner = document.getElementById("attachOverpay");
-  if (over) { banner.hidden = false; banner.textContent = `⚠️ 加上之前已付合計超過報價總額 NT$${total.toLocaleString("en-US")}，請填不符原因。`; }
-  else { banner.hidden = true; }
-  return over;
-}
-
 async function submitAttachInvoice(p) {
   if (!attachFile.dataUrl) { showToast("請先選擇正式發票 / 收據檔案"); return; }
-  const amount = Number(document.getElementById("attachAmount").value) || 0;
-  const over = attachUpdateMismatch(p);
-  const reason = document.getElementById("attachMismatchReason").value.trim();
-  if (over && !reason) { showToast("金額超過報價總額，請填寫不符原因"); document.getElementById("attachMismatchReason").focus(); return; }
   const invoiceDate = document.getElementById("attachDate").value;
   const record = {
     id: uid(),
@@ -1387,7 +1364,7 @@ async function submitAttachInvoice(p) {
     fileName: attachFile.name,
     invoiceDate: invoiceDate,
     period: invoiceDate ? invoiceDate.slice(0, 7) : (p.period || ""),
-    amount: amount,
+    amount: 0, // 補發票只是掛憑證，不涉及付款
     vendor: p.vendor || "",
     purpose: p.purpose || "",
     budgetItem: p.budgetItem || "",
@@ -1395,7 +1372,7 @@ async function submitAttachInvoice(p) {
     quoteTotal: Number(p.quoteTotal) || "",
     linkedQuoteId: p.id,
     payStatus: "", payMethod: "", cardForm: "", repayTarget: "", payee: "", paymentDetail: "",
-    confirmNote: over ? reason : "",
+    confirmNote: "",
     urgent: false, expectedPayoutDate: "",
     status: "pending", reviewer: "", reviewedAt: "", rejectReason: "", receiptComplete: false,
   };
