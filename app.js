@@ -723,18 +723,29 @@ function quoteCasePaidSoFar(quoteId) {
     .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 }
 
-// 這筆加上案子裡已經付的錢會不會「超過」報價總額。回傳超過與否 + 相關數字。
-// 只有「超過」才算不符（還沒付完＝正常，不算）。
+// 付款金額會不會「超過」報價總額。回傳超過與否 + 相關數字。只有「超過」才算不符（還沒付完＝正常）。
+// 兩種情況都要檢查：
+//  (1) 後續款（有選關聯報價單）：之前已付 + 這次 vs 母案報價總額。
+//  (2) 報價單母筆（第一次上傳、單據類型＝報價單）：這次付款金額 vs 這張報價單自己填的報價總額
+//      ——防止「把本次付款金額和報價總額寫反了」（例如本次 30000、報價總額 5000）卻沒有任何提醒。
 function quoteOverpayInfo() {
-  const quoteId = f_linkedQuote.value;
   const thisAmount = Number(f_amount.value) || 0;
-  if (!quoteId || thisAmount <= 0) return { over: false };
-  const parent = quoteRecordsSnapshot.find(r => r.id === quoteId);
-  const total = parent ? Number(parent.quoteTotal) || 0 : 0;
-  if (!total) return { over: false };
-  const paidBefore = quoteCasePaidSoFar(quoteId);
-  const paidAfter = paidBefore + thisAmount;
-  return { over: paidAfter > total, paidBefore: paidBefore, thisAmount: thisAmount, total: total, paidAfter: paidAfter };
+  if (thisAmount <= 0) return { over: false };
+  const quoteId = f_linkedQuote.value;
+  if (quoteId) {
+    const parent = quoteRecordsSnapshot.find(r => r.id === quoteId);
+    const total = parent ? Number(parent.quoteTotal) || 0 : 0;
+    if (!total) return { over: false };
+    const paidBefore = quoteCasePaidSoFar(quoteId);
+    return { over: (paidBefore + thisAmount) > total, paidBefore: paidBefore, thisAmount: thisAmount, total: total };
+  }
+  // 母筆報價單：拿本次付款金額跟這張報價單自己的報價總額比
+  if (docTypeSelect.value === DOC_TYPE_QUOTE) {
+    const total = Number(f_quoteTotal.value) || 0;
+    if (!total) return { over: false };
+    return { over: thisAmount > total, paidBefore: 0, thisAmount: thisAmount, total: total };
+  }
+  return { over: false };
 }
 
 // 金額超過報價總額 → 跳出「金額不符原因」必填欄位（填了才能送出）；沒超過就把它收起來。
@@ -745,14 +756,18 @@ function updateMismatchField() {
   if (info.over) {
     field.hidden = false;
     banner.hidden = false;
-    banner.textContent = `⚠️ 之前已付 NT$${info.paidBefore.toLocaleString("en-US")}，本次 NT$${info.thisAmount.toLocaleString("en-US")}，合計超過報價總額 NT$${info.total.toLocaleString("en-US")}，請填寫不符原因後送出。`;
+    banner.textContent = info.paidBefore > 0
+      ? `⚠️ 之前已付 NT$${info.paidBefore.toLocaleString("en-US")}，本次 NT$${info.thisAmount.toLocaleString("en-US")}，合計超過報價總額 NT$${info.total.toLocaleString("en-US")}，請填寫不符原因後送出。`
+      : `⚠️ 本次付款金額 NT$${info.thisAmount.toLocaleString("en-US")} 超過報價總額 NT$${info.total.toLocaleString("en-US")}，是不是把金額和報價總額寫反了？請確認，或填寫不符原因後送出。`;
   } else {
     field.hidden = true;
     banner.hidden = true;
   }
 }
 f_amount.addEventListener("input", updateMismatchField);
+f_quoteTotal.addEventListener("input", updateMismatchField);
 f_linkedQuote.addEventListener("change", updateMismatchField);
+docTypeSelect.addEventListener("change", updateMismatchField);
 
 function populateLinkedQuoteOptions() {
   const cur = f_linkedQuote.value;
