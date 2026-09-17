@@ -73,6 +73,10 @@
 
       <button class="primary-btn" id="startOcrBtn" disabled>開始辨識</button>
 
+      <!-- 沒有憑證檔案時的入口：主要給「報價單的後續款」（報價單只來一次、這期發票還沒到）用。
+           點了直接進手動填寫，到確認表單裡選「關聯報價單」就能不附檔送出。 -->
+      <button class="ghost-btn" id="noFileBtn" style="width:100%; margin-top:10px;" disabled>沒有憑證檔案，直接填寫（報價單後續款用）</button>
+
       <div class="ocr-progress" id="ocrProgress" hidden>
         <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
         <div class="ocr-progress-label" id="ocrProgressLabel">辨識中…</div>

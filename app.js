@@ -412,9 +412,16 @@ centerSelect.addEventListener("change", () => {
   populateBudgetItemOptions(projectSelect.value);
   updateStartButtonState();
 });
+const noFileBtn = document.getElementById("noFileBtn");
 function updateStartButtonState() {
-  startOcrBtn.disabled = !(selectedFile && uploaderSelect.value && projectSelect.value);
+  const whoReady = uploaderSelect.value && projectSelect.value;
+  startOcrBtn.disabled = !(selectedFile && whoReady);
+  // 「沒有憑證檔案，直接填寫」：選好中心/專案就能點（不需要檔案）；有選檔案時反而隱藏它，避免混淆
+  noFileBtn.disabled = !whoReady;
+  noFileBtn.hidden = !!selectedFile;
 }
+// 沒檔案直接進手動填寫（給報價單後續款用）：帶空的辨識結果進確認表單，到裡面選關聯報價單即可不附檔送出
+noFileBtn.addEventListener("click", () => openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} }));
 
 /* ============================================================
    OCR 辨識（Tesseract.js，繁體中文 + 英文）
@@ -764,9 +771,16 @@ function updateMismatchField() {
     banner.hidden = true;
   }
 }
-f_amount.addEventListener("input", updateMismatchField);
-f_quoteTotal.addEventListener("input", updateMismatchField);
-f_linkedQuote.addEventListener("change", updateMismatchField);
+// 輸入金額/報價總額的「過程中」不要每打一個字就判斷——會害不符提醒一直跳出/收起、畫面上下抖動。
+// 停手約 0.9 秒才判斷一次。送出時 submitRecord 會再直接檢查一次，不會因為 debounce 漏擋。
+let mismatchTimer = null;
+function updateMismatchFieldDebounced() {
+  clearTimeout(mismatchTimer);
+  mismatchTimer = setTimeout(updateMismatchField, 900);
+}
+f_amount.addEventListener("input", updateMismatchFieldDebounced);
+f_quoteTotal.addEventListener("input", updateMismatchFieldDebounced);
+f_linkedQuote.addEventListener("change", updateMismatchField); // 下拉選擇是一次性動作，不用 debounce
 docTypeSelect.addEventListener("change", updateMismatchField);
 
 function populateLinkedQuoteOptions() {
