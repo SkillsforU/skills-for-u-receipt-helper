@@ -413,15 +413,23 @@ centerSelect.addEventListener("change", () => {
   updateStartButtonState();
 });
 const noFileBtn = document.getElementById("noFileBtn");
+// 「沒有單據」才允許不附檔案：這時候隱藏拖曳區與「開始辨識」，改顯示「直接填寫」；
+// 其他單據類型（發票/收據、報價單）一定要附檔案走「開始辨識」。
 function updateStartButtonState() {
   const whoReady = uploaderSelect.value && projectSelect.value;
+  const isNone = docTypeSelect.value === DOC_TYPE_NONE;
+  dropzone.hidden = isNone;
+  startOcrBtn.hidden = isNone;
   startOcrBtn.disabled = !(selectedFile && whoReady);
-  // 「沒有憑證檔案，直接填寫」：選好中心/專案就能點（不需要檔案）；有選檔案時反而隱藏它，避免混淆
+  noFileBtn.hidden = !isNone;
   noFileBtn.disabled = !whoReady;
-  noFileBtn.hidden = !!selectedFile;
 }
-// 沒檔案直接進手動填寫（給報價單後續款用）：帶空的辨識結果進確認表單，到裡面選關聯報價單即可不附檔送出
+// 沒有單據 → 直接進手動填寫，帶空的辨識結果進確認表單
 noFileBtn.addEventListener("click", () => openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} }));
+docTypeSelect.addEventListener("change", () => {
+  if (docTypeSelect.value === DOC_TYPE_NONE) resetFileSelection(); // 改成沒有單據就把已選的檔案清掉
+  updateStartButtonState();
+});
 
 /* ============================================================
    OCR 辨識（Tesseract.js，繁體中文 + 英文）
@@ -708,7 +716,8 @@ function populatePayeePersonOptions() {
    單據類型在上傳卡片選（發票/收據/報價單）。報價單＝先付款、之後補正式發票。
    「關聯報價單」讓後續款（尾款）掛到同一張報價單的案子底下一起算「已付/尚欠」。 */
 const DOC_TYPE_QUOTE = "報價單";
-const DOC_TYPE_RECEIPT = "發票 / 收據"; // 發票、收據合成一個選項；只要案子裡有任何一筆是這個，就算「發票已到」
+const DOC_TYPE_RECEIPT = "發票 / 收據"; // 發票、收據合成一個選項；只要案子裡有任何一筆是這個，就算「發票已到」。一定要附檔案。
+const DOC_TYPE_NONE = "沒有單據";       // 這筆付款沒有任何單據（報價單後續款、之後補發票）。允許不附檔案；不算「發票已到」。
 let openQuotesCache = []; // 系統上「未結案」的報價單（單據類型還是報價單、且本身不是別張的後續款）
 let quoteRecordsSnapshot = []; // 全部紀錄（含每張報價單底下的後續款），用來即時算「已付多少、會不會超過報價總額」
 
@@ -963,11 +972,10 @@ function submitRecord() {
   const f_budgetItem = document.getElementById("f_budgetItem");
   if (!f_budgetItem.value) { showToast("請選擇預算項目（真的不知道可以選「不確定預算項目」）"); f_budgetItem.focus(); return; }
 
-  // 沒傳檔案：只有「某張報價單的後續款」允許不傳檔（報價單只來一次、這期發票還沒到的情況）；
-  // 其他情況一定要有憑證檔。
+  // 沒傳檔案：只有「單據類型＝沒有單據」才允許不附檔；發票/收據、報價單一定要有憑證檔。
   const hasFile = !!(selectedImageDataUrl || selectedPdfDataUrl);
-  if (!hasFile && !linkedQuoteId) {
-    showToast("請先上傳憑證檔案（只有『報價單的後續款』才能不附檔案）");
+  if (!hasFile && docType !== DOC_TYPE_NONE) {
+    showToast("請先上傳憑證檔案（若這筆真的沒有單據，請把「單據類型」改成『沒有單據』）");
     return;
   }
   let quoteTotal = "";
@@ -1384,7 +1392,8 @@ function recordItemHtml(r, { showUploader }) {
   const cloudBadge = (r._localOnly && !r.cloudSynced)
     ? `<span class="cloud-badge unsynced">☁ 未同步</span>`
     : `<span class="cloud-badge synced">☁ 已同步</span>`;
-  const docBadge = (r.docType && r.docType !== "發票") ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
+  // 一般的「發票 / 收據」不特別標；報價單、沒有單據才加徽章提醒
+  const docBadge = (r.docType && r.docType !== DOC_TYPE_RECEIPT) ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
   return `
     <div class="record-item" data-id="${escapeHtml(r.id)}">
       <div class="record-main">

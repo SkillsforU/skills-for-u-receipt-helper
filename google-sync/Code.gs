@@ -211,9 +211,12 @@ const PROJECT_STATUS_ACTIVE = '進行中';
 const PROJECT_STATUS_ENDED = '已結束';
 
 // v2 付款結構與報價單相關的選項（前端下拉、後端驗證共用同一組字，避免兩邊打不一樣對不上）
-const DOC_TYPE_RECEIPT = '發票 / 收據';  // 發票、收據合成一個選項（要分辨看憑證即可）
-const DOC_TYPE_QUOTE = '報價單';         // 報價單＝這個案子還沒有正式發票；只要案子裡出現任何一筆是「發票 / 收據」就算發票已到
-const DOC_TYPE_OPTIONS = [DOC_TYPE_RECEIPT, DOC_TYPE_QUOTE];
+const DOC_TYPE_RECEIPT = '發票 / 收據';  // 發票、收據合成一個選項（要分辨看憑證即可）。一定要有檔案。
+const DOC_TYPE_QUOTE = '報價單';         // 報價單。一定要有檔案。
+const DOC_TYPE_NONE = '沒有單據';        // 這筆付款目前沒有任何單據（報價單後續款、之後才補發票）。允許不附檔案。
+// ⚠️ 只有「發票 / 收據」才算「這個案子的發票到了」；報價單、沒有單據都不算——
+//    所以就算金額沖滿，只要案子裡沒有任何一筆「發票 / 收據」，就還是「發票還沒來」、不會結清。
+const DOC_TYPE_OPTIONS = [DOC_TYPE_RECEIPT, DOC_TYPE_QUOTE, DOC_TYPE_NONE];
 const PAY_STATUS_PAID = '已付款';       // 組織的錢已經出去了（組織信用卡、零用金）
 const PAY_STATUS_UNPAID = '未付款';     // 組織還沒付（組織匯款、未付款的組織信用卡）
 const PAY_STATUS_OPTIONS = [PAY_STATUS_PAID, PAY_STATUS_UNPAID];
