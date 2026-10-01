@@ -794,7 +794,13 @@ docTypeSelect.addEventListener("change", updateMismatchField);
 
 function populateLinkedQuoteOptions() {
   const cur = f_linkedQuote.value;
-  f_linkedQuote.innerHTML = '<option value="">不是，這是獨立的一筆</option>' +
+  const isNone = docTypeSelect.value === DOC_TYPE_NONE;
+  // 「沒有單據」時，第一個（value=""）選項代表「固定支出、本來就沒有憑證」（例如房租）；
+  // 其他單據類型時，它代表「獨立的一筆」（一般發票/收據）。
+  const firstOpt = isNone
+    ? '<option value="">固定支出／本來就沒有憑證（例如房租）</option>'
+    : '<option value="">不是，這是獨立的一筆</option>';
+  f_linkedQuote.innerHTML = firstOpt +
     openQuotesCache.map(q => {
       const who = q.vendor || q.purpose || q.project || "報價單";
       const total = q.quoteTotal ? `總額 NT$${Number(q.quoteTotal).toLocaleString("en-US")}` : "";
@@ -802,7 +808,24 @@ function populateLinkedQuoteOptions() {
       return `<option value="${escapeHtml(q.id)}">${escapeHtml(label)}</option>`;
     }).join("");
   f_linkedQuote.value = cur;
-  document.getElementById("linkedQuoteField").hidden = openQuotesCache.length === 0;
+  updateLinkedQuoteFieldForDocType();
+}
+
+// 依單據類型調整「關聯報價單」這一欄的顯示與說明：
+// - 沒有單據：一定要顯示（讓使用者在「固定支出（房租等）」vs「報價單後續款」之間選），即使目前沒有未結案報價單。
+// - 其他類型：維持原本行為，有未結案報價單才顯示。
+function updateLinkedQuoteFieldForDocType() {
+  const isNone = docTypeSelect.value === DOC_TYPE_NONE;
+  document.getElementById("linkedQuoteField").hidden = isNone ? false : openQuotesCache.length === 0;
+  const label = document.getElementById("linkedQuoteLabel");
+  const hint = document.getElementById("linkedQuoteHint");
+  if (isNone) {
+    label.textContent = "這筆「沒有單據」是？";
+    hint.textContent = "房租這類固定、本來就沒有憑證的支出，選「固定支出」就能直接送出；若其實是某張報價單的後續款（之後會補發票），請選下面對應的報價單。";
+  } else {
+    label.textContent = "這是某張報價單的後續款嗎？";
+    hint.textContent = "選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」。";
+  }
 }
 
 // 報價總額只在「單據類型＝報價單、且不是別張報價單的後續款」時要填（後續款的總額沿用父案報價）
@@ -978,11 +1001,10 @@ function submitRecord() {
     showToast("請先上傳憑證檔案（若這筆真的沒有單據，請把「單據類型」改成『沒有單據』）");
     return;
   }
-  // 「沒有單據」一定要掛在某張報價單底下（它就是「報價單的後續款、之後補發票」），不能是獨立一筆
-  if (docType === DOC_TYPE_NONE && !linkedQuoteId) {
-    showToast("「沒有單據」必須選擇它是哪一張報價單的後續款，不能是獨立的一筆");
-    f_linkedQuote.focus(); return;
-  }
+  // 「沒有單據」有兩種合法情況：
+  //  (1) 固定支出、本來就沒有憑證（例如房租）＝ 獨立一筆（linkedQuoteId 空）→ 直接放行
+  //  (2) 某張報價單的後續款（之後補發票）＝ 有選 linkedQuoteId
+  // 所以這裡不再強制一定要綁報價單（房租就是靠這條放行的）。
   let quoteTotal = "";
   if (docType === DOC_TYPE_QUOTE && !linkedQuoteId) {
     if (!f_quoteTotal.value || Number(f_quoteTotal.value) <= 0) {
@@ -1391,6 +1413,7 @@ function statusLabel(status) {
 
 // 已核准、有期望撥款日期、但憑證正本還沒送到後勤（單據完備=false）時，在紀錄卡片上直接顯示提醒
 function receiptReminderHtml(r, sk) {
+  if (r.docType === DOC_TYPE_NONE) return ""; // 沒有單據（例如房租）本來就沒有憑證要繳，不提醒
   if (sk !== "approved" || r.receiptComplete || !r.expectedPayoutDate) return "";
   return `<div class="confidence-banner mid" style="margin-top:8px;">✅ 已收到您的審核，請於 ${escapeHtml(r.expectedPayoutDate)} 前繳交憑證至後勤人員處</div>`;
 }

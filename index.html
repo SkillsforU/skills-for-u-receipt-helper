@@ -107,11 +107,11 @@
 
         <!-- 這是某張報價單的後續款嗎？（系統上有未結案報價單時才出現，見 app.js 的 populateLinkedQuoteOptions） -->
         <div class="form-field span-2" id="linkedQuoteField" hidden>
-          <label class="field-label">這是某張報價單的後續款嗎？</label>
+          <label class="field-label" id="linkedQuoteLabel">這是某張報價單的後續款嗎？</label>
           <select id="f_linkedQuote" class="select-input">
             <option value="">不是，這是獨立的一筆</option>
           </select>
-          <p class="field-hint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」。</p>
+          <p class="field-hint" id="linkedQuoteHint">選了之後，這筆會併進那張報價單的案子一起算「已付／尚欠」。</p>
         </div>
 
         <!-- 金額超過報價總額時才出現：必填「不符原因」，填了才能送出（會存進總表的「確認事項」欄） -->
