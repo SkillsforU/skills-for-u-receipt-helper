@@ -789,6 +789,15 @@ function updateMismatchFieldDebounced() {
 }
 f_amount.addEventListener("input", updateMismatchFieldDebounced);
 f_quoteTotal.addEventListener("input", updateMismatchFieldDebounced);
+
+// 防止滑鼠滾輪在「數字輸入框」上捲動時誤改金額：數字欄被點選（focus）後，滾輪移到它上面
+// 原本會上下調整數字，很容易不小心改到金額。這裡在欄位處於作用中時擋掉滾輪的預設行為。
+document.addEventListener("wheel", function (e) {
+  const t = e.target;
+  if (t instanceof HTMLInputElement && t.type === "number" && t === document.activeElement) {
+    e.preventDefault();
+  }
+}, { passive: false });
 f_linkedQuote.addEventListener("change", updateMismatchField); // 下拉選擇是一次性動作，不用 debounce
 docTypeSelect.addEventListener("change", updateMismatchField);
 
