@@ -591,10 +591,13 @@ function recognizeReceipt_(images) {
     generationConfig: { responseMimeType: 'application/json' },
   };
 
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + apiKey;
+  // 金鑰放在 x-goog-api-key 標頭（Gemini 官方文件的寫法），不放在網址上，避免出現在任何網址紀錄裡；
+  // 2026 年起 AI Studio 只發「AQ.」開頭的新型金鑰，同樣用這個標頭帶。
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent';
   const fetchOpts = {
     method: 'post',
     contentType: 'application/json',
+    headers: { 'x-goog-api-key': apiKey },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
