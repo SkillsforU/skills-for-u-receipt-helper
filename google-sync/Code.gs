@@ -8,7 +8,9 @@
  *
  * ── 第一次設定 ─────────────────────────────────────────────
  * 1. 開一個 Google 試算表（這份就是「總表」），選單「擴充功能」→「Apps Script」，把這個檔案整份貼進去。
- * 2. 修改下面「機密設定區」：GEMINI_API_KEY、SLACK_WEBHOOK_URL、GOOGLE_CLIENT_ID（Google 登入用戶端 ID）。
+ * 2. 機密值（GEMINI_API_KEY、SLACK_WEBHOOK_URL）填在 Apps Script 左側「專案設定」（齒輪）→「指令碼屬性」，
+ *    屬性名稱就用這兩個名字，**不要寫進程式碼**（GitHub 是公開的）。
+ *    GOOGLE_CLIENT_ID（Google 登入用戶端 ID，非機密）直接改下面的常數。
  *    （v2 起不再需要 SECRET_TOKEN 密碼，改用「Google 登入」驗證身分。）
  * 3. 右上角「部署」→「新增部署作業」→「網頁應用程式」：執行身分「我」、誰可以存取「任何人」。
  *    把拿到的 /exec 網址寫進前端 app.js（沒有機密，網址不再帶密碼）。
@@ -38,11 +40,12 @@
  * 必須是本系統的用戶端 ID、Email 已驗證、且網域是 @skillsforu.org 才准寫資料。
  * 所以就算拿到 /exec 網址也無法寫入——沒有組織帳號的有效登入就會被擋。
  * GOOGLE_CLIENT_ID 不是機密（可公開、會寫進前端）；GEMINI_API_KEY 與 SLACK_WEBHOOK_URL 才是機密，不要外流。
+ * 這兩個機密值只存在「指令碼屬性」，程式碼裡永遠留空（見 getSecret_）。
  * 要收回某人存取權：把他從 Google Workspace 停用即可，不需要像舊版那樣換密碼重部署。
  */
 
 /* ============================================================
-   機密設定區（只有這裡需要改程式碼）
+   設定區（機密值不在這裡，見下方「機密值」說明）
    ============================================================ */
 const SHEET_NAME = '收支總表';     // 總表裡要寫入的分頁名稱，找不到會自動建立
 const DRIVE_FOLDER_ID = '16Ia8f6zt7K3Uh7FQbzKUxCYTJ35Wm-Mr';        // 留空 = 自動在「我的雲端硬碟」建立「核銷小幫手」資料夾
@@ -58,13 +61,44 @@ const REVIEW_SHEETS_FOLDER_ID = '1yd8pwY-ZWfBreVD-qaj40J14Vs-tpqcM';
 const GOOGLE_CLIENT_ID = '367734743259-m1si6lu02113c1e53v80t4gnf40poop0.apps.googleusercontent.com';
 const ALLOWED_EMAIL_DOMAIN = 'skillsforu.org'; // 只允許這個網域的 Google 帳號使用
 const SECRET_TOKEN = '';           // 已停用（保留常數避免其他參照壞掉）；驗證改看 Google 登入
-const GEMINI_API_KEY = '';         // 留空 = 不啟用雲端 OCR
+
+// ── 機密值：存在「指令碼屬性」，不寫在程式碼裡 ─────────────────────
+// GEMINI_API_KEY、SLACK_WEBHOOK_URL 請到 Apps Script 左側「專案設定」（齒輪）→「指令碼屬性」新增，
+// 屬性名稱就用這兩個名字。程式會優先讀指令碼屬性。
+// 好處：以後更新後端只要「整份貼上 GitHub 最新版 → 部署新版本」，不用每次補填機密值；
+// 換 key、換 Slack 頻道也只要改屬性、存檔就立即生效，連重新部署都不用。
+// 下面兩個同名常數只是舊作法的相容備援（指令碼屬性沒設時才會用到），請永遠保持空白。
+const GEMINI_API_KEY = '';         // 請保持空白，改用指令碼屬性 GEMINI_API_KEY（兩邊都空 = 不啟用雲端 OCR）
+const SLACK_WEBHOOK_URL = '';      // 請保持空白，改用指令碼屬性 SLACK_WEBHOOK_URL（兩邊都空 = 不發 Slack，其他功能不受影響）
+
 // 預設用 gemini-flash-latest 這個別名，它會自動指向目前最新的 Flash 模型，
 // 不會因為 Google 淘汰舊版本（回傳 404 no longer available）而突然失效。
 const GEMINI_MODEL = 'gemini-flash-latest';
-const SLACK_WEBHOOK_URL = '';      // 留空 = 不發送任何 Slack 通知，其他功能不受影響
 
 const DIGEST_DAY_OF_MONTH = 10;    // 每月審核日；遇到週六/週日會自動順延到下一個週一
+
+// 讀機密值：先讀「指令碼屬性」，沒有才退回上面同名常數。
+// 每次用到才讀（不在檔案最上層先讀好）：改了屬性立刻生效，就算讀取出錯也只影響這一項功能，不會讓整份程式載入失敗。
+function getSecret_(name, legacyValue) {
+  let value = '';
+  try {
+    value = PropertiesService.getScriptProperties().getProperty(name) || '';
+  } catch (e) {
+    console.warn('讀取指令碼屬性 ' + name + ' 失敗，改用程式碼裡的常數：' + e);
+  }
+  value = String(value).trim();
+  return value || String(legacyValue || '').trim();
+}
+// 回報機密值目前從哪裡讀到（scriptProperties／code／none），只回來源、不回值本身。
+function secretSource_(name, legacyValue) {
+  let fromProps = '';
+  try { fromProps = PropertiesService.getScriptProperties().getProperty(name) || ''; } catch (e) { /* 讀不到就當沒設 */ }
+  if (String(fromProps).trim()) return 'scriptProperties';
+  if (String(legacyValue || '').trim()) return 'code';
+  return 'none';
+}
+function geminiApiKey_() { return getSecret_('GEMINI_API_KEY', GEMINI_API_KEY); }
+function slackWebhookUrl_() { return getSecret_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL); }
 
 /* ============================================================
    種子名單：只有「第一次」建立設定分頁時會用到，
@@ -481,8 +515,11 @@ function doGet(e) {
     ok: true,
     message: '核銷小幫手同步端點運作中，請用 POST 送資料。',
     model: GEMINI_MODEL,
-    geminiKeySet: GEMINI_API_KEY ? true : false,
-    slackSet: SLACK_WEBHOOK_URL ? true : false,
+    geminiKeySet: geminiApiKey_() ? true : false,
+    slackSet: slackWebhookUrl_() ? true : false,
+    // 機密值從哪裡讀到（只回來源、不回值）：部署後打開 /exec 網址，兩個都顯示 scriptProperties 就代表設定正確
+    geminiKeySource: secretSource_('GEMINI_API_KEY', GEMINI_API_KEY),
+    slackSource: secretSource_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL),
   });
 }
 
@@ -520,8 +557,9 @@ function getConfigForApp_() {
 // images：一或多張圖片／PDF 的 data URL 陣列。多張通常是瀏覽器端把多頁 PDF 轉成的各頁壓縮圖片
 //（比整份原始 PDF 小很多、辨識較快），也相容單純傳一張圖片或一份原始 PDF。
 function recognizeReceipt_(images) {
-  if (!GEMINI_API_KEY) {
-    return { ok: false, error: '尚未設定 GEMINI_API_KEY，未啟用雲端 OCR' };
+  const apiKey = geminiApiKey_();
+  if (!apiKey) {
+    return { ok: false, error: '尚未設定 GEMINI_API_KEY（請到 Apps Script「專案設定 → 指令碼屬性」新增），未啟用雲端 OCR' };
   }
   const list = Array.isArray(images) ? images : [images];
   const parsed = list
@@ -553,7 +591,7 @@ function recognizeReceipt_(images) {
     generationConfig: { responseMimeType: 'application/json' },
   };
 
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + apiKey;
   const fetchOpts = {
     method: 'post',
     contentType: 'application/json',
@@ -1350,14 +1388,20 @@ function moveReceiptFile_(fileUrl, targetFolder) {
 /* ============================================================
    Slack 通知
    ============================================================ */
+// 回傳 HTTP 狀態碼（200 = 成功；沒設定 webhook 回傳 null）。呼叫端目前都不看回傳值，失敗也不擋主流程。
 function postToSlack_(text) {
-  if (!SLACK_WEBHOOK_URL) return;
-  UrlFetchApp.fetch(SLACK_WEBHOOK_URL, {
+  const webhookUrl = slackWebhookUrl_();
+  if (!webhookUrl) return null;
+  const res = UrlFetchApp.fetch(webhookUrl, {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify({ text: text }),
     muteHttpExceptions: true,
   });
+  // 送失敗時留紀錄（不印網址本身）：webhook 被撤銷、換錯網址時，到 Apps Script「執行項目」就看得到原因，不會無聲無息
+  const code = res.getResponseCode();
+  if (code !== 200) console.warn('Slack 通知送出失敗（HTTP ' + code + '）：' + String(res.getContentText()).slice(0, 200));
+  return code;
 }
 
 // 審核人、審核表現在都設在「中心」層級，這些函式的參數還是專案名稱（呼叫端都是拿 record.project 來用），
@@ -1580,14 +1624,31 @@ function onOpen() {
 }
 
 /**
- * 授權用測試函式。設定好 GEMINI_API_KEY 後，在編輯器上方的函式下拉選單選「testGeminiAuth」
+ * 授權用測試函式。在「指令碼屬性」設定好 GEMINI_API_KEY 後，在編輯器上方的函式下拉選單選「testGeminiAuth」
  * 並按「執行」，Google 會跳出授權畫面（要允許「連線至外部服務」這項權限）。
  *
  * 注意：函式名稱結尾「不能」有底線，否則 Apps Script 會視為私有函式而不顯示在下拉選單中。
  */
 function testGeminiAuth() {
   var tinyImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  Logger.log('GEMINI_API_KEY 來源：' + secretSource_('GEMINI_API_KEY', GEMINI_API_KEY));
   Logger.log(JSON.stringify(recognizeReceipt_(tinyImage)));
+}
+
+/**
+ * Slack 測試函式（同上，函式名稱結尾不能有底線）。在「指令碼屬性」設定好 SLACK_WEBHOOK_URL 後，
+ * 在函式下拉選單選「testSlackWebhook」→ 執行：會往通知頻道發一則測試訊息，並在記錄印出結果。
+ * 換 webhook 或換頻道之後，用這個確認新網址可用（HTTP 200 = 成功）。
+ */
+function testSlackWebhook() {
+  var source = secretSource_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL);
+  if (source === 'none') {
+    Logger.log('尚未設定 SLACK_WEBHOOK_URL，請到「專案設定 → 指令碼屬性」新增。');
+    return;
+  }
+  var code = postToSlack_('✅ 核銷小幫手：Slack 通知設定測試（可忽略這則訊息）');
+  Logger.log('Slack 測試結果：HTTP ' + code + '（來源：' + source + '）' +
+    (code === 200 ? ' ✅ 成功' : ' ❌ 失敗：請確認 webhook 網址正確、沒有被撤銷'));
 }
 
 /**
