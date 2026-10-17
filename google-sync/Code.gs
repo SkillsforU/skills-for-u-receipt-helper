@@ -625,6 +625,7 @@ function doPost(e) {
     // 團隊後台的三個頁面（首頁問手冊、認識組織、計畫與預算）
     if (body.action === 'askHandbook') return jsonOut_(askHandbook_(body));
     if (body.action === 'getAbout') return jsonOut_(getAbout_());
+    if (body.action === 'getAboutOverview') return jsonOut_(getAboutOverview_());
     if (body.action === 'getBudgetOverview') return jsonOut_(getBudgetOverview_(auth));
     if (body.action === 'getAllRecords') {
       // 「上傳紀錄」頁查全部：回傳收支總表整份，前端自己依上傳人/日期篩選、算報價單分期已付尚欠
@@ -2800,8 +2801,8 @@ const KNOWLEDGE_PURPOSE_CHAT = '對話';
 const KNOWLEDGE_PURPOSE_ABOUT = '認識組織';
 const KNOWLEDGE_PURPOSE_BOTH = '兩者';
 const KNOWLEDGE_TEXT_LIMIT = 300000; // 一份手冊最多讀這麼多字，避免太大的檔案拖慢每一次回答
-const QA_LOG_SHEET_NAME = '問手冊紀錄';
-const QA_LOG_HEADERS = ['時間', '問題', '手冊有答案'];
+const QA_LOG_SHEET_NAME = '小U問答紀錄';
+const QA_LOG_HEADERS = ['時間', '問題', '回答依據']; // 手冊／一般知識／答不出來；不記是誰問的
 
 function loadKnowledgeEntries_() {
   const sheet = getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []);
@@ -2960,25 +2961,43 @@ function callGemini_(payload) {
   return { ok: true, text: text };
 }
 
+// 首頁的「小U」：Skills for U 的新手導師，像組織內部的客服，同仁可以問任何事。
+// 組織的事只照手冊和〈團隊後台使用說明〉回答（找不到就說沒寫、建議問誰）；一般工作問題可以用一般知識回答，
+// 但會標成 kind: 'general'，網頁上會註明「一般建議，不是組織規定」。
+const XIAOU_PERSONA = [
+  '你是「小U」，Skills for U（社團法人國際技能發展協會）的新手導師，在團隊後台陪同仁解決問題，像組織內部的客服。',
+  '你的形象：技職出身的年輕女生，熱心、關心社會議題、以臺灣為主體思考。口吻親切，像可靠的學姊，但說話簡潔，不撒嬌、不用表情符號。',
+  '回答規則：',
+  '1. 組織的事（規定、流程、福利、制度、文化、人事、財務、組織資訊）只能根據〈手冊〉和〈團隊後台使用說明〉回答，並附上出處。找不到就直接說手冊沒有寫到，建議可以問誰（例如直屬主管、會計，或執行長偉翔），不要自己推測。',
+  '2. 一般問題（工作技巧、文書處理、溝通、技職教育常識等）可以用一般知識回答，但不能說成是組織規定。',
+  '3. 不確定就說不確定；不要編造人名、金額、日期、規定或網址。',
+  '4. 用繁體中文（台灣用語）。先講結論，需要步驟時用「• 」開頭條列。不要用 Markdown 標題或表格。',
+  '只輸出 JSON：{"answer": "回答內容", "kind": "handbook" 或 "general" 或 "none", "sources": [{"title": "手冊名稱", "location": "第幾頁或哪一段"}]}',
+  'kind：根據手冊或使用說明回答填 "handbook"；用一般知識回答填 "general"（sources 留空）；答不出來填 "none"。',
+].join('\n');
+
+// 系統內建的使用說明（跟著程式一起更新，不用放進知識庫設定）。只寫系統真的這樣運作的事。
+const SYSTEM_GUIDE_TITLE = '團隊後台使用說明';
+const SYSTEM_GUIDE_TEXT = [
+  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了工作手冊和組織文化手冊；人事中心連到 Swingvy；財務底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
+  '（上傳單據）到「財務 › 上傳單據」，選中心、專案和單據類型，拍照或選檔案（JPG、PNG、PDF，PDF 最大 5 MB）。選好專案就會自動辨識日期、金額、店家和發票號碼，核對後送出。送出後可以按「上傳下一張，沿用」把專案、預算項目和付款方式帶到下一張。',
+  '（這筆錢要怎麼付）五選一：我先墊錢了（代墊款，主管核准後每月 5 號跟薪資一起匯）；請組織直接匯款給廠商或外部個人（要填戶名、7 碼分行代碼、帳號，一般在每月 20 號付；每月固定支出可以選在 5 號付）；繳費單（稅金、健保費等，會計用網銀代繳，要填繳費期限）；已經用組織信用卡或零用金付掉了；需要組織刷卡（線上刷卡連結或紙本刷卡）。',
+  '（審核與付款時間）各中心主管每月 10–13 號審核。趕時間的單據可以標「緊急」並填希望付款的日期，送出時會馬上通知主管。送出畫面會顯示預計撥款日，實際以財務作業為準。',
+  '（看進度）到「財務 › 上傳紀錄」看每一張單據的審核和付款進度，收款帳號只顯示末 4 碼。被退回會在 Slack 收到通知，照退回原因補好再重新上傳。放行時沒有付款的，會寫出原因並排進下一批。',
+  '（紙本單據）紙本正本要交給後勤，會計核對紙本和電子檔相符後，才算單據完備。紙本有問題時，上傳人會在 Slack 收到補件通知。',
+  '（找誰）付款進度的問題先看「上傳紀錄」，還有疑問找會計；系統用不順或出現錯誤訊息，截圖給執行長偉翔。',
+].join('\n');
+
 function askHandbook_(body) {
   const question = String(body.question || '').trim().slice(0, 500);
   if (!question) return { ok: false, error: '請先輸入問題。' };
   const kb = loadKnowledgeTexts_();
-  if (!kb.docs.length) {
-    return {
-      ok: true, notConfigured: true, found: false, sources: [],
-      answer: '手冊還沒接上對話功能。請管理員到總表「知識庫設定」分頁，填入組織手冊、組織文化手冊的連結，用途填「對話」或「兩者」。' +
-        (kb.warnings.length ? '\n（' + kb.warnings.join('；') + '）' : ''),
-    };
-  }
-  const instruction = [
-    '你是 Skills for U（社團法人國際技能發展協會）團隊後台的小幫手，負責回答同仁關於組織的問題。',
-    '只能根據下面〈手冊〉的內容回答。手冊沒有寫到的，不要自己推測或補充，直接說手冊沒有寫到，並建議可以問誰（例如直屬主管或執行長偉翔）。',
-    '用繁體中文（台灣用語）回答，口吻友善、簡潔：先講結論，需要步驟時用「• 」開頭條列。不要用 Markdown 標題或表格。',
-    '每個答案都要附上出處：手冊名稱，以及頁數（手冊文字裡的「（第 N 頁）」）或段落。',
-    '只輸出 JSON，格式：{"answer": "回答內容", "found": true 或 false, "sources": [{"title": "手冊名稱", "location": "第幾頁或哪一段"}]}',
-  ].join('\n');
-  const handbookText = kb.docs.map(function (d) { return '〈手冊：' + d.title + '〉\n' + d.text; }).join('\n\n');
+  const notConfigured = !kb.docs.length;
+  const docs = [{ title: SYSTEM_GUIDE_TITLE, text: SYSTEM_GUIDE_TEXT }].concat(kb.docs);
+  const extra = notConfigured
+    ? '\n目前還沒有接上任何組織手冊：組織規定的問題，請說你還沒拿到手冊、建議可以問誰；系統操作和一般問題照常回答。'
+    : '';
+  const knowledge = docs.map(function (d) { return '〈手冊：' + d.title + '〉\n' + d.text; }).join('\n\n');
   const contents = (Array.isArray(body.history) ? body.history : []).slice(-6)
     .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim(); })
     .map(function (m) {
@@ -2986,34 +3005,38 @@ function askHandbook_(body) {
     });
   contents.push({ role: 'user', parts: [{ text: question }] });
   const result = callGemini_({
-    systemInstruction: { parts: [{ text: instruction + '\n\n' + handbookText }] },
+    systemInstruction: { parts: [{ text: XIAOU_PERSONA + extra + '\n\n' + knowledge }] },
     contents: contents,
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.3 },
   });
   if (!result.ok) return { ok: false, error: result.error };
   let parsed;
   try {
     parsed = JSON.parse(result.text);
   } catch (e) {
-    parsed = { answer: result.text, found: true, sources: [] };
+    parsed = { answer: result.text, kind: 'general', sources: [] };
   }
-  const answer = String(parsed.answer || '').trim().slice(0, 4000) || '抱歉，這題我沒辦法從手冊裡找到答案。';
-  const found = parsed.found !== false;
-  const sources = (Array.isArray(parsed.sources) ? parsed.sources : []).slice(0, 6).map(function (s) {
+  let kind = String(parsed.kind || '');
+  if (['handbook', 'general', 'none'].indexOf(kind) === -1) kind = parsed.found === false ? 'none' : 'handbook';
+  const answer = String(parsed.answer || '').trim().slice(0, 4000) || '這題我答不出來，可以問直屬主管，或截圖給執行長偉翔。';
+  const sources = kind === 'handbook' ? (Array.isArray(parsed.sources) ? parsed.sources : []).slice(0, 6).map(function (s) {
     return { title: String((s && s.title) || '').slice(0, 60), location: String((s && s.location) || '').slice(0, 60) };
-  }).filter(function (s) { return s.title; });
+  }).filter(function (s) { return s.title; }) : [];
+  const found = kind !== 'none';
   try {
-    logQuestion_(question, found);
+    logQuestion_(question, kind);
   } catch (e) {
-    console.warn('問手冊紀錄寫入失敗：' + e);
+    console.warn('小U問答紀錄寫入失敗：' + e);
   }
-  return { ok: true, answer: answer, found: found, sources: sources, notConfigured: false };
+  const out = { ok: true, answer: answer, kind: kind, found: found, sources: sources, notConfigured: notConfigured };
+  if (kb.warnings.length) out.warnings = kb.warnings;
+  return out;
 }
 
 // 記下大家問了什麼、手冊有沒有答案（不記是誰問的），用來找出手冊還缺哪些內容
-function logQuestion_(question, found) {
+function logQuestion_(question, kind) {
   const sheet = getOrCreateSheet_(QA_LOG_SHEET_NAME, QA_LOG_HEADERS, []);
-  sheet.appendRow([nowText_(), question, found ? '有' : '沒有']);
+  sheet.appendRow([nowText_(), question, kind === 'handbook' ? '手冊' : kind === 'general' ? '一般知識' : '答不出來']);
 }
 
 function getAbout_() {
@@ -3044,6 +3067,87 @@ function getAbout_() {
     };
   });
   return { ok: true, handbooks: handbooks, centers: centers, people: people };
+}
+
+// 認識組織的內容：小U 從「知識庫設定」用途是「認識組織／兩者」的手冊整理出重點（Gemini），
+// 手冊沒改就用快取（6 小時）；手冊一改，檔案的修改時間變了，下次就會重新整理。
+const ABOUT_OVERVIEW_PROMPT = [
+  '你是「小U」，Skills for U 的新手導師，要幫新同仁做「認識組織」頁面。根據下面的手冊，整理出這個頁面的內容。',
+  '規則：只能用手冊裡寫的內容，不要補充、不要推測；手冊沒寫的就不要放。用繁體中文（台灣用語），句子短、好讀。',
+  'intro：name（組織全名，照手冊寫法）、tagline（一句話說明組織在做什麼，30 字內）、summary（2～3 句介紹，120 字內）。',
+  'sections：4～7 個段落，依手冊實際內容決定，例如：我們是誰、使命與願景、核心價值、我們怎麼做事、組織架構與分工、工作須知、福利與制度。每個段落 2～6 個重點。',
+  '每個重點：title（14 字內）、text（90 字內）、location（出處：第幾頁或哪一段）。每個段落的 handbook 填這段主要出自哪一本手冊（照〈手冊：…〉的名稱）。',
+  '只輸出 JSON：{"intro": {"name": "", "tagline": "", "summary": ""}, "sections": [{"title": "", "handbook": "", "points": [{"title": "", "text": "", "location": ""}]}]}',
+].join('\n');
+
+function getAboutOverview_() {
+  const entries = loadKnowledgeEntries_().filter(function (e) {
+    return e.purpose === KNOWLEDGE_PURPOSE_ABOUT || e.purpose === KNOWLEDGE_PURPOSE_BOTH;
+  });
+  if (!entries.length) {
+    return { ok: true, overview: { status: 'notConfigured', sections: [], intro: null, updatedAt: '',
+      message: '還沒有設定手冊。請管理員在總表「知識庫設定」填入工作手冊、組織文化手冊的連結，用途填「認識組織」或「兩者」。' } };
+  }
+  let fingerprint;
+  try {
+    fingerprint = entries.map(function (e) { return e.fileId + ':' + DriveApp.getFileById(e.fileId).getLastUpdated().getTime(); }).join('|');
+  } catch (err) {
+    return { ok: true, overview: { status: 'unavailable', sections: [], intro: null, updatedAt: '', message: '讀不到手冊檔案：' + ((err && err.message) || err) } };
+  }
+  const cache = CacheService.getScriptCache();
+  const key = ('about_v1_' + fingerprint).slice(0, 240);
+  const hit = cache.get(key);
+  if (hit) {
+    try { return { ok: true, overview: JSON.parse(hit) }; } catch (e) { /* 快取壞了就重做 */ }
+  }
+  const docs = [];
+  const problems = [];
+  entries.forEach(function (e) {
+    try {
+      const text = cachedKnowledgeText_(e);
+      if (text.trim()) docs.push('〈手冊：' + e.title + '〉\n' + text);
+      else problems.push('「' + e.title + '」讀不到任何文字');
+    } catch (err) {
+      problems.push('「' + e.title + '」讀取失敗：' + ((err && err.message) || err));
+    }
+  });
+  if (!docs.length) {
+    return { ok: true, overview: { status: 'unavailable', sections: [], intro: null, updatedAt: '', message: problems.join('；') || '讀不到手冊內容。' } };
+  }
+  const result = callGemini_({
+    systemInstruction: { parts: [{ text: ABOUT_OVERVIEW_PROMPT + '\n\n' + docs.join('\n\n') }] },
+    contents: [{ role: 'user', parts: [{ text: '請整理「認識組織」頁面的內容。' }] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+  });
+  if (!result.ok) return { ok: true, overview: { status: 'unavailable', sections: [], intro: null, updatedAt: '', message: '整理手冊內容失敗：' + result.error } };
+  let parsed;
+  try { parsed = JSON.parse(result.text); } catch (e) { parsed = null; }
+  if (!parsed || !Array.isArray(parsed.sections)) {
+    return { ok: true, overview: { status: 'unavailable', sections: [], intro: null, updatedAt: '', message: '整理出來的內容格式不對，請稍後再試一次。' } };
+  }
+  const str = function (v, n) { return String(v || '').trim().slice(0, n); };
+  const intro = parsed.intro || {};
+  const overview = {
+    status: 'ready',
+    message: problems.length ? problems.join('；') : '',
+    updatedAt: nowText_(),
+    intro: { name: str(intro.name, 60), tagline: str(intro.tagline, 60), summary: str(intro.summary, 240) },
+    sections: parsed.sections.slice(0, 8).map(function (sec) {
+      return {
+        title: str(sec && sec.title, 30),
+        handbook: str(sec && sec.handbook, 60),
+        points: (Array.isArray(sec && sec.points) ? sec.points : []).slice(0, 8).map(function (pt) {
+          return { title: str(pt && pt.title, 30), text: str(pt && pt.text, 200), location: str(pt && pt.location, 40) };
+        }).filter(function (pt) { return pt.title || pt.text; }),
+      };
+    }).filter(function (sec) { return sec.title && sec.points.length; }),
+  };
+  try {
+    cache.put(key, JSON.stringify(overview), 21600);
+  } catch (e) {
+    console.warn('認識組織內容快取失敗（不影響顯示，只是下次會重新整理）：' + e);
+  }
+  return { ok: true, overview: overview };
 }
 
 // 計畫與預算：預算（預算項目設定「預算金額」欄）對照收支總表的實際金額。
