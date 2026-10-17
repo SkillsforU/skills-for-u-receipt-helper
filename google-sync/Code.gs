@@ -2674,7 +2674,7 @@ function notifyReleaseRequest_(batch, records) {
   }
   if (transfer.length) lines.push('• 匯款給廠商／外部個人：' + transfer.length + ' 筆，' + fmtNt_(sumAmount_(transfer)));
   if (bill.length) lines.push('• 網銀代繳（繳費單）：' + bill.length + ' 筆，' + fmtNt_(sumAmount_(bill)));
-  lines.push('→ ' + slackLink_(appUrl_() + '#finance/ops/release/' + batch.id, '核對並放行：團隊後台「財務 › 財務作業 › 待放行」'));
+  lines.push('→ ' + slackLink_(appUrl_() + '#finance/ops/release/' + batch.id, '核對並放行：團隊後台「核銷作業 › 財務作業 › 待放行」'));
   postToSlack_(lines.join('\n'), 'finance');
 }
 
@@ -2804,7 +2804,11 @@ const KNOWLEDGE_PURPOSE_BOTH = '兩者';
 const KNOWLEDGE_TEXT_LIMIT = 300000; // 一份手冊最多讀這麼多字，避免太大的檔案拖慢每一次回答
 // 「媒體報導」分頁：認識組織頁的「最新消息」（受訪、評論、報導），由管理員在總表維護，最新的排最前面
 const NEWS_SHEET_NAME = '媒體報導';
-const NEWS_HEADERS = ['日期', '類型（受訪／評論／報導）', '標題', '媒體', '連結', '摘要'];
+// 只填「連結」就可以：日期、標題、媒體、摘要和預覽圖會從文章網頁自動抓（og: 標籤）；有填的格子優先用你填的
+const NEWS_HEADERS = ['連結', '類型（受訪／評論／報導）', '日期（空白自動抓）', '標題（空白自動抓）', '媒體（空白自動抓）', '摘要（空白自動抓）', '預覽圖網址（空白自動抓）'];
+const NEWS_MAX_ROWS = 30;                 // 只看分頁最下面 30 列（新的一則加在最下面）
+const LINK_PREVIEW_CACHE_SECONDS = 21600; // 抓到的預覽存 6 小時
+const LINK_PREVIEW_RETRY_SECONDS = 1800;  // 抓不到的，30 分鐘後再試
 const QA_LOG_SHEET_NAME = '小U問答紀錄';
 const QA_LOG_HEADERS = ['時間', '問題', '回答依據']; // 手冊／一般知識／答不出來；不記是誰問的
 
@@ -2966,7 +2970,7 @@ function callGemini_(payload) {
 }
 
 // 首頁的「小U」：Skills for U 的新手導師，像組織內部的客服，同仁可以問任何事，也可以跟她聊天。
-// 組織的事只照手冊、〈團隊後台使用說明〉、〈團隊與審核〉、〈組織最新消息〉回答（找不到就說沒寫、建議問誰）；
+// 組織的事只照手冊、〈團隊後台使用說明〉、〈組織沿革〉、〈團隊與審核〉、〈組織最新消息〉回答（找不到就說沒寫、建議問誰）；
 // 一般工作問題可以用一般知識回答，標成 kind: 'general'，網頁上會註明「這只是小U的想法，不是組織規定」；
 // 打招呼、道謝、閒聊、問小U自己標成 kind: 'chat'，網頁上不加註記。
 const XIAOU_PERSONA = [
@@ -2978,7 +2982,7 @@ const XIAOU_PERSONA = [
   '• 對話紀錄裡有前文時，接著前文理解（例如上一題問代墊款，接著問「那廠商呢？」就是在問廠商的款項怎麼付）。',
   '• 回答長度跟著問題走：閒聊一兩句就好，問流程再條列步驟。',
   '回答規則：',
-  '1. 組織的事（規定、流程、福利、制度、文化、人事、財務、組織資訊）只能根據〈手冊〉、〈團隊後台使用說明〉、〈團隊與審核〉和〈組織最新消息〉回答，並附上出處。找不到就直接說沒有寫到，建議可以問誰（例如直屬主管、會計，或執行長偉翔），不要自己推測。',
+  '1. 組織的事（規定、流程、福利、制度、文化、人事、財務、組織資訊）只能根據〈手冊〉、〈團隊後台使用說明〉、〈組織沿革〉、〈團隊與審核〉和〈組織最新消息〉回答，並附上出處。找不到就直接說沒有寫到，建議可以問誰（例如直屬主管、會計，或執行長偉翔），不要自己推測。',
   '2. 問到組織裡的人（例如老闆、同事是怎樣的人）：只說資料裡寫到的事實（職稱、負責什麼、最近的受訪或評論），不評論個性、不八卦、不替別人下定論；可以建議對方直接找本人聊聊。',
   '3. 一般問題（工作技巧、文書處理、溝通、技職教育常識等）可以用一般知識回答，但不能說成是組織規定。',
   '4. 不確定就說不確定；不要編造人名、金額、日期、規定或網址。不要在回答裡寫出任何密碼（例如 Wi-Fi、門禁、帳號密碼），請對方直接問後勤。',
@@ -2990,14 +2994,60 @@ const XIAOU_PERSONA = [
 const XIAOU_KINDS = ['handbook', 'general', 'chat', 'none'];
 const XIAOU_HISTORY_MAX = 10;   // 帶最近 10 則對話，讓追問接得上前文
 
+// 「認識組織」最上面的「我們是誰」：組織沿革和旗下品牌，小U 也會讀（〈組織沿革〉）。
+// 只寫查得到出處的事。要改字改這裡，改完照第 9 節重新部署。
+const ORG_STORY = {
+  title: '我們是誰',
+  summary: 'Skills for U 從一個人的技職媒體起家：2014 年偉翔創立《技職3.0》報導技職議題，2018 年擴大成社團法人國際技能發展協會。現在協會經營 Skills for U 和 OPEN 技職兩個品牌，每年舉辦臺灣技職教育年會。',
+  milestones: [
+    { year: '2014', title: '創立《技職3.0》', text: '偉翔創立獨立媒體《技職3.0》，報導技職與職訓議題，也做技職政策的專題報導，曾被立委拿來質詢教育部。' },
+    { year: '2018', title: '成立 Skills for U', text: '把一個人經營的《技職3.0》擴大成非營利組織：社團法人國際技能發展協會（Skills for U）。' },
+    { year: '2019', title: '國手走進國慶英雄團隊', text: '推動國際技能競賽國手加入國慶大會的英雄團隊遊行。' },
+    { year: '2024', title: '技職力100', text: '舉辦「技職力100」全國評選，找出能在校園和企業之間擴散的育才模式，每兩年一屆。' },
+    { year: '2026', title: '藍色未來 BlueFuture', text: '帶技職青年進入 AI 供應鏈的職位：2026–2028 年要讓至少 500 位技職青年在 AI 供應鏈就業。' },
+  ],
+  brands: [
+    {
+      name: 'Skills for U', formerly: '',
+      text: '協會本身的品牌：把企業資源帶進技職學校，規劃成培力方案；現在的主力是藍色未來 BlueFuture。',
+      links: [{ platform: 'Facebook', url: 'https://www.facebook.com/skillsforu2018' }],
+    },
+    {
+      name: 'OPEN 技職', formerly: '技職3.0',
+      text: '協會旗下的媒體品牌，前身是《技職3.0》。從報導技職議題起家，現在用影音和社群開箱技職教育現場與職場，講技職人的故事，也記錄技能競賽和技職國手。',
+      links: [
+        { platform: 'Facebook', url: 'https://www.facebook.com/open.skills.to.all' },
+        { platform: 'Instagram', url: 'https://www.instagram.com/openskillstoall/' },
+        { platform: 'Threads', url: 'https://www.threads.com/@openskillstoall' },
+      ],
+    },
+    {
+      name: '臺灣技職教育年會', formerly: '',
+      text: '每年舉辦，邀請產官學一起討論技職人才培育。2026 年在 7 月 15 日國際青年技能日舉行，300 多位產官學代表參加。',
+      links: [{ platform: 'Facebook', url: 'https://www.facebook.com/profile.php?id=61558222603288' }],
+    },
+  ],
+};
+
+// 給小U的〈組織沿革〉
+function storyKnowledgeText_() {
+  const lines = [ORG_STORY.summary];
+  ORG_STORY.milestones.forEach(function (m) { lines.push('（' + m.year + '）' + m.title + '：' + m.text); });
+  ORG_STORY.brands.forEach(function (b) {
+    lines.push('（' + b.name + (b.formerly ? '，前身是' + b.formerly : '') + '）' + b.text +
+      ' 社群：' + b.links.map(function (l) { return l.platform + ' ' + l.url; }).join('；'));
+  });
+  return lines.join('\n');
+}
+
 // 系統內建的使用說明（跟著程式一起更新，不用放進知識庫設定）。只寫系統真的這樣運作的事。
 const SYSTEM_GUIDE_TITLE = '團隊後台使用說明';
 const SYSTEM_GUIDE_TEXT = [
-  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了組織手冊和組織文化手冊的重點，還有組織最新的受訪、評論；人事中心連到 Swingvy；財務底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
-  '（上傳單據）到「財務 › 上傳單據」，選中心、專案和單據類型，拍照或選檔案（JPG、PNG、PDF，PDF 最大 5 MB）。選好專案就會自動辨識日期、金額、店家和發票號碼，核對後送出。送出後可以按「上傳下一張，沿用」把專案、預算項目和付款方式帶到下一張。',
+  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了組織手冊和組織文化手冊的重點，還有組織最新的受訪、評論；人事中心連到 Swingvy；核銷作業底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
+  '（上傳單據）到「核銷作業 › 上傳單據」，選中心、專案和單據類型，拍照或選檔案（JPG、PNG、PDF，PDF 最大 5 MB）。選好專案就會自動辨識日期、金額、店家和發票號碼，核對後送出。送出後可以按「上傳下一張，沿用」把專案、預算項目和付款方式帶到下一張。',
   '（這筆錢要怎麼付）五選一：我先墊錢了（代墊款，主管核准後每月 5 號跟薪資一起匯）；請組織直接匯款給廠商或外部個人（要填戶名、7 碼分行代碼、帳號，一般在每月 20 號付；每月固定支出可以選在 5 號付）；繳費單（稅金、健保費等，會計用網銀代繳，要填繳費期限）；已經用組織信用卡或零用金付掉了；需要組織刷卡（線上刷卡連結或紙本刷卡）。',
   '（審核與付款時間）各中心主管每月 10–13 號審核。趕時間的單據可以標「緊急」並填希望付款的日期，送出時會馬上通知主管。送出畫面會顯示預計撥款日，實際以財務作業為準。',
-  '（看進度）到「財務 › 上傳紀錄」看每一張單據的審核和付款進度，收款帳號只顯示末 4 碼。被退回會在 Slack 收到通知，照退回原因補好再重新上傳。放行時沒有付款的，會寫出原因並排進下一批。',
+  '（看進度）到「核銷作業 › 上傳紀錄」看每一張單據的審核和付款進度，收款帳號只顯示末 4 碼。被退回會在 Slack 收到通知，照退回原因補好再重新上傳。放行時沒有付款的，會寫出原因並排進下一批。',
   '（紙本單據）紙本正本要交給後勤，會計核對紙本和電子檔相符後，才算單據完備。紙本有問題時，上傳人會在 Slack 收到補件通知。',
   '（找誰）付款進度的問題先看「上傳紀錄」，還有疑問找會計；系統用不順或出現錯誤訊息，截圖給執行長偉翔。',
   '（組織的社群）Facebook：Skills for U https://www.facebook.com/skillsforu2018 ；OPEN 技職 https://www.facebook.com/open.skills.to.all ；臺灣技職教育年會 https://www.facebook.com/profile.php?id=61558222603288 。Instagram：OPEN 技職 https://www.instagram.com/openskillstoall/ 。Threads：OPEN 技職 https://www.threads.com/@openskillstoall 。',
@@ -3022,6 +3072,7 @@ function askHandbook_(body, auth) {
   } catch (e) {
     console.warn('小U讀團隊名單失敗：' + e);
   }
+  extraDocs.push({ title: '組織沿革', text: storyKnowledgeText_() });
   try {
     const news = newsKnowledgeText_();
     if (news) extraDocs.push({ title: '組織最新消息', text: news });
@@ -3129,27 +3180,163 @@ function getAbout_() {
       }).map(function (c) { return c.name; }) : [],
     };
   });
-  return { ok: true, handbooks: handbooks, centers: centers, people: people, news: loadNews_() };
+  return { ok: true, story: ORG_STORY, handbooks: handbooks, centers: centers, people: people, news: loadNews_() };
 }
 
 function loadNews_() {
   const sheet = getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []);
   const types = ['受訪', '評論', '報導'];
-  return readSheetRows_(sheet, NEWS_HEADERS.length).map(function (r) {
-    const type = String(r[1] || '').trim();
+  const rows = readSheetRows_(sheet, NEWS_HEADERS.length).map(function (r) {
     return {
-      date: formatDateOnly_(r[0]),
-      type: types.indexOf(type) !== -1 ? type : '報導',
-      title: String(r[2] || '').trim().slice(0, 120),
-      outlet: String(r[3] || '').trim().slice(0, 40),
-      url: String(r[4] || '').trim(),
-      summary: String(r[5] || '').trim().slice(0, 160),
+      url: String(r[0] || '').trim(),
+      type: String(r[1] || '').trim(),
+      date: formatDateOnly_(r[2]),
+      title: String(r[3] || '').trim(),
+      outlet: String(r[4] || '').trim(),
+      summary: String(r[5] || '').trim(),
+      image: String(r[6] || '').trim(),
     };
-  }).filter(function (n) {
-    return n.title && /^https?:\/\//.test(n.url);
+  }).filter(function (r) { return /^https?:\/\/[^\s]+$/.test(r.url); }).slice(-NEWS_MAX_ROWS);
+  let previews = {};
+  try {
+    previews = linkPreviews_(rows.map(function (r) { return r.url; }));
+  } catch (e) {
+    console.warn('抓文章預覽失敗：' + e);
+  }
+  return rows.map(function (r, i) {
+    const p = previews[r.url] || {};
+    return {
+      date: r.date || p.date || '',
+      type: types.indexOf(r.type) !== -1 ? r.type : '報導',
+      title: (r.title || p.title || r.url).slice(0, 120),
+      outlet: (r.outlet || p.outlet || hostOf_(r.url)).slice(0, 40),
+      url: r.url,
+      summary: (r.summary || p.summary || '').slice(0, 160),
+      image: (/^https:\/\/[^\s"'<>]+$/.test(r.image) ? r.image : p.image || '').slice(0, 600),
+      order: i,
+    };
   }).sort(function (a, b) {
-    return String(b.date).localeCompare(String(a.date));
-  }).slice(0, 20);
+    return String(b.date).localeCompare(String(a.date)) || a.order - b.order;
+  }).slice(0, 20).map(function (n) {
+    delete n.order;
+    return n;
+  });
+}
+
+// 文章連結的預覽（像社群貼連結那樣）：一次平行抓所有網址，讀 og:title、og:image、og:description、og:site_name、
+// article:published_time。抓到的存快取 6 小時，抓不到的 30 分鐘後再試。
+function linkPreviews_(urls) {
+  const out = {};
+  if (!urls.length) return out;
+  const cache = CacheService.getScriptCache();
+  const keyOf = function (u) {
+    return 'og_v1_' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, u));
+  };
+  let cached = {};
+  try {
+    cached = cache.getAll(urls.map(keyOf)) || {};
+  } catch (e) {
+    cached = {};
+  }
+  const missing = [];
+  urls.forEach(function (u) {
+    const hit = cached[keyOf(u)];
+    if (hit) {
+      try {
+        out[u] = JSON.parse(hit);
+        return;
+      } catch (e) { /* 壞掉的快取就重抓 */ }
+    }
+    if (missing.indexOf(u) === -1) missing.push(u);
+  });
+  if (!missing.length) return out;
+  let responses = [];
+  try {
+    responses = UrlFetchApp.fetchAll(missing.map(function (u) {
+      return { url: u, muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SkillsForU-TeamPortal/1.0)' } };
+    }));
+  } catch (e) {
+    console.warn('抓文章預覽失敗：' + e);
+  }
+  const good = {};
+  const bad = {};
+  missing.forEach(function (u, i) {
+    const res = responses[i];
+    let meta = null;
+    try {
+      if (res && res.getResponseCode() === 200) meta = parseLinkPreview_(String(res.getContentText()).slice(0, 400000), u);
+    } catch (e) {
+      meta = null;
+    }
+    out[u] = meta || {};
+    if (meta && (meta.title || meta.image)) good[keyOf(u)] = JSON.stringify(meta);
+    else bad[keyOf(u)] = JSON.stringify(out[u]);
+  });
+  try {
+    if (Object.keys(good).length) cache.putAll(good, LINK_PREVIEW_CACHE_SECONDS);
+    if (Object.keys(bad).length) cache.putAll(bad, LINK_PREVIEW_RETRY_SECONDS);
+  } catch (e) { /* 快取存不了就下次再抓 */ }
+  return out;
+}
+
+function parseLinkPreview_(html, pageUrl) {
+  const head = String(html).split(/<\/head>/i)[0];
+  const metas = {};
+  const tags = head.match(/<meta\b[^>]*>/gi) || [];
+  tags.forEach(function (tag) {
+    const key = (htmlAttr_(tag, 'property') || htmlAttr_(tag, 'name') || htmlAttr_(tag, 'itemprop')).toLowerCase();
+    const content = htmlAttr_(tag, 'content');
+    if (key && content && !(key in metas)) metas[key] = decodeHtml_(content).replace(/\s+/g, ' ').trim();
+  });
+  const titleTag = (head.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
+  let image = metas['og:image:secure_url'] || metas['og:image'] || metas['og:image:url'] || metas['twitter:image'] || metas['twitter:image:src'] || '';
+  image = absoluteUrl_(image, pageUrl).replace(/^http:\/\//i, 'https://');
+  if (!/^https:\/\/[^\s"'<>]+$/.test(image)) image = '';
+  const published = metas['article:published_time'] || metas['og:article:published_time'] || metas['date'] || metas['pubdate'] || '';
+  return {
+    title: cleanTitle_(metas['og:title'] || metas['twitter:title'] || decodeHtml_(titleTag).replace(/\s+/g, ' ').trim()).slice(0, 120),
+    image: image.slice(0, 600),
+    summary: (metas['og:description'] || metas['description'] || metas['twitter:description'] || '').slice(0, 160),
+    outlet: (metas['og:site_name'] || '').slice(0, 40),
+    date: /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : '',
+  };
+}
+
+// 網頁標題常帶網站名稱（「標題 - 想想論壇」「標題｜作者｜獨立評論」），去掉後面那段；前段太短就不動
+function cleanTitle_(t) {
+  const full = String(t || '').trim();
+  const first = full.split(/\s+[-–—|]\s+|｜/)[0].trim();
+  return first !== full && first.length >= 8 ? first : full;
+}
+
+function htmlAttr_(tag, name) {
+  const m = tag.match(new RegExp('\\s' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i'));
+  if (!m) return '';
+  return m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3];
+}
+
+function decodeHtml_(s) {
+  return String(s || '')
+    .replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(Number(d)); })
+    .replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+}
+
+function absoluteUrl_(u, base) {
+  u = String(u || '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return ''; // javascript:、data: 之類的不要
+  const origin = (String(base).match(/^(https?:\/\/[^/?#]+)/i) || [])[1] || '';
+  if (!origin) return '';
+  if (u.indexOf('//') === 0) return 'https:' + u;
+  if (u.charAt(0) === '/') return origin + u;
+  return String(base).replace(/[?#].*$/, '').replace(/\/[^/]*$/, '/') + u;
+}
+
+function hostOf_(url) {
+  return (String(url).match(/^https?:\/\/([^/?#:]+)/i) || [])[1] || '';
 }
 
 // 認識組織的內容：小U 從「知識庫設定」用途是「認識組織／兩者」的手冊整理出重點（Gemini），

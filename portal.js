@@ -172,6 +172,11 @@
   document.addEventListener("error", (e) => {
     const img = e.target;
     if (!img || img.tagName !== "IMG" || !img.dataset || !img.dataset.ptImg) return;
+    if (img.dataset.ptImg === "news") {   // 最新消息的預覽圖：這一張換成素色底＋媒體名稱
+      const thumb = img.closest(".pt-news-thumb");
+      if (thumb) thumb.classList.add("is-fallback");
+      return;
+    }
     brokenImg[img.dataset.ptImg] = true;
     const box = img.closest(".pt-av, .pt-art");
     if (box) box.classList.add("is-fallback");
@@ -676,9 +681,19 @@
      ============================================================ */
   const NEWS_SHOW = 6;          // 最新消息先列 6 則，其他按「看更多」
   const NEWS_TYPES = ["受訪", "評論", "報導"];
-  // v2：getAbout 多了 news，舊版快取（沒有 news）不要再用
-  function aboutKey() { return "pt.about.v2." + (S.email || "anon"); }
-  function overviewKey() { return "pt.overview.v1." + (S.email || "anon"); }
+  // 快取版本：about v3（多了 story、news）、overview v2（之前的是示範內容）。資料形狀一改就要升版號。
+  function aboutKey() { return "pt.about.v3." + (S.email || "anon"); }
+  function overviewKey() { return "pt.overview.v2." + (S.email || "anon"); }
+  const OLD_CACHE = /^pt\.(about\.v[12]|overview\.v1)\./;
+  function purgeOldCaches() {
+    try {
+      const ss = window.sessionStorage;
+      for (let i = ss.length - 1; i >= 0; i -= 1) {
+        const k = ss.key(i);
+        if (k && OLD_CACHE.test(k)) ss.removeItem(k);
+      }
+    } catch (e) { /* 存取不了就算了 */ }
+  }
 
   function normAbout(res) {
     return {
@@ -699,6 +714,7 @@
         financeRoles: arr(p.financeRoles).map((x) => str(x).trim()).filter(Boolean),
         approverOf: arr(p.approverOf).map((x) => str(x).trim()).filter(Boolean),
       })),
+      story: normStory(res.story),
       // 媒體報導（後端已經照日期新到舊排好）
       news: arr(res.news).filter((n) => n && typeof n === "object").map((n) => ({
         date: str(n.date).trim(),
@@ -707,9 +723,32 @@
         outlet: str(n.outlet).trim(),
         url: safeUrl(n.url),
         summary: str(n.summary).trim(),
+        image: httpsUrl(n.image), // 預覽圖只收 https://
       })).filter((n) => n.title),
     };
   }
+  // 「我們是誰」：沿革（時間軸）＋品牌。資料當不可信：缺欄位的那一項整項跳過，連結只收 https://
+  function httpsUrl(u) { const s = safeUrl(u); return /^https:\/\//i.test(s) ? s : ""; }
+  function normStory(s) {
+    if (!s || typeof s !== "object") return null; // 舊後端沒有 story：整塊不顯示
+    const milestones = arr(s.milestones).filter((m) => m && typeof m === "object")
+      .map((m) => ({ year: str(m.year).trim(), title: str(m.title).trim(), text: str(m.text).trim() }))
+      .filter((m) => m.year && m.title && m.text);
+    const brands = arr(s.brands).filter((b) => b && typeof b === "object")
+      .map((b) => ({
+        name: str(b.name).trim(),
+        formerly: str(b.formerly).trim(),
+        text: str(b.text).trim(),
+        links: arr(b.links).filter((l) => l && typeof l === "object")
+          .map((l) => ({ platform: str(l.platform).trim(), url: httpsUrl(l.url) }))
+          .filter((l) => l.platform && l.url),
+      }))
+      .filter((b) => b.name && b.text);
+    const summary = str(s.summary).trim();
+    if (!summary && !milestones.length && !brands.length) return null;
+    return { title: str(s.title).trim() || "我們是誰", summary, milestones, brands };
+  }
+
   function normOverview(o) {
     o = o && typeof o === "object" ? o : {};
     const intro = o.intro && typeof o.intro === "object" ? o.intro : {};
@@ -743,6 +782,8 @@
     }
   }
 
+  // 頁面由上到下：小U整理的介紹（hero）→ 我們是誰 → 手冊重點 → 最新消息 → 兩本手冊 → 組織架構 → 團隊成員。
+  // hero 和手冊重點來自 getAboutOverview（慢），我們是誰和下面幾塊來自 getAbout（快），所以分成幾個格子各自畫。
   function mountAbout(root) {
     const A = S.about;
     root.innerHTML =
@@ -751,8 +792,10 @@
           '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織介紹、手冊重點、組織架構和團隊成員。</p></div>' +
           '<button type="button" class="pt-btn pt-btn-ghost" data-act="refresh">重新整理</button>' +
         "</div>" +
-        '<div class="pt-ov" data-role="overview"></div>' +
         '<div data-role="alert"></div>' +
+        '<div class="pt-ov" data-role="overview"></div>' +
+        '<div data-role="story"></div>' +
+        '<div data-role="ov-sections"></div>' +
         '<div data-role="body"></div>' +
       "</div>";
     A.el = root.firstElementChild;
@@ -771,46 +814,56 @@
     btn.textContent = busy ? "讀取中…" : "重新整理";
   }
 
-  // 下半部（手冊、組織架構、團隊成員）
+  // getAbout 的部分：我們是誰（story 格子），以及最新消息、兩本手冊、組織架構、團隊成員（body 格子）
   function renderAbout() {
     const A = S.about;
     if (!A.el) return;
     renderAboutButton();
     q(A.el, "alert").innerHTML = A.error && A.data ? '<div class="pt-alert pt-alert-error" role="alert">重新整理失敗：' + esc(A.error) + "</div>" : "";
+    const storyBox = q(A.el, "story");
     const body = q(A.el, "body");
-    body.setAttribute("aria-busy", A.loading ? "true" : "false");
-    body.classList.toggle("pt-stale", !!(A.loading && A.data));
+    [storyBox, body].forEach((box) => {
+      box.setAttribute("aria-busy", A.loading ? "true" : "false");
+      box.classList.toggle("pt-stale", !!(A.loading && A.data));
+    });
     if (A.data) {
       if (A.renderedData !== A.data) {
-        // 最新消息排在小U整理的手冊重點後面、兩本手冊前面（手冊重點在上面的 overview 區塊）
+        storyBox.innerHTML = storyHtml(A.data.story);
         body.innerHTML = newsHtml(A.data.news) + handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
         A.renderedData = A.data;
         if (A.openIdx >= 0) openHandbook(A.openIdx, false); // 重新整理前開著的手冊繼續開著
       }
     } else {
       A.renderedData = null;
+      storyBox.innerHTML = "";
       body.innerHTML = A.loading ? loadingHtml("正在讀取組織資料…") : A.error ? errorCardHtml(A.error) : "";
     }
   }
 
-  // 上半部（小U 整理的重點）
+  // getAboutOverview 的部分：最上面的 hero（或讀取中／沒設定／出錯），以及「我們是誰」底下的手冊重點
   function renderOverview() {
     const A = S.about;
     if (!A.el) return;
     renderAboutButton();
-    const box = q(A.el, "overview");
-    box.setAttribute("aria-busy", A.ovLoading ? "true" : "false");
-    box.classList.toggle("pt-stale", !!(A.ovLoading && A.ov));
+    const top = q(A.el, "overview");
+    const secs = q(A.el, "ov-sections");
+    [top, secs].forEach((box) => {
+      box.setAttribute("aria-busy", A.ovLoading ? "true" : "false");
+      box.classList.toggle("pt-stale", !!(A.ovLoading && A.ov));
+    });
     if (A.ovLoading && A.ov) return; // 重新整理中：舊內容先留著（變淡），回來再換
     let html = "";
+    let sections = "";
     if (A.ov) {
-      html = (A.ovError ? '<div class="pt-alert pt-alert-error" role="alert">重點沒有更新成功：' + esc(A.ovError) + "</div>" : "") + overviewHtml(A.ov);
+      html = (A.ovError ? '<div class="pt-alert pt-alert-error" role="alert">重點沒有更新成功：' + esc(A.ovError) + "</div>" : "") + overviewTopHtml(A.ov);
+      sections = A.ov.status === "ready" ? overviewSectionsHtml(A.ov.sections) : "";
     } else if (A.ovLoading) {
       html = xiaouBlockHtml(XIAOU.overviewLoading, { typing: true });
     } else if (A.ovError) {
       html = xiaouBlockHtml("整理重點的時候出了點問題：" + A.ovError, { retry: true, error: true });
     }
-    box.innerHTML = html;
+    top.innerHTML = html;
+    secs.innerHTML = sections;
   }
 
   async function loadAbout() {
@@ -868,32 +921,38 @@
       inner = '<div class="card pt-card"><p class="empty-state pt-empty">還沒有資料。請管理員在總表「媒體報導」分頁新增。</p></div>';
     } else {
       const extra = list.length - NEWS_SHOW;
-      inner = '<div class="card pt-card pt-news-card">' +
-        '<ul class="pt-news" id="ptNewsList">' + list.map((n, i) => newsItemHtml(n, i >= NEWS_SHOW && !A.newsOpen)).join("") + "</ul>" +
+      inner = '<ul class="pt-news" id="ptNewsList">' + list.map((n, i) => newsItemHtml(n, i >= NEWS_SHOW && !A.newsOpen)).join("") + "</ul>" +
         (extra > 0
           ? '<button type="button" class="pt-btn pt-btn-ghost pt-news-more" data-act="news-more" aria-expanded="' + !!A.newsOpen + '" aria-controls="ptNewsList">' +
               newsMoreLabel(!!A.newsOpen, extra) + "</button>"
-          : "") +
-      "</div>";
+          : "");
     }
     return '<section class="pt-section" aria-labelledby="ptAboutNews"><h2 class="pt-h2" id="ptAboutNews">最新消息：受訪與評論</h2>' + inner + "</section>";
   }
   function newsMoreLabel(open, extra) { return open ? "收起" : "看更多（還有 " + extra + " 則）"; }
+  // 一則一張連結預覽卡（像社群貼連結）：上面 16:9 預覽圖，下面標題、媒體・日期・類型、摘要。
+  // 整張卡都能點：真正的連結是標題，用 CSS 把它的點擊範圍撐滿整張卡（螢幕報讀只念標題，不會整張卡念一遍）。
+  // 沒有圖、圖不是 https、或圖載不到：換成同尺寸的素色底，中間寫媒體名稱（不放品牌 logo）。
   function newsItemHtml(n, hidden) {
     const typeCls = n.type === "受訪" ? "is-interview" : n.type === "評論" ? "is-opinion" : "is-report";
     const date = /^\d{4}-\d{2}-\d{2}$/.test(n.date) ? '<time datetime="' + esc(n.date) + '">' + esc(n.date) + "</time>" : (n.date ? "<span>" + esc(n.date) + "</span>" : "");
-    // 最後一個字和箭頭綁在一起換行，箭頭才不會自己掉到下一行
-    const chars = Array.from(n.title);
-    const tail = chars.pop() || "";
+    const thumb = '<div class="pt-news-thumb' + (n.image ? "" : " is-fallback") + '">' +
+      '<span class="pt-news-thumb-label" aria-hidden="true">' + esc(n.outlet || "最新消息") + "</span>" +
+      (n.image ? '<img data-pt-img="news" src="' + esc(n.image) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">' : "") +
+    "</div>";
     const title = n.url
-      ? '<a class="pt-news-title" href="' + esc(n.url) + '" target="_blank" rel="noopener">' + esc(chars.join("")) +
-          '<span class="pt-nowrap">' + esc(tail) + '<span class="pt-ext" aria-hidden="true">↗</span></span><span class="sr-only">（在新分頁開啟）</span></a>'
-      : '<p class="pt-news-title is-plain">' + esc(n.title) + "</p>";
+      ? '<a class="pt-news-link" href="' + esc(n.url) + '" target="_blank" rel="noopener">' + esc(n.title) + '<span class="sr-only">（在新分頁開啟）</span></a>'
+      : esc(n.title);
+    const meta = [n.outlet ? '<span class="pt-news-outlet">' + esc(n.outlet) + "</span>" : "", date].filter(Boolean).join('<span aria-hidden="true">・</span>');
     return '<li class="pt-news-item' + (hidden ? " pt-news-extra" : "") + '"' + (hidden ? " hidden" : "") + ">" +
-      '<p class="pt-news-meta">' + date + '<span class="pt-badge pt-news-type ' + typeCls + '">' + esc(n.type) + "</span>" +
-        (n.outlet ? '<span class="pt-news-outlet">' + esc(n.outlet) + "</span>" : "") + "</p>" +
-      title +
-      (n.summary ? '<p class="pt-news-summary">' + esc(n.summary) + "</p>" : "") +
+      '<article class="pt-news-card' + (n.url ? " is-link" : "") + '">' +
+        thumb +
+        '<div class="pt-news-body">' +
+          '<h3 class="pt-news-title">' + title + "</h3>" +
+          '<p class="pt-news-meta">' + meta + '<span class="pt-badge pt-news-type ' + typeCls + '">' + esc(n.type) + "</span></p>" +
+          (n.summary ? '<p class="pt-news-summary">' + esc(n.summary) + "</p>" : "") +
+        "</div>" +
+      "</article>" +
     "</li>";
   }
   function toggleNews(btn) {
@@ -923,14 +982,47 @@
     "</div>";
   }
 
-  function overviewHtml(ov) {
+  // 最上面那一格：整理好了是 hero；還沒設定／暫時不能用就是小U的一句話
+  function overviewTopHtml(ov) {
     if (ov.status === "notConfigured") {
       return xiaouBlockHtml(ov.message || "手冊還沒設定好，我暫時沒辦法整理重點。請管理員在總表「知識庫設定」填好手冊連結。");
     }
     if (ov.status === "unavailable") {
       return xiaouBlockHtml(ov.message || "我現在沒辦法整理重點，等一下再試試看。", { retry: true });
     }
-    return heroHtml(ov) + overviewSectionsHtml(ov.sections);
+    return heroHtml(ov);
+  }
+
+  /* ---------- 我們是誰：沿革時間軸＋品牌卡片 ---------- */
+  function storyHtml(st) {
+    if (!st) return "";
+    const summary = st.summary ? '<div class="pt-story-summary">' + formatAnswer(st.summary) + "</div>" : "";
+    const timeline = st.milestones.length
+      ? '<ol class="pt-timeline" aria-label="大事記">' + st.milestones.map((m) =>
+          '<li class="pt-tl-item">' +
+            '<span class="pt-tl-year">' + esc(m.year) + "</span>" +
+            '<div class="pt-tl-body"><p class="pt-tl-title">' + esc(m.title) + '</p><p class="pt-tl-text">' + esc(m.text) + "</p></div>" +
+          "</li>").join("") + "</ol>"
+      : "";
+    const card = summary || timeline
+      ? '<div class="card pt-card pt-story-card' + (summary && timeline ? " is-split" : "") + '">' + summary + timeline + "</div>"
+      : "";
+    const brands = st.brands.length ? '<div class="pt-brand-grid">' + st.brands.map(brandHtml).join("") + "</div>" : "";
+    return '<section class="pt-section pt-story" aria-labelledby="ptStoryTitle"><h2 class="pt-h2" id="ptStoryTitle">' + esc(st.title) + "</h2>" + card + brands + "</section>";
+  }
+  function brandHtml(b) {
+    return '<article class="card pt-card pt-brand">' +
+      '<div class="pt-brand-head"><h3 class="pt-h3">' + esc(b.name) + "</h3>" +
+        (b.formerly ? '<span class="pt-badge pt-brand-was">前身：' + esc(b.formerly) + "</span>" : "") +
+      "</div>" +
+      '<p class="pt-brand-text">' + esc(b.text) + "</p>" +
+      (b.links.length
+        ? '<ul class="pt-brand-links">' + b.links.map((l) =>
+            '<li><a class="pt-brand-link" href="' + esc(l.url) + '" target="_blank" rel="noopener">' +
+              '<span class="sr-only">' + esc(b.name) + " 的 </span>" + esc(l.platform) +
+              '<span class="pt-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟）</span></a></li>').join("") + "</ul>"
+        : "") +
+    "</article>";
   }
 
   function heroHtml(ov) {
@@ -1415,6 +1507,7 @@
   }
 
   /* ---------------- 對外介面 ---------------- */
+  purgeOldCaches(); // 舊版快取（例如示範內容的手冊重點）一載入就清掉
   window.Portal = { showHome, showAbout, showBudget, showTools, reset };
 
   // 保險：萬一 app.js 在這支檔案載入前就已經切到這三頁（Portal 還不存在），這裡補畫一次
