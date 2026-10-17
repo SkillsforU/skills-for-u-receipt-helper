@@ -783,7 +783,7 @@
     intro: { title: "認識組織", sub: "組織介紹、我們是誰，和最新的受訪與評論。" },
     culture: { title: "組織文化與工作規範", sub: "小U 從兩本手冊整理的重點，也可以直接打開手冊。" },
     team: { title: "認識團隊", sub: "各中心的主管、專案，和團隊成員。" },
-    colleagues: { title: "同事使用手冊", sub: "選一位同事，看他自己寫的使用說明書，也可以跟他的虛擬分身聊聊。" },
+    colleagues: { title: "同事使用手冊", sub: "選一位同事，問問他的虛擬分身：怎麼找他最快、喜歡怎麼收到回饋、可以找他幫什麼忙。" },
   };
   function aboutSubFromHash() {
     const m = (location.hash || "").match(/^#\/?about\/([a-z]+)/);
@@ -811,7 +811,7 @@
   //   認識組織：小U整理的介紹（hero）→ 我們是誰 → 最新消息
   //   組織文化與工作規範：手冊重點 → 兩本手冊
   //   認識團隊：組織架構 → 團隊成員
-  //   同事使用手冊：選同事 → 他的使用說明書＋跟虛擬分身聊天
+  //   同事使用手冊：一個對話視窗，上面選同事，跟他的虛擬分身聊天
   // hero 和手冊重點來自 getAboutOverview（慢），其他來自 getAbout（快），所以分成幾個格子各自畫。
   function mountAbout(root) {
     const A = S.about;
@@ -852,7 +852,7 @@
     q(A.el, "title").textContent = meta.title;
     q(A.el, "subtitle").textContent = meta.sub;
     A.el.querySelectorAll("[data-panel]").forEach((panel) => { panel.hidden = panel.dataset.panel !== A.sub; });
-    // 從「認識團隊」按某人的「使用說明書」過來：焦點放在選到的那位同事上
+    // 從「認識團隊」按某人的「問虛擬分身」過來：焦點放在選到的那位同事上
     if (A.sub === "colleagues" && A.focusPick) {
       A.focusPick = false;
       const btn = A.el.querySelector('.pt-col-pick[aria-pressed="true"]');
@@ -979,8 +979,7 @@
     else if (act === "col-ask") sendColleagueQuestion(b.dataset.q || b.textContent, e.detail === 0);
     else if (act === "col-clear") clearColleagueChat(e.detail === 0);
     else if (act === "col-retry") retryColleague(b.dataset.id);
-    else if (act === "col-jump") jumpToColleagueChat();
-    else if (act === "open-manual") {
+    else if (act === "open-col") {
       const A = S.about;
       if (b.dataset.id && b.dataset.id !== A.colleague) { A.colleague = b.dataset.id; renderColleagues(); }
       A.focusPick = true;
@@ -1217,7 +1216,7 @@
     return '<li class="pt-person">' +
       '<span class="pt-person-name">' + (esc(p.name) || "（未填姓名）") + "</span>" + email +
       '<span class="pt-roles">' + (badges.length ? '<span class="sr-only">角色：</span>' + badges.join("") : "") +
-        (prof ? '<button type="button" class="pt-textbtn pt-person-manual" data-act="open-manual" data-id="' + esc(prof.id) + '">使用說明書<span class="sr-only">：' + esc(p.name) + "</span></button>" : "") +
+        (prof ? '<button type="button" class="pt-textbtn pt-person-ask" data-act="open-col" data-id="' + esc(prof.id) + '">問虛擬分身<span class="sr-only">：' + esc(p.name) + "</span></button>" : "") +
       "</span>" +
     "</li>";
   }
@@ -1233,16 +1232,13 @@
   }
 
   /* ============================================================
-     同事使用手冊：選一位同事 → 他自己寫的使用說明書＋跟他的虛擬分身聊天
-     資料來自「團隊個性化」分頁（只有同意放上網站的人）；聊天只存在這個分頁的記憶體裡，不存瀏覽器、後端也不記錄。
+     同事使用手冊：一個對話視窗。上面選要問哪一位同事，下面跟他的虛擬分身聊天。
+     名單來自「團隊個性化」分頁（只有同意放上網站的人）；網頁只拿到名字和職稱，說明書內容留在後端，只給虛擬分身回答時用。
+     聊天只存在這個分頁的記憶體裡，不存瀏覽器、後端也不記錄。
      ============================================================ */
   const COL_CHAT_MAX = 20;
-  const COL_FIELDS = [
-    ["hours", "工作時段與習慣"], ["contact", "找我最好的方式"], ["feedback", "我喜歡怎麼收到回饋"],
-    ["help", "可以找我幫忙的事"], ["life", "興趣與生活"], ["voice", "說話風格"],
-  ];
   const COL_SUGGEST = ["介紹一下你自己", "怎麼找你最快？", "你喜歡怎麼收到回饋？", "可以找你幫忙什麼？"];
-  const PROFILE_KEYS = ["email", "title", "mbti", "blood", "zodiac", "hours", "contact", "feedback", "help", "life", "voice", "about"];
+  const PROFILE_KEYS = ["email", "title"];
 
   function normProfiles(list) {
     return arr(list).filter((p) => p && typeof p === "object").map((p) => {
@@ -1289,48 +1285,27 @@
     }
     if (!list.some((p) => p.id === A.colleague)) A.colleague = list[0].id;
     const sel = currentColleague();
-    box.innerHTML =
-      '<div class="pt-col-picker" role="group" aria-label="選一位同事">' + list.map((p) =>
-        '<button type="button" class="pt-col-pick" data-act="pick-col" data-id="' + esc(p.id) + '" aria-pressed="' + (p.id === sel.id) + '">' +
-          colAvatarHtml(p) +
-          '<span class="pt-col-pick-text"><span class="pt-col-pick-name">' + esc(p.name) + "</span>" +
-            (p.title ? '<span class="pt-col-pick-title">' + esc(p.title) + "</span>" : "") + "</span>" +
-        "</button>").join("") +
-      "</div>" +
-      '<div class="pt-col-body">' + manualHtml(sel) + colChatHtml(sel) + "</div>";
+    box.innerHTML = colChatHtml(sel, list);
     renderColLog(sel);
-    const th = colThreadScroller();
-    if (th) th.scrollTop = th.scrollHeight; // 切回聊過的同事：從最新的對話開始看
   }
 
-  function manualHtml(p) {
-    const A = S.about;
-    const person = (A.data ? A.data.people : []).find((x) => profileFor(x, [p]));
-    const tags = [p.mbti && "MBTI " + p.mbti, p.zodiac, p.blood && (/型$/.test(p.blood) ? p.blood : p.blood + " 型")].filter(Boolean);
-    const roles = person ? person.approverOf.map((c) => c + "主管").concat(person.financeRoles.map((r) => "財務・" + r)) : [];
-    // 每一欄可能寫了好幾段：跟小U的回答一樣分段（只認 **粗體** 和 • 清單，其他一律當純文字）
-    const rows = COL_FIELDS.filter((f) => p[f[0]]).map((f) => "<div><dt>" + esc(f[1]) + '</dt><dd class="pt-answer">' + formatAnswer(p[f[0]]) + "</dd></div>").join("");
-    return '<article class="card pt-card pt-manual" aria-labelledby="ptManualName">' +
-      '<div class="pt-manual-head">' + colAvatarHtml(p, "lg") +
-        '<div class="pt-manual-who"><h2 class="pt-manual-name" id="ptManualName">' + esc(p.name) + " 的使用說明書</h2>" +
-          (p.title ? '<p class="pt-manual-title">' + esc(p.title) + "</p>" : "") + "</div>" +
-      "</div>" +
-      (tags.length || roles.length
-        ? '<ul class="pt-tags pt-manual-tags">' + tags.map((t) => '<li class="pt-tag">' + esc(t) + "</li>").join("") +
-            roles.map((r) => '<li class="pt-tag pt-tag-role">' + esc(r) + "</li>").join("") + "</ul>"
-        : "") +
-      // 手機上說明書很長，聊天在最下面：給一顆按鈕直接跳過去（桌機聊天固定在右邊，不需要）
-      '<button type="button" class="pt-btn pt-btn-ghost pt-col-jump" data-act="col-jump">跟虛擬的' + esc(p.name) + "聊聊</button>" +
-      (rows ? '<dl class="pt-manual-list">' + rows + "</dl>" : "") +
-      (p.about ? '<div class="pt-manual-about"><h3 class="pt-h3">自我描述</h3><div class="pt-answer">' + formatAnswer(p.about) + "</div></div>" : "") +
-      (!rows && !p.about && !tags.length ? '<p class="pt-small pt-muted pt-manual-empty">還沒寫內容。</p>' : "") +
-    "</article>";
+  function colPickHtml(p, sel) {
+    return '<button type="button" class="pt-col-pick" data-act="pick-col" data-id="' + esc(p.id) + '" aria-pressed="' + (p.id === sel.id) + '">' +
+      colAvatarHtml(p) +
+      '<span class="pt-col-pick-text"><span class="pt-col-pick-name">' + esc(p.name) + "</span>" +
+        (p.title ? '<span class="pt-col-pick-title">' + esc(p.title) + "</span>" : "") + "</span>" +
+    "</button>";
   }
 
-  function colChatHtml(p) {
+  // 一個對話視窗：最上面選同事，下面是跟他的對話
+  function colChatHtml(p, list) {
     const empty = !colleagueChat(p.id).messages.length;
     const nm = esc(p.name);
-    return '<section class="card pt-card pt-chat pt-col-chat" id="ptColChat" aria-label="和虛擬的' + nm + '聊天">' +
+    return '<section class="card pt-card pt-chat pt-col-chat" id="ptColChat" aria-label="同事使用手冊對話">' +
+      '<div class="pt-col-head">' +
+        '<p class="pt-col-head-label" id="ptColPickLabel">想問哪一位同事？</p>' +
+        '<div class="pt-col-picker" role="group" aria-labelledby="ptColPickLabel">' + list.map((x) => colPickHtml(x, p)).join("") + "</div>" +
+      "</div>" +
       '<p class="pt-col-notice">虛擬的' + nm + "：照本人填的使用說明書回答，不代表本人；要本人決定的事，請直接找本人。</p>" +
       '<div class="pt-thread">' +
         '<div class="pt-msg pt-msg-bot pt-greeting">' +
@@ -1406,37 +1381,8 @@
     A.el.querySelectorAll('[data-act="col-retry"], [data-act="col-ask"]').forEach((b) => { b.disabled = C.waiting; });
     return log.lastElementChild;
   }
-  // 桌機：聊天框固定在右邊、對話在框裡自己捲；手機：整頁捲（跟首頁一樣避開底部的輸入框）
-  function colThreadScroller() {
-    const th = S.about.el && S.about.el.querySelector(".pt-col-chat .pt-thread");
-    return th && getComputedStyle(th).overflowY !== "visible" ? th : null;
-  }
-  function revealColleague(node) {
-    if (!node || !node.isConnected) return;
-    const th = colThreadScroller();
-    if (!th) { reveal(node, S.about.el && S.about.el.querySelector(".pt-col-chat .pt-composer")); return; }
-    try {
-      const t = th.getBoundingClientRect();
-      const r = node.getBoundingClientRect();
-      if (!r.height) return;
-      let dy = 0;
-      if (r.bottom > t.bottom - 8) dy = r.bottom - (t.bottom - 8);
-      if (r.top - dy < t.top + 8) dy = r.top - (t.top + 8); // 回答比框高：先看到開頭
-      if (Math.abs(dy) >= 1) th.scrollTop += dy;
-    } catch (e) { /* 捲不動就算了 */ }
-  }
-  function jumpToColleagueChat() {
-    const A = S.about;
-    const chat = A.el && A.el.querySelector(".pt-col-chat");
-    if (!chat) return;
-    try {
-      const top = chat.getBoundingClientRect().top + window.scrollY - topbarBottom() - 12;
-      window.scrollTo(0, Math.max(0, top));
-    } catch (e) { /* ignore */ }
-    // 焦點移到聊天區（不直接點輸入框：手機鍵盤一跳出來，建議問題就被擋住了）
-    chat.setAttribute("tabindex", "-1");
-    chat.focus({ preventScroll: true });
-  }
+  // 跟首頁一樣：新訊息捲進畫面，避開底部的輸入框
+  function revealColleague(node) { reveal(node, S.about.el && S.about.el.querySelector(".pt-col-chat .pt-composer")); }
 
   function bindColleagueChat(el) {
     const isInput = (t) => t && t.matches && t.matches('[data-role="col-input"]');
