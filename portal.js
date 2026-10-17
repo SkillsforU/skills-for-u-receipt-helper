@@ -1,15 +1,17 @@
 /* ============================================================
-   團隊後台：首頁（問手冊）／認識組織／計畫與預算
+   團隊後台：首頁（和小U聊天）／認識組織／計畫與預算
    ------------------------------------------------------------
    app.js 每次切到這三頁（登入後、每次網址 # 改變）都會呼叫對應的函式：
-     Portal.showHome()   → 畫在 #homeRoot（問手冊對話）
-     Portal.showAbout()  → 畫在 #aboutRoot（手冊、組織架構、團隊成員）
+     Portal.showHome()   → 畫在 #homeRoot（和新手導師小U聊天）
+     Portal.showAbout()  → 畫在 #aboutRoot（小U 從兩本手冊整理的重點、手冊、組織架構、團隊成員）
      Portal.showBudget() → 畫在 #budgetRoot（只開放給主管和財務）
-   每個函式都可以重複呼叫：第一次畫整頁，之後只更新該更新的地方（對話不會被清掉）。
+     Portal.reset()      → 登出時呼叫：清掉這個分頁裡存的對話和快取，畫面也清空
+   每個 show 函式都可以重複呼叫：第一次畫整頁，之後只更新該更新的地方（對話不會被清掉）。
    這裡不會往外丟錯誤，出錯一律顯示在頁面裡。
-   後端動作：askHandbook／getAbout／getBudgetOverview（見介面約定第 1～3 節）。
+   後端動作：askHandbook／getAbout／getAboutOverview／getBudgetOverview。
    用到 app.js 的全域：cloudPost、currentUser、escapeHtml、fmtMoney、showToast、
    hasFinanceRole、canViewBudget、isSignedIn。樣式在 portal.css（class 一律 pt- 開頭）。
+   小U 的圖：repo 根目錄的 xiaou.svg（半身）、xiaou-avatar.svg（圓形頭像）；載入失敗會換成圓形佔位。
    ============================================================ */
 (function () {
   "use strict";
@@ -82,6 +84,9 @@
     }
   }
 
+  const CHEVRON = '<svg class="pt-chev" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M3 5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DOTS = '<span class="pt-dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+
   function loadingHtml(text) {
     return '<div class="pt-loading" role="status"><span class="pt-spinner" aria-hidden="true"></span>' + esc(text) + "</div>";
   }
@@ -97,11 +102,58 @@
     } catch (e) { /* ignore */ }
   }
 
+  // 把 node 捲進畫面。obstruct = 底下固定住的輸入框，要讓出它的高度（瀏覽器內建的 scrollIntoView
+  // 不知道它擋住了東西）；內容比畫面高時優先露出開頭，讓人從第一行讀起。
+  function reveal(node, obstruct) {
+    try {
+      if (!node || !node.isConnected) return;
+      const r = node.getBoundingClientRect();
+      if (!r.height) return; // 這一頁現在沒顯示
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      let bottom = vh - 12;
+      if (obstruct) {
+        const o = obstruct.getBoundingClientRect();
+        if (o.height && o.top > 0 && o.top < vh) bottom = Math.min(bottom, o.top - 12);
+      }
+      const top = 12;
+      let dy = 0;
+      if (r.bottom > bottom) dy = r.bottom - bottom;
+      if (r.top - dy < top) dy = r.top - top;
+      if (Math.abs(dy) >= 1) window.scrollBy(0, dy);
+    } catch (e) { /* 捲不動就算了 */ }
+  }
+
+  /* ---------------- 小U 的圖 ---------------- */
+  // 圖檔載入失敗就換成圓形佔位（不出現破圖）；之後新畫的頭像直接用佔位，不再重抓壞掉的檔案
+  const AVATAR_SRC = "xiaou-avatar.svg";
+  const ART_SRC = "xiaou.svg";
+  const brokenImg = { avatar: false, art: false };
+  document.addEventListener("error", (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== "IMG" || !img.dataset || !img.dataset.ptImg) return;
+    brokenImg[img.dataset.ptImg] = true;
+    const box = img.closest(".pt-av, .pt-art");
+    if (box) box.classList.add("is-fallback");
+  }, true);
+  function avatarHtml(size) {
+    const cls = "pt-av" + (size ? " pt-av-" + size : "") + (brokenImg.avatar ? " is-fallback" : "");
+    return '<span class="' + cls + '" aria-hidden="true">' +
+      (brokenImg.avatar ? "" : '<img data-pt-img="avatar" src="' + AVATAR_SRC + '" alt="" width="36" height="36">') + "</span>";
+  }
+  function artHtml() {
+    return '<div class="pt-art' + (brokenImg.art ? " is-fallback" : "") + '">' +
+      (brokenImg.art ? "" : '<img data-pt-img="art" src="' + ART_SRC + '" alt="小U" width="320" height="360">') + "</div>";
+  }
+  // 小U 說的一則話：頭像＋名字＋泡泡（after = 泡泡底下的小字）
+  function botMsgHtml(bubbleHtml, after) {
+    return avatarHtml() + '<div class="pt-msg-body"><p class="pt-msg-name">小U</p>' + bubbleHtml + (after || "") + "</div>";
+  }
+
   /* ---------------- 狀態（換人登入就整個重來） ---------------- */
   const S = { email: null, home: null, about: null, budget: null };
   function freshState() {
-    S.home = { el: null, messages: [], waiting: false, gen: 0, composing: false, quickSig: "" };
-    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1 };
+    S.home = { el: null, messages: [], waiting: false, gen: 0, composing: false, actionsSig: "" };
+    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1, ov: null, ovLoading: false, ovError: "" };
     S.budget = { el: null, data: null, renderedData: null, fetchedAt: 0, loading: false, error: "", center: "", expanded: new Set() };
   }
   freshState();
@@ -115,8 +167,10 @@
     freshState();
     if (switching) clearRoots(); // 換人登入：上一個人的畫面（例如預算）不要留在頁面裡
     S.home.messages = loadChat();
-    const cached = ssGet(aboutKey());
-    if (cached && typeof cached === "object") S.about.data = normAbout(cached);
+    const cachedAbout = ssGet(aboutKey());
+    if (cachedAbout && typeof cachedAbout === "object") S.about.data = normAbout(cachedAbout);
+    const cachedOv = ssGet(overviewKey());
+    if (cachedOv && typeof cachedOv === "object" && cachedOv.status === "ready") S.about.ov = normOverview(cachedOv);
   }
   function clearRoots() {
     ["homeRoot", "aboutRoot", "budgetRoot"].forEach((id) => {
@@ -124,10 +178,9 @@
       if (el) el.innerHTML = "";
     });
   }
-  // 選用：app.js 登出時可以呼叫，清掉這個分頁裡存的對話和快取，畫面也一起清空
   function reset() {
     try {
-      if (S.email !== null) { ssDel(chatKey()); ssDel(aboutKey()); }
+      if (S.email !== null) { ssDel(chatKey()); ssDel(aboutKey()); ssDel(overviewKey()); }
       S.email = null;
       freshState();
       clearRoots();
@@ -135,16 +188,27 @@
   }
 
   /* ============================================================
-     首頁：問手冊
+     首頁：和小U聊天
      ============================================================ */
-  const CHAT_MAX = 20;          // 對話最多留 20 則
+  const CHAT_MAX = 20;          // 對話最多留 20 則（小U 的開場白不算）
   const HISTORY_MAX = 6;        // 每次問的時候帶最近 6 則給後端
-  const SUGGESTIONS = ["代墊款什麼時候會撥款？", "報帳要準備哪些東西？", "組織的核心價值是什麼？", "請假要怎麼申請？"];
-  const WAIT_TEXT = "正在查手冊…（大約 10 秒）";
-  const SLOW_TEXT = "還在查，比平常久一點，請再等一下…";
+  const FAQ = ["代墊款怎麼報帳？", "上傳單據後多久會撥款？", "請假要怎麼申請？", "我們的核心價值是什麼？", "新人第一週要做什麼？", "系統用不順可以找誰？"];
+  const TYPING_TEXT = "小U 正在查資料，大約 10 秒…";
+  const SLOW_TEXT = "比平常久一點，再等我一下…";
+  const GENERAL_NOTE = "一般建議，不是組織規定";
+  const NONE_LABEL = "這題我找不到答案";
+  const NOT_CONFIGURED_NOTE = "我還沒拿到手冊，組織規定的問題暫時答不了，請管理員在總表「知識庫設定」填好手冊連結。";
   let msgSeq = 0;
   function newId() { msgSeq += 1; return "m" + msgSeq + "x" + Date.now().toString(36); }
   function chatKey() { return "pt.chat.v1." + (S.email || "anon"); }
+
+  // 回答的種類：handbook（手冊或系統說明）、general（一般知識）、none（答不出來）。
+  // 舊版後端沒有 kind：找得到算 handbook，找不到算 none。
+  function answerKind(res) {
+    const k = str(res && res.kind).trim();
+    if (k === "handbook" || k === "general" || k === "none") return k;
+    return res && res.found === false ? "none" : "handbook";
+  }
 
   function normSources(list) {
     const seen = new Set();
@@ -175,7 +239,7 @@
         const o = { id: newId(), role: m.role, text: m.text };
         if (m.role === "assistant") {
           o.sources = normSources(m.sources);
-          if (m.found === false) o.found = false;
+          o.kind = answerKind(m);
           if (m.notConfigured) o.notConfigured = true;
         } else if (typeof m.error === "string" && m.error) {
           o.error = m.error;
@@ -194,7 +258,7 @@
     ssSet(chatKey(), H.messages.map((m) => {
       const o = { role: m.role, text: m.text };
       if (m.sources && m.sources.length) o.sources = m.sources;
-      if (m.found === false) o.found = false;
+      if (m.kind) o.kind = m.kind;
       if (m.notConfigured) o.notConfigured = true;
       if (m.error) o.error = m.error;
       return o;
@@ -224,19 +288,23 @@
   function greetingText() {
     const u = me();
     const name = u && u.name ? str(u.name).trim() : "";
-    return name ? "你好，" + name : "你好";
+    return (name ? "嗨，" + name + "！" : "嗨！") +
+      "我是 Skills for U 的新手導師，你可以稱呼我：小U。組織的規定、流程、文化，或是工作上卡住的地方，都可以問我。";
   }
-  function quickSig() { return (userHasFinanceRole() ? "f" : "") + (userCanViewBudget() ? "b" : ""); }
-  function quickLinksHtml() {
+  function actionsSig() { return (userHasFinanceRole() ? "f" : "") + (userCanViewBudget() ? "b" : ""); }
+  function actionLinksHtml() {
     const links = [
-      { href: "#finance/upload", label: "上傳單據", primary: true },
+      { href: "#finance/upload", label: "上傳單據" },
       { href: "#finance/mine", label: "上傳紀錄" },
     ];
     if (userHasFinanceRole()) links.push({ href: "#finance/ops", label: "財務作業" });
     if (userCanViewBudget()) links.push({ href: "#budget", label: "計畫與預算" });
-    return links.map((l) => '<a class="pt-pill' + (l.primary ? " pt-pill-primary" : "") + '" href="' + l.href + '">' + l.label + "</a>").join("") +
-      '<a class="pt-pill" href="https://secure.swingvy.com" target="_blank" rel="noopener">人事中心（Swingvy）' +
+    return links.map((l) => '<a class="pt-action" href="' + l.href + '">' + l.label + "</a>").join("") +
+      '<a class="pt-action" href="https://secure.swingvy.com" target="_blank" rel="noopener">人事中心（Swingvy）' +
       '<span class="pt-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟）</span></a>';
+  }
+  function faqChipsHtml() {
+    return FAQ.map((s) => '<button type="button" class="pt-chip-btn" data-act="ask" data-q="' + esc(s) + '">' + esc(s) + "</button>").join("");
   }
 
   function showHome() {
@@ -257,39 +325,54 @@
     const wrap = document.createElement("div");
     wrap.className = "pt-home";
     wrap.innerHTML =
-      '<section class="card pt-card pt-greet" aria-labelledby="ptHomeTitle">' +
-        '<h1 class="pt-h1" id="ptHomeTitle" data-role="greet">' + esc(greetingText()) + "</h1>" +
-        '<p class="pt-greet-sub">可以問組織手冊、組織文化手冊裡的任何事。回答以手冊為準，有疑問再問主管。</p>' +
-        '<nav class="pt-quick" aria-label="常用功能" data-role="quick">' + quickLinksHtml() + "</nav>" +
-      "</section>" +
-      '<section class="card pt-card pt-chat" aria-labelledby="ptChatTitle">' +
-        '<div class="pt-chat-head">' +
-          '<h2 class="pt-h2 pt-chat-title" id="ptChatTitle">問手冊</h2>' +
-          '<button type="button" class="pt-textbtn" data-act="clear">清除對話</button>' +
-        "</div>" +
-        '<div class="pt-suggest" data-role="suggest">' +
-          '<p class="pt-suggest-label" id="ptSuggestLabel">可以這樣問：</p>' +
-          '<div class="pt-suggest-list" role="group" aria-labelledby="ptSuggestLabel">' +
-            SUGGESTIONS.map((s) => '<button type="button" class="pt-chip-btn" data-act="suggest" data-q="' + esc(s) + '">' + esc(s) + "</button>").join("") +
+      // 桌機：左邊的小U介紹卡；手機：縮成聊天上方的一行（頭像＋小U＋新手導師）
+      '<aside class="pt-prof" aria-labelledby="ptProfName">' +
+        artHtml() +
+        '<div class="pt-prof-main">' +
+          avatarHtml("lg") +
+          '<div class="pt-prof-text">' +
+            '<h1 class="pt-prof-name" id="ptProfName">小U</h1>' +
+            '<p class="pt-prof-title"><span class="pt-prof-org">Skills for U </span>新手導師</p>' +
           "</div>" +
         "</div>" +
-        '<div class="pt-log" data-role="log" role="log" aria-live="polite" aria-label="對話紀錄"></div>' +
+        '<p class="pt-prof-intro">我讀過兩本組織手冊，也熟悉這個後台，有問題隨時問我。</p>' +
+        '<p class="pt-prof-note">回答以手冊為準，拿不準的事再問主管。</p>' +
+      "</aside>" +
+      '<section class="card pt-card pt-chat" aria-label="和小U聊天">' +
+        '<div class="pt-thread">' +
+          // 小U 的開場白永遠是第一則，不存進對話紀錄、也不送給後端
+          '<div class="pt-msg pt-msg-bot pt-greeting">' +
+            botMsgHtml('<div class="pt-bubble"><p data-role="greet">' + esc(greetingText()) + "</p>" +
+              '<div class="pt-actions" data-role="actions">' + actionLinksHtml() + "</div></div>") +
+          "</div>" +
+          '<div class="pt-faq" data-role="faq-inline">' +
+            '<p class="pt-faq-label" id="ptFaqLabel">常見問題</p>' +
+            '<div class="pt-faq-list" role="group" aria-labelledby="ptFaqLabel">' + faqChipsHtml() + "</div>" +
+          "</div>" +
+          '<div class="pt-log" data-role="log" role="log" aria-live="polite" aria-label="和小U的對話"></div>' +
+        "</div>" +
         '<form class="pt-composer" data-role="form" novalidate>' +
-          '<label class="sr-only" for="ptAskInput">輸入你的問題</label>' +
+          '<div class="pt-faq-panel" id="ptFaqPanel" data-role="faq-panel" role="group" aria-label="常見問題" hidden>' + faqChipsHtml() + "</div>" +
+          '<label class="sr-only" for="ptAskInput">問小U</label>' +
           '<div class="pt-composer-row">' +
-            '<textarea id="ptAskInput" class="textarea-input pt-input" data-role="input" rows="1" maxlength="1000" placeholder="輸入你的問題" aria-describedby="ptAskHint"></textarea>' +
+            '<textarea id="ptAskInput" class="textarea-input pt-input" data-role="input" rows="1" maxlength="1000" placeholder="問小U任何問題…" aria-describedby="ptAskHint"></textarea>' +
             '<button type="submit" class="pt-send" data-role="send">送出</button>' +
           "</div>" +
-          '<p class="pt-composer-hint" id="ptAskHint">按 Enter 送出，Shift + Enter 換行</p>' +
+          '<div class="pt-composer-foot">' +
+            '<button type="button" class="pt-faq-toggle" data-act="faq-toggle" aria-expanded="false" aria-controls="ptFaqPanel" hidden>常見問題' + CHEVRON + "</button>" +
+            '<p class="pt-composer-hint" id="ptAskHint">按 Enter 送出，Shift + Enter 換行</p>' +
+            '<button type="button" class="pt-textbtn" data-act="clear" hidden>清除對話</button>' +
+          "</div>" +
         "</form>" +
       "</section>";
     // 先把之前的對話放進去再掛到頁面上，螢幕報讀才不會把舊對話整串念一遍
     const log = q(wrap, "log");
-    H.messages.forEach((m) => log.appendChild(msgNode(m)));
+    const firstNc = H.messages.find((m) => m.notConfigured);
+    H.messages.forEach((m) => log.appendChild(msgNode(m, m === firstNc)));
     root.innerHTML = "";
     root.appendChild(wrap);
     H.el = wrap;
-    H.quickSig = quickSig();
+    H.actionsSig = actionsSig();
     bindHome(H);
     updateChatChrome();
   }
@@ -299,11 +382,11 @@
     const g = q(H.el, "greet");
     const text = greetingText();
     if (g && g.textContent !== text) g.textContent = text;
-    const sig = quickSig();
-    if (sig !== H.quickSig) {
-      const nav = q(H.el, "quick");
-      if (nav) nav.innerHTML = quickLinksHtml();
-      H.quickSig = sig;
+    const sig = actionsSig();
+    if (sig !== H.actionsSig) {
+      const box = q(H.el, "actions");
+      if (box) box.innerHTML = actionLinksHtml();
+      H.actionsSig = sig;
     }
   }
 
@@ -315,9 +398,16 @@
       if (!btn || !el.contains(btn)) return;
       const viaKeyboard = e.detail === 0; // 用鍵盤按的才把焦點移回輸入框（手機上不要自動跳出鍵盤）
       const act = btn.dataset.act;
-      if (act === "suggest") sendQuestion(btn.dataset.q || btn.textContent, viaKeyboard);
+      if (act === "ask") { setFaqPanel(false); sendQuestion(btn.dataset.q || btn.textContent, viaKeyboard); }
+      else if (act === "faq-toggle") setFaqPanel(btn.getAttribute("aria-expanded") !== "true");
       else if (act === "clear") clearChat(viaKeyboard);
       else if (act === "retry") retryMessage(btn.dataset.id, viaKeyboard);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || q(el, "faq-panel").hidden) return;
+      setFaqPanel(false);
+      const t = el.querySelector('[data-act="faq-toggle"]');
+      if (t && !t.hidden) t.focus();
     });
     q(el, "form").addEventListener("submit", (e) => { e.preventDefault(); submitInput(); });
     input.addEventListener("keydown", (e) => {
@@ -331,6 +421,14 @@
     input.addEventListener("compositionend", () => { H.composing = false; });
     input.addEventListener("blur", () => { H.composing = false; });
     input.addEventListener("input", () => autoGrow(input));
+  }
+
+  function setFaqPanel(open) {
+    const H = S.home;
+    if (!H.el) return;
+    q(H.el, "faq-panel").hidden = !open;
+    const t = H.el.querySelector('[data-act="faq-toggle"]');
+    if (t) t.setAttribute("aria-expanded", String(!!open));
   }
 
   function autoGrow(ta) {
@@ -357,7 +455,7 @@
     if (!question || H.waiting || !H.el) return;
     const msg = { id: newId(), role: "user", text: question };
     H.messages.push(msg);
-    q(H.el, "log").appendChild(msgNode(msg));
+    q(H.el, "log").appendChild(msgNode(msg, false));
     askFor(msg);
     if (refocus) q(H.el, "input").focus();
   }
@@ -384,7 +482,7 @@
 
   function buildHistory(prev) {
     return prev
-      .filter((m) => (m.role === "user" && !m.error) || (m.role === "assistant" && !m.notConfigured))
+      .filter((m) => m.role === "assistant" || !m.error)
       .slice(-HISTORY_MAX)
       .map((m) => ({ role: m.role, text: m.text }));
   }
@@ -396,26 +494,6 @@
   function insertAfter(parent, node, ref) {
     if (ref && ref.parentNode === parent) parent.insertBefore(node, ref.nextSibling);
     else parent.appendChild(node);
-  }
-  // 把 node 捲進畫面。obstruct = 底下固定住的輸入框，要讓出它的高度（瀏覽器內建的 scrollIntoView
-  // 不知道它擋住了東西）；內容比畫面高時優先露出開頭，讓人從第一行讀起。
-  function reveal(node, obstruct) {
-    try {
-      if (!node || !node.isConnected) return;
-      const r = node.getBoundingClientRect();
-      if (!r.height) return; // 這一頁現在沒顯示
-      const vh = window.innerHeight || document.documentElement.clientHeight;
-      let bottom = vh - 12;
-      if (obstruct) {
-        const o = obstruct.getBoundingClientRect();
-        if (o.height && o.top > 0 && o.top < vh) bottom = Math.min(bottom, o.top - 12);
-      }
-      const top = 12;
-      let dy = 0;
-      if (r.bottom > bottom) dy = r.bottom - bottom;
-      if (r.top - dy < top) dy = r.top - top;
-      if (Math.abs(dy) >= 1) window.scrollBy(0, dy);
-    } catch (e) { /* 捲不動就算了 */ }
   }
   function revealInChat(node) { reveal(node, S.home.el && S.home.el.querySelector(".pt-composer")); }
 
@@ -438,17 +516,17 @@
     const userNode = nodeFor(userMsg);
     const oldErr = userNode && userNode.querySelector(".pt-msg-error");
     if (oldErr) oldErr.remove();
-    const pending = pendingNode();
-    insertAfter(log, pending, userNode);
+    const typing = typingNode();
+    insertAfter(log, typing, userNode);
     trimChat();
     saveChat();
     updateChatChrome();
-    revealInChat(pending);
+    revealInChat(typing);
 
     const idx = H.messages.indexOf(userMsg);
     const history = buildHistory(H.messages.slice(0, idx < 0 ? H.messages.length : idx));
     const slowTimer = setTimeout(() => {
-      const t = pending.querySelector('[data-role="ptext"]');
+      const t = typing.querySelector('[data-role="ptext"]');
       if (t) t.textContent = SLOW_TEXT;
     }, 20000);
     const res = await call("askHandbook", { question: userMsg.text, history }, 90000);
@@ -456,15 +534,14 @@
     if (H !== S.home || gen !== H.gen) return; // 對話已清除或換人登入：丟掉這個回答
 
     H.waiting = false;
-    pending.remove();
+    typing.remove();
     if (res.ok) {
-      const ans = { id: newId(), role: "assistant", text: str(res.answer).trim() || "（沒有收到回答內容）", sources: normSources(res.sources) };
-      if (res.found === false) ans.found = false;
+      const ans = { id: newId(), role: "assistant", text: str(res.answer).trim() || "我這次沒有想出答案，可以換個問法再問我一次嗎？", sources: normSources(res.sources), kind: answerKind(res) };
       if (res.notConfigured) ans.notConfigured = true;
       const i = H.messages.indexOf(userMsg);
       if (i >= 0) H.messages.splice(i + 1, 0, ans);
       else H.messages.push(ans);
-      const node = msgNode(ans);
+      const node = msgNode(ans, H.messages.find((m) => m.notConfigured) === ans);
       insertAfter(log, node, nodeFor(userMsg));
       trimChat();
       saveChat();
@@ -473,7 +550,7 @@
     } else {
       userMsg.error = res.error || "沒有收到回答。";
       const un = nodeFor(userMsg);
-      if (un) un.appendChild(errorRow(userMsg));
+      if (un) un.querySelector(".pt-msg-body").appendChild(errorRow(userMsg));
       saveChat();
       updateChatChrome();
       revealInChat(un);
@@ -484,32 +561,37 @@
     const H = S.home;
     if (!H.el) return;
     const empty = H.messages.length === 0;
-    q(H.el, "suggest").hidden = !empty;
+    // 還沒開始聊：常見問題直接列在開場白底下；聊開之後收進輸入框旁的「常見問題」按鈕
+    q(H.el, "faq-inline").hidden = !empty;
+    const toggle = H.el.querySelector('[data-act="faq-toggle"]');
+    if (toggle) toggle.hidden = empty;
+    if (empty) setFaqPanel(false);
     const clearBtn = H.el.querySelector('[data-act="clear"]');
     if (clearBtn) clearBtn.hidden = empty;
     q(H.el, "send").disabled = H.waiting;
-    H.el.querySelectorAll('[data-act="retry"]').forEach((b) => { b.disabled = H.waiting; });
+    H.el.querySelectorAll('[data-act="retry"], [data-act="ask"]').forEach((b) => { b.disabled = H.waiting; });
     q(H.el, "log").classList.toggle("is-empty", empty);
   }
 
-  function msgNode(m) {
+  // showNcNote：知識庫還沒設定的提醒只掛在第一則這種回答底下，不要每則都重複
+  function msgNode(m, showNcNote) {
     const n = document.createElement("div");
     n.dataset.id = m.id;
     if (m.role === "user") {
       n.className = "pt-msg pt-msg-user";
-      n.innerHTML = '<div class="pt-bubble"><span class="sr-only">你問：</span>' + esc(m.text) + "</div>";
-      if (m.error) n.appendChild(errorRow(m));
-    } else if (m.notConfigured) {
-      n.className = "pt-msg pt-msg-notice";
-      n.innerHTML = '<div class="pt-notice"><p class="pt-notice-title">手冊還沒設定</p><div class="pt-answer">' + formatAnswer(m.text) + "</div></div>";
-    } else {
-      const hint = m.found === false;
-      n.className = "pt-msg pt-msg-bot" + (hint ? " pt-msg-hint" : "");
-      n.innerHTML = '<div class="pt-bubble">' +
-        (hint ? '<p class="pt-hint-label">手冊裡沒有找到</p>' : '<span class="sr-only">回答：</span>') +
-        '<div class="pt-answer">' + formatAnswer(m.text) + "</div></div>" +
-        (m.sources && m.sources.length ? '<p class="pt-sources">出處：' + esc(sourcesText(m.sources)) + "</p>" : "");
+      n.innerHTML = '<div class="pt-msg-body"><div class="pt-bubble"><span class="sr-only">你問：</span>' + esc(m.text) + "</div></div>";
+      if (m.error) n.firstChild.appendChild(errorRow(m));
+      return n;
     }
+    const kind = m.kind || "handbook";
+    n.className = "pt-msg pt-msg-bot" + (kind === "none" ? " pt-msg-hint" : "");
+    let after = "";
+    if (m.sources && m.sources.length) after += '<p class="pt-sources">出處：' + esc(sourcesText(m.sources)) + "</p>";
+    if (kind === "general") after += '<p class="pt-note pt-note-general">' + GENERAL_NOTE + "</p>";
+    if (m.notConfigured && showNcNote) after += '<p class="pt-note pt-note-nc">' + NOT_CONFIGURED_NOTE + "</p>";
+    n.innerHTML = botMsgHtml('<div class="pt-bubble">' +
+      (kind === "none" ? '<p class="pt-hint-label">' + NONE_LABEL + "</p>" : "") +
+      '<div class="pt-answer">' + formatAnswer(m.text) + "</div></div>", after);
     return n;
   }
   function errorRow(m) {
@@ -519,17 +601,22 @@
       '<button type="button" class="pt-btn pt-btn-ghost pt-btn-sm" data-act="retry" data-id="' + esc(m.id) + '">重試</button>';
     return r;
   }
-  function pendingNode() {
+  function typingNode() {
     const n = document.createElement("div");
     n.className = "pt-msg pt-msg-bot pt-msg-pending";
-    n.innerHTML = '<div class="pt-bubble"><span class="pt-dots" aria-hidden="true"><i></i><i></i><i></i></span><span data-role="ptext">' + WAIT_TEXT + "</span></div>";
+    n.innerHTML = botMsgHtml('<div class="pt-bubble pt-typing">' + DOTS + "</div>",
+      '<p class="pt-typing-note" data-role="ptext">' + TYPING_TEXT + "</p>");
     return n;
   }
 
   /* ============================================================
-     認識組織
+     認識組織：小U 從兩本手冊整理的重點（getAboutOverview，慢）
+              ＋手冊、組織架構、團隊成員（getAbout，快）
+     兩個分開抓，快的先畫出來；重點第一次要 20～40 秒。
      ============================================================ */
+  const OV_LOADING_TEXT = "小U 正在讀手冊、整理重點，第一次大約要半分鐘…";
   function aboutKey() { return "pt.about.v1." + (S.email || "anon"); }
+  function overviewKey() { return "pt.overview.v1." + (S.email || "anon"); }
 
   function normAbout(res) {
     return {
@@ -552,6 +639,23 @@
       })),
     };
   }
+  function normOverview(o) {
+    o = o && typeof o === "object" ? o : {};
+    const intro = o.intro && typeof o.intro === "object" ? o.intro : {};
+    return {
+      status: ["ready", "notConfigured", "unavailable"].includes(o.status) ? o.status : "unavailable",
+      message: str(o.message).trim(),
+      updatedAt: str(o.updatedAt).trim(),
+      intro: { name: str(intro.name).trim(), tagline: str(intro.tagline).trim(), summary: str(intro.summary).trim() },
+      sections: arr(o.sections).filter((s) => s && typeof s === "object").map((s) => ({
+        title: str(s.title).trim(),
+        handbook: str(s.handbook).trim(),
+        points: arr(s.points).filter((p) => p && typeof p === "object")
+          .map((p) => ({ title: str(p.title).trim(), text: str(p.text).trim(), location: str(p.location).trim() }))
+          .filter((p) => p.title || p.text),
+      })).filter((s) => s.title || s.points.length),
+    };
+  }
 
   function showAbout() {
     const root = document.getElementById("aboutRoot");
@@ -560,7 +664,9 @@
       syncUser();
       const A = S.about;
       if (!A.el || !root.contains(A.el)) mountAbout(root);
-      if (!A.data && !A.loading) loadAbout(false);
+      if (!A.data && !A.loading) loadAbout();
+      // 重點整理好了就整個工作階段沿用；還沒設定／暫時不能用的狀態，下次進來再問一次
+      if ((!A.ov || A.ov.status !== "ready") && !A.ovLoading) loadOverview();
     } catch (e) {
       renderCrash(root, e);
     }
@@ -571,24 +677,34 @@
     root.innerHTML =
       '<div class="pt-page pt-about">' +
         '<div class="pt-page-head">' +
-          '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織手冊、組織架構和團隊成員。</p></div>' +
+          '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織介紹、手冊重點、組織架構和團隊成員。</p></div>' +
           '<button type="button" class="pt-btn pt-btn-ghost" data-act="refresh">重新整理</button>' +
         "</div>" +
+        '<div class="pt-ov" data-role="overview"></div>' +
         '<div data-role="alert"></div>' +
         '<div data-role="body"></div>' +
       "</div>";
     A.el = root.firstElementChild;
     A.renderedData = null;
     A.el.addEventListener("click", onAboutClick);
+    renderOverview();
     renderAbout();
   }
 
+  function renderAboutButton() {
+    const A = S.about;
+    const btn = A.el && A.el.querySelector('[data-act="refresh"]');
+    if (!btn) return;
+    const busy = A.loading || A.ovLoading;
+    btn.disabled = busy;
+    btn.textContent = busy ? "讀取中…" : "重新整理";
+  }
+
+  // 下半部（手冊、組織架構、團隊成員）
   function renderAbout() {
     const A = S.about;
     if (!A.el) return;
-    const btn = A.el.querySelector('[data-act="refresh"]');
-    btn.disabled = A.loading;
-    btn.textContent = A.loading ? "讀取中…" : "重新整理";
+    renderAboutButton();
     q(A.el, "alert").innerHTML = A.error && A.data ? '<div class="pt-alert pt-alert-error" role="alert">重新整理失敗：' + esc(A.error) + "</div>" : "";
     const body = q(A.el, "body");
     body.setAttribute("aria-busy", A.loading ? "true" : "false");
@@ -605,7 +721,27 @@
     }
   }
 
-  async function loadAbout(manual) {
+  // 上半部（小U 整理的重點）
+  function renderOverview() {
+    const A = S.about;
+    if (!A.el) return;
+    renderAboutButton();
+    const box = q(A.el, "overview");
+    box.setAttribute("aria-busy", A.ovLoading ? "true" : "false");
+    box.classList.toggle("pt-stale", !!(A.ovLoading && A.ov));
+    if (A.ovLoading && A.ov) return; // 重新整理中：舊內容先留著（變淡），回來再換
+    let html = "";
+    if (A.ov) {
+      html = (A.ovError ? '<div class="pt-alert pt-alert-error" role="alert">重點沒有更新成功：' + esc(A.ovError) + "</div>" : "") + overviewHtml(A.ov);
+    } else if (A.ovLoading) {
+      html = xiaouBlockHtml(OV_LOADING_TEXT, { typing: true });
+    } else if (A.ovError) {
+      html = xiaouBlockHtml("整理重點的時候出了點問題：" + A.ovError, { retry: true, error: true });
+    }
+    box.innerHTML = html;
+  }
+
+  async function loadAbout() {
     const A = S.about;
     if (A.loading) return;
     A.loading = true;
@@ -617,19 +753,91 @@
     if (res.ok) {
       A.data = normAbout(res);
       ssSet(aboutKey(), A.data);
-      if (manual) toast("已重新整理");
     } else {
       A.error = res.error;
     }
     renderAbout();
   }
 
+  async function loadOverview() {
+    const A = S.about;
+    if (A.ovLoading) return;
+    A.ovLoading = true;
+    A.ovError = "";
+    renderOverview();
+    const res = await call("getAboutOverview", {}, 120000); // 第一次要讓 Gemini 讀完兩本手冊，給久一點
+    if (A !== S.about) return;
+    A.ovLoading = false;
+    if (res.ok) {
+      A.ov = normOverview(res.overview);
+      if (A.ov.status === "ready") ssSet(overviewKey(), A.ov); else ssDel(overviewKey());
+    } else {
+      A.ovError = res.error;
+    }
+    renderOverview();
+  }
+
   function onAboutClick(e) {
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const act = b.dataset.act;
-    if (act === "refresh" || act === "retry") loadAbout(act === "refresh");
+    if (act === "refresh") { loadAbout(); loadOverview(); }
+    else if (act === "retry") loadAbout();
+    else if (act === "ov-retry") loadOverview();
     else if (act === "toggle-hb") toggleHandbook(Number(b.dataset.idx));
+  }
+
+  // 小U 說一句話的區塊（讀取中／沒有設定／出錯）
+  function xiaouBlockHtml(text, opts) {
+    opts = opts || {};
+    const role = opts.error ? ' role="alert"' : opts.typing ? ' role="status"' : "";
+    return '<div class="card pt-card pt-xiaou-block' + (opts.error ? " is-error" : "") + '"' + role + ">" +
+      '<div class="pt-msg pt-msg-bot">' +
+        botMsgHtml('<div class="pt-bubble' + (opts.typing ? " pt-bubble-typing" : "") + '">' + (opts.typing ? DOTS : "") + "<span>" + esc(text) + "</span></div>") +
+      "</div>" +
+      (opts.retry ? '<button type="button" class="pt-btn pt-btn-ghost pt-xiaou-retry" data-act="ov-retry">重試</button>' : "") +
+    "</div>";
+  }
+
+  function overviewHtml(ov) {
+    if (ov.status === "notConfigured") {
+      return xiaouBlockHtml(ov.message || "手冊還沒設定好，我暫時沒辦法整理重點。請管理員在總表「知識庫設定」填好手冊連結。");
+    }
+    if (ov.status === "unavailable") {
+      return xiaouBlockHtml(ov.message || "我現在沒辦法整理重點，等一下再試試看。", { retry: true });
+    }
+    return heroHtml(ov) + overviewSectionsHtml(ov.sections);
+  }
+
+  function heroHtml(ov) {
+    const i = ov.intro;
+    return '<section class="pt-hero" aria-labelledby="ptHeroName">' +
+      '<h2 class="pt-hero-name" id="ptHeroName">' + esc(i.name || "Skills for U") + "</h2>" +
+      (i.tagline ? '<p class="pt-hero-tagline">' + esc(i.tagline) + "</p>" : "") +
+      (i.summary ? '<div class="pt-hero-summary">' + formatAnswer(i.summary) + "</div>" : "") +
+      '<p class="pt-hero-meta">' + avatarHtml("sm") +
+        "<span>小U 從兩本手冊整理，內容以手冊為準" +
+        (ov.updatedAt ? '<span class="pt-hero-time">・更新於 ' + esc(ov.updatedAt) + "</span>" : "") + "</span></p>" +
+    "</section>";
+  }
+
+  function overviewSectionsHtml(sections) {
+    if (!sections.length) return "";
+    return '<section class="pt-section" aria-labelledby="ptOvTitle"><h2 class="pt-h2" id="ptOvTitle">手冊重點</h2>' +
+      '<div class="pt-ov-grid">' + sections.map((s) =>
+        '<article class="card pt-card pt-ov-card">' +
+          '<h3 class="pt-h3">' + esc(s.title || "重點") + "</h3>" +
+          (s.handbook ? '<p class="pt-ov-from">出自〈' + esc(s.handbook) + "〉</p>" : "") +
+          (s.points.length
+            ? '<ul class="pt-points">' + s.points.map((p) =>
+                '<li class="pt-point">' +
+                  (p.title ? '<strong class="pt-point-title">' + esc(p.title) + "</strong>" : "") +
+                  (p.text ? '<div class="pt-point-text">' + formatAnswer(p.text) + "</div>" : "") +
+                  (p.location ? '<p class="pt-point-loc">' + esc(p.location) + "</p>" : "") +
+                "</li>").join("") + "</ul>"
+            : "") +
+        "</article>").join("") +
+      "</div></section>";
   }
 
   function handbooksHtml(list) {
@@ -640,7 +848,7 @@
       inner = '<div class="pt-hb-list">' + list.map((h, i) => {
         const actions = [];
         if (h.openUrl) {
-          actions.push('<a class="pt-btn pt-btn-ghost" href="' + esc(h.openUrl) + '" target="_blank" rel="noopener">在雲端硬碟開啟' +
+          actions.push('<a class="pt-btn pt-btn-ghost" href="' + esc(h.openUrl) + '" target="_blank" rel="noopener">打開手冊' +
             '<span class="pt-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟）</span></a>');
         }
         if (h.previewUrl) {
@@ -657,7 +865,8 @@
         "</article>";
       }).join("") + "</div>";
     }
-    return '<section class="pt-section" aria-labelledby="ptAboutHb"><h2 class="pt-h2" id="ptAboutHb">組織手冊</h2>' + inner + "</section>";
+    const heading = list.length === 2 ? "兩本手冊" : "組織手冊";
+    return '<section class="pt-section" aria-labelledby="ptAboutHb"><h2 class="pt-h2" id="ptAboutHb">' + heading + "</h2>" + inner + "</section>";
   }
 
   // 一次只開一個預覽：收掉其他的（連 iframe 一起拿掉，免得背景還在載入）
@@ -681,7 +890,7 @@
     const btn = A.el.querySelector('[data-act="toggle-hb"][data-idx="' + idx + '"]');
     if (!h || !h.previewUrl || !view || !btn) { A.openIdx = -1; return; }
     view.innerHTML = '<iframe class="pt-hb-frame" src="' + esc(h.previewUrl) + '" title="' + esc(h.title) + '（預覽）" allow="fullscreen"></iframe>' +
-      '<p class="pt-hb-note">看不到內容的話，請確認這個瀏覽器已經用組織帳號登入 Google，或改按「在雲端硬碟開啟」。</p>';
+      '<p class="pt-hb-note">看不到內容的話，請確認這個瀏覽器已經用組織帳號登入 Google，或改按「打開手冊」。</p>';
     view.hidden = false;
     btn.setAttribute("aria-expanded", "true");
     btn.textContent = "收起";
@@ -982,8 +1191,7 @@
       "</dl>" +
       (rowCount
         ? '<button type="button" class="pt-expand" data-act="expand" data-ci="' + ci + '" data-pi="' + pi + '" aria-expanded="' + open + '" aria-controls="' + panelId + '">' +
-            "<span>預算項目明細（" + rowCount + " 項）</span>" +
-            '<svg class="pt-chev" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M3 5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+            "<span>預算項目明細（" + rowCount + " 項）</span>" + CHEVRON +
           "</button>" +
           '<div class="pt-items" id="' + panelId + '"' + (open ? "" : " hidden") + ">" + itemsTableHtml(p) + "</div>"
         : '<p class="pt-small pt-muted pt-noitems">還沒有預算項目。</p>') +
