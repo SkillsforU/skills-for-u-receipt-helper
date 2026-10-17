@@ -57,6 +57,7 @@
   /* ---------------- 畫面狀態 ---------------- */
   const S = {
     token: 0,          // 每次換頁 +1；非同步回來時比對，舊畫面的回應不會蓋掉新畫面
+    epoch: 0,          // 每次登出 +1；登出前送出的請求回來時一律丟掉
     route: { page: "", section: "" },
     view: null,        // 目前畫面的重畫函式（狀態改變時呼叫）
     overview: null,
@@ -224,12 +225,14 @@
 
   /* ---------------- 後端 ---------------- */
   async function api(action, body) {
+    const ep = S.epoch;
     let res;
     try {
       res = await cloudPost(action, body || {});
     } catch (e) {
       throw new Error("連不上伺服器，請確認網路連線後再試一次。");
     }
+    if (ep !== S.epoch) throw new Error("已經登出，這個結果不再顯示。");
     if (!res || typeof res !== "object") throw new Error("伺服器沒有回應，請稍後再試一次。");
     if (!res.ok) {
       const err = new Error(res.authError ? "登入已逾期，請重新登入後再試一次。" : String(res.error || "處理失敗，請稍後再試一次。"));
@@ -440,15 +443,15 @@
     if (isReleaser() && ov.activeBatches.some((b) => b.status === "待放行" && !isOwn(b))) target = "release";
     else if (isAccountant()) target = "batches";
     replaceRoute(target);
-    return PAGES[target](S.route, token, true);
+    return PAGES[target](S.route, token, true, true); // 第 4 個參數：總覽剛抓過，不用再抓
   }
 
   /* ============================================================
      付款批次 ① 選批次
      ============================================================ */
-  async function pageBatches(route, token, isNav) {
+  async function pageBatches(route, token, isNav, haveOverview) {
     if (isNav) paintLoading();
-    await getOverview(true);
+    if (!haveOverview) await getOverview(true);
     if (token !== S.token) return;
     renderSubnav();
     S.view = paintBatches;
@@ -591,7 +594,8 @@
 
   async function pagePay(route, token, isNav) {
     if (isNav) paintLoading();
-    await loadDraft(route.date);
+    // 順便更新總覽：這一天如果已經有進行中的批次，第 2 步要提醒（那些單據不會出現在清單上）
+    await Promise.all([loadDraft(route.date), getOverview(false).catch(() => null)]);
     if (token !== S.token) return;
     S.view = (o) => paintPay(route.date, o);
     paintPay(route.date, { focusHeading: isNav });
@@ -669,7 +673,7 @@
         '<span class="fo-tc fo-tc-bank">' + (legacy
           ? '<span class="fo-legacy">舊格式，只寫了「' + esc(r.paymentDetail || "（空白）") + "」。帳號不完整，系統先幫你取消勾選。</span>"
           : esc(r.bankName || "") + '　<span class="fo-mono">' + esc(fmtBranch(r.branch)) + "</span>") + "</span>" +
-        '<span class="fo-tc fo-tc-acct fo-mono">' + (legacy ? "—" : groupDigits(r.account)) + "</span>" +
+        '<span class="fo-tc fo-tc-acct fo-mono' + (legacy ? " is-empty" : "") + '">' + (legacy ? "—" : groupDigits(r.account)) + "</span>" +
         '<span class="fo-tc fo-tc-amt fo-right fo-amt">' + money(r.amount) + "</span></label>";
     });
     return h + "</div></div></section>";
@@ -714,8 +718,11 @@
         "<p>原因：" + esc(endPunct(lr.returnReason || "（沒有寫原因）")) + "改好兆豐的檔案之後，再送出一次放行請求。</p>" +
         (heldN ? "<p>標了不放行的 " + heldN + " 筆先取消勾選了，旁邊有原因。</p>" : "") + "</section>";
     }
+    const running = S.overview ? S.overview.activeBatches.filter((b) => b.payDate === date) : [];
     h += '<section class="fo-card"><h1 class="fo-h1">' + esc(batchLabel(date, d.type)) + "：核對清單</h1>" +
-      '<p class="fo-lead fo-mb0">勾選這次要付的款項。沒勾的會留在清單上，下一批再出現。</p>' + (canAct ? "" : roleHint()) + "</section>";
+      '<p class="fo-lead fo-mb0">勾選這次要付的款項。沒勾的會留在清單上，下一批再出現。</p>' + (canAct ? "" : roleHint()) +
+      running.map((b) => '<p class="fo-callout fo-mt">這一天已經有一批「' + esc(b.status) + "」：" + esc(batchSumText(b)) + "。那幾筆不會出現在下面。" +
+        '<a href="#finance/ops/batch/' + encodeURIComponent(b.id) + '">打開那一批</a></p>').join("") + "</section>";
     if (d.type === "5號") {
       h += '<section class="fo-card fo-card-tight"><label class="fo-label-strong" for="foSalary">本月薪資總額（從 Swingvy 抄過來）</label>' +
         '<input class="fo-input" id="foSalary" data-act="salary" data-fk="salary" inputmode="numeric" autocomplete="off" placeholder="例如 150000" value="' + esc(d.salary) + '" aria-describedby="foSalaryHint">' +
@@ -785,7 +792,7 @@
     const not = [];
     if (o.type === "5號" || o.salary) not.push("薪資用 Swingvy 的薪轉檔");
     if (g.bill.length) not.push("繳費單 " + g.bill.length + " 筆用網銀的繳費功能另外繳");
-    let h = '<div class="fo-box"><p class="fo-kicker">先匯入兆豐</p><h2 class="fo-h3 fo-mt0">兆豐匯入檔（Excel）</h2>';
+    let h = '<div class="fo-box"><p class="fo-kicker">' + (o.locked ? "已經匯入兆豐（需要的話可以再下載）" : "先匯入兆豐") + '</p><h2 class="fo-h3 fo-mt0">兆豐匯入檔（Excel）</h2>';
     h += lines.length ? '<ul class="fo-ul">' + lines.map((l) => "<li>" + esc(l) + "</li>").join("") + "</ul>" : '<p class="fo-muted fo-mb">這一批沒有要整批匯款的款項。</p>';
     if (legacyN) h += '<p class="fo-note fo-note-amber fo-mb">其中 ' + legacyN + " 筆是舊格式，檔案裡沒有帳號，要在兆豐自己補上。</p>";
     if (not.length) h += '<p class="fo-note fo-note-grey fo-mb">不在檔案裡：' + esc(not.join("；")) + "。</p>";
@@ -1266,8 +1273,12 @@
   }
   function blank(v) { return v === "" || v == null ? null : v; }
 
+  function stillSignedIn(ep) { if (ep !== S.epoch) throw new Error("已經登出。"); }
+
   async function buildBankFile(o) {
+    const ep = S.epoch;
     const X = await loadLib(XLSX_URL, "XLSX");
+    stillSignedIn(ep);
     const g = groupOf(o.records);
     const ppl = people(g.reimb);
     const wb = X.utils.book_new();
@@ -1312,7 +1323,9 @@
   }
 
   async function buildImportFile(paidDate, rows, partIndex, partCount) {
+    const ep = S.epoch;
     const X = await loadLib(XLSX_URL, "XLSX");
+    stillSignedIn(ep);
     const aoa = [IMPORT_HEADER.slice()].concat(rows.map((x) => importRow(x.r, paidDate)));
     const ws = X.utils.aoa_to_sheet(aoa);
     textCols(X, ws, [0, 1, 5, 8], aoa.length);
@@ -1403,7 +1416,8 @@
     const b = entry.batch;
     const rows = importRows(paidRecords(b, entry.records)).filter((x) => x.r.hasFile);
     if (!rows.length) return;
-    const showing = () => S.route.page === "batch" && S.route.id === id;
+    const ep = S.epoch;
+    const showing = () => ep === S.epoch && S.route.page === "batch" && S.route.id === id;
     ui.zip = { state: "working", done: 1, total: rows.length };
     ui.files = {};
     ui.zipName = "";
@@ -1416,6 +1430,7 @@
       let okCount = 0;
       let bytesTotal = 0;
       for (let i = 0; i < rows.length; i++) {
+        if (ep !== S.epoch) return; // 已經登出：不再抓、也不下載
         const x = rows[i];
         ui.zip.done = i + 1;
         updateZipProgress(id);
@@ -1436,6 +1451,7 @@
       updateZipProgress(id);
       // 照片、PDF 本身已經壓縮過，用「只打包不壓縮」比較快
       const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+      if (ep !== S.epoch) return;
       const zipName = ymd(b.paidDate || b.payDate) + "_付款批次憑證.zip";
       saveBlob(blob, zipName);
       ui.zip = { state: "done" };
@@ -1453,9 +1469,9 @@
   /* ============================================================
      待放行（放行人）
      ============================================================ */
-  async function pageRelease(route, token, isNav) {
+  async function pageRelease(route, token, isNav, haveOverview) {
     if (isNav) paintLoading();
-    const ov = await getOverview(true);
+    const ov = haveOverview && S.overview ? S.overview : await getOverview(true);
     if (token !== S.token) return;
     renderSubnav();
     const pending = ov.activeBatches.filter((b) => b.status === "待放行");
@@ -1546,10 +1562,11 @@
     const heldN = (g) => st.heldRecs.filter((r) => r.group === g).length;
     const note = (g) => (heldN(g) ? "，不放行 " + heldN(g) + " 筆" : "");
     const rr = relOf("reimb");
+    const none = (g) => !st.recs.some((r) => r.group === g);
     const tiles = [
-      { label: "薪資＋代墊款", amount: st.salary + sum(rr), sub: "薪資 " + fmtNum(st.salary) + "＋代墊款 " + fmtNum(sum(rr)) + "（" + people(rr).length + " 人 " + rr.length + " 筆" + note("reimb") + "）" },
-      { label: "廠商匯款", amount: sum(relOf("transfer")), sub: relOf("transfer").length + " 筆" + note("transfer") },
-      { label: "網銀代繳", amount: sum(relOf("bill")), sub: relOf("bill").length + " 筆" + note("bill") },
+      { label: "薪資＋代墊款", amount: st.salary + sum(rr), sub: !st.salary && none("reimb") ? "這一批沒有薪資和代墊款" : "薪資 " + fmtNum(st.salary) + "＋代墊款 " + fmtNum(sum(rr)) + "（" + people(rr).length + " 人 " + rr.length + " 筆" + note("reimb") + "）" },
+      { label: "廠商匯款", amount: sum(relOf("transfer")), sub: none("transfer") ? "這一批沒有廠商匯款" : relOf("transfer").length + " 筆" + note("transfer") },
+      { label: "網銀代繳", amount: sum(relOf("bill")), sub: none("bill") ? "這一批沒有繳費單" : relOf("bill").length + " 筆" + note("bill") },
       { label: "本次放行合計", amount: st.salary + sum(st.rel), sub: "兆豐網銀放行的總額要和這個一樣", main: true },
     ];
     return tiles.map((t) => '<div class="fo-tile' + (t.main ? " is-main" : "") + '"><div class="fo-tile-label">' + esc(t.label) + '</div><div class="fo-tile-amt">' + money(t.amount) +
@@ -1642,7 +1659,7 @@
     h += '<section class="fo-tiles" id="foTiles" aria-label="本批合計">' + tilesHtml(st) + "</section>";
     h += relGroupsHtml(st);
     const dis = st.can && !S.busy ? "" : " disabled";
-    h += '<section class="fo-sumbar fo-relbar" aria-label="本次放行"><div id="foRelInfo" aria-live="polite">' + relInfoHtml(st) + "</div>" +
+    h += '<section class="fo-sumbar fo-relbar" aria-label="本次放行"><div id="foRelInfo">' + relInfoHtml(st) + "</div>" +
       '<label class="fo-check-line"><input type="checkbox" class="fo-checkbox" data-act="relConfirm" data-fk="relConfirm"' + (st.R.confirmed ? " checked" : "") + dis + ">" +
       "<span>我已經在兆豐網銀放行上面這些款項" + (st.heldRecs.length ? "（標了不放行的 " + st.heldRecs.length + " 筆，兆豐那邊也沒有放行）" : "") + "</span></label>" +
       errBox("release") +
@@ -1664,14 +1681,19 @@
   function patchRelease(id) {
     if (!S.rel || S.rel.batchId !== id || !S.batches[id]) return;
     const st = relState(id);
-    const tiles = document.getElementById("foTiles");
-    if (tiles) tiles.innerHTML = tilesHtml(st);
-    const info = document.getElementById("foRelInfo");
-    if (info) info.innerHTML = relInfoHtml(st);
+    const swap = (elId, html) => { const el = document.getElementById(elId); if (el && el.innerHTML !== html) el.innerHTML = html; };
+    swap("foTiles", tilesHtml(st));
+    swap("foRelInfo", relInfoHtml(st));
     const rb = document.getElementById("foReleaseBtn");
     if (rb) rb.disabled = !st.canRelease;
     const tb = document.getElementById("foReturnBtn");
     if (tb) tb.disabled = !st.canReturn;
+  }
+
+  function announceRelease() {
+    if (!S.rel || !S.batches[S.rel.batchId]) return;
+    const st = relState(S.rel.batchId);
+    announce("本次放行 " + st.rel.length + " 筆，" + money(st.salary + sum(st.rel)) + (st.heldRecs.length ? "；不放行 " + st.heldRecs.length + " 筆" : ""));
   }
 
   function cleanHeld() {
@@ -1828,12 +1850,20 @@
      事件（全部掛在 #opsRoot 上）
      ============================================================ */
   function fire(p) { if (p && typeof p.catch === "function") p.catch(reportError); }
+  // 預期之外的錯誤（程式出錯）：畫面重畫後，在最上面加一行說明，不讓頁面停在半套的狀態
   function reportError(e) {
     try { console.error("[財務作業]", e); } catch (x) { /* ignore */ }
+    const msg = (e && e.message) || "發生錯誤";
     S.busy = "";
-    S.err = { where: "other", text: (e && e.message) || "發生錯誤，請再試一次。" };
-    toast("發生錯誤：" + S.err.text);
     try { repaint(); } catch (x) { /* ignore */ }
+    const v = viewEl();
+    if (v) {
+      const p = document.createElement("p");
+      p.className = "fo-alert";
+      p.setAttribute("role", "alert");
+      p.textContent = "發生錯誤：" + msg + "。請重新整理頁面再試一次。";
+      v.insertBefore(p, v.firstChild);
+    }
   }
 
   function onClick(e) {
@@ -1876,8 +1906,8 @@
         case "dlImport": fire(actDownloadImport(+el.getAttribute("data-part") || 0)); break;
         case "dlZip": fire(actDownloadZip()); break;
         case "complete": fire(actComplete()); break;
-        case "relOn": if (S.rel && has(S.rel.held, id)) { delete S.rel.held[id]; repaint(); } break;
-        case "relOff": if (S.rel && !has(S.rel.held, id)) { S.rel.held[id] = ""; repaint(); } break;
+        case "relOn": if (S.rel && has(S.rel.held, id)) { delete S.rel.held[id]; repaint(); announceRelease(); } break;
+        case "relOff": if (S.rel && !has(S.rel.held, id)) { S.rel.held[id] = ""; repaint(); announceRelease(); } break;
         case "relChip": if (S.rel) { const c = HOLD_CHIPS[+el.getAttribute("data-chip")]; if (c) { S.rel.held[id] = c.text; repaint(); } } break;
         case "returnOpen": if (S.rel) { S.rel.returnOpen = !S.rel.returnOpen; S.err = null; repaint(S.rel.returnOpen ? { focus: "returnReason" } : undefined); } break;
         case "returnCancel": if (S.rel) { S.rel.returnOpen = false; repaint({ focus: "act:returnOpen" }); } break;
@@ -1910,6 +1940,7 @@
         const row = el.closest("[data-row]");
         if (row) row.classList.toggle("is-off", !el.checked);
         patchPay(S.route.date);
+        announce("本批要付 " + paySumParts(d).big);
       } else if (act === "bankChecked") {
         const d = S.drafts[S.route.date];
         if (d) { d.bankChecked = el.checked; repaint(); }
@@ -1952,8 +1983,7 @@
         if (!d) return;
         const clean = String(el.value || "").replace(/[^0-9]/g, "");
         if (clean !== el.value) el.value = clean;
-        d.salary = clean;
-        d.bankChecked = false;
+        d.salary = clean; // 薪資用 Swingvy 的薪轉檔，不在兆豐匯入檔裡，所以不用取消「已經在兆豐匯入」
         patchPay(S.route.date);
       } else if (act === "relReason") {
         if (!S.rel) return;
@@ -1986,5 +2016,20 @@
     if (e.target && e.target.id === "foRecent") S.recentOpen = e.target.open;
   }
 
-  window.FinanceOps = { show };
+  // 登出時 app.js 會呼叫：同一台電腦換人登入，不能看到上一個人的財務資料
+  function reset() {
+    try {
+      S.epoch++;
+      S.token++;
+      Object.assign(S, {
+        route: { page: "", section: "" }, view: null, overview: null, overviewAt: 0,
+        drafts: {}, batches: {}, ui: {}, confirmed: {}, rel: null, relResult: null,
+        comp: { records: null, filter: "todo", open: {}, notes: {}, pinned: {}, busy: {}, err: {} },
+        busy: "", err: null, retry: null, lastFk: null, recentOpen: false, otherDate: "",
+      });
+      ["foSubnav", "foLive", "foView"].forEach((id) => { const el = document.getElementById(id); if (el) el.innerHTML = ""; });
+    } catch (e) { /* 登出不能因為這裡失敗 */ }
+  }
+
+  window.FinanceOps = { show, reset };
 })();

@@ -186,12 +186,15 @@
 }
 .fo-linkbtn:disabled { color: var(--fo-muted); cursor: not-allowed; }
 .fo-link {
+  position: relative;
   display: inline-flex; align-items: center;
-  min-height: 44px; padding: 0 2px;
+  min-height: 24px; padding: 0 2px;
   color: var(--fo-link) !important;
   font-size: 13.5px; font-weight: 800;
   text-decoration: underline;
 }
+/* 字小、排在列裡的連結：點擊範圍往上下撐到 44px，版面不變高 */
+.fo-link::after { content: ""; position: absolute; left: -4px; right: -4px; top: 50%; height: 44px; transform: translateY(-50%); }
 
 /* ---------- 標籤、提醒 ---------- */
 .fo-chip {
@@ -353,7 +356,6 @@
 .fo-row-title { font-weight: 700; }
 .fo-row-sub { display: block; font-size: 14px; margin-top: 2px; }
 .fo-row-meta { display: block; font-size: 13px; color: var(--fo-muted); }
-.fo-row-meta .fo-link { min-height: 32px; }
 .fo-rnote {
   display: block;
   margin-top: 6px;
@@ -482,7 +484,6 @@
 .fo-rrow-title { font-size: 16px; font-weight: 800; overflow-wrap: anywhere; }
 .fo-rrow-sub { font-size: 13px; color: var(--fo-muted); margin-top: 2px; }
 .fo-rrow-bank { font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
-.fo-rrow-tags .fo-link, .fo-rrow .fo-tags .fo-link { min-height: 36px; }
 .fo-rrow-amt { font-size: 17px; font-weight: 900; white-space: nowrap; }
 .fo-rrow.is-held .fo-rrow-title, .fo-rrow.is-held .fo-rrow-amt { color: var(--fo-muted); }
 .fo-rrow.is-held .fo-rrow-amt { text-decoration: line-through; }
@@ -603,6 +604,7 @@
   .fo-trow > .fo-tc-amt { grid-column: 3; grid-row: 1; }
   .fo-trow > .fo-tc-bank { grid-column: 2 / 4; grid-row: 2; font-size: 14px; }
   .fo-trow > .fo-tc-acct { grid-column: 2 / 4; grid-row: 3; font-size: 14px; }
+  .fo-trow > .fo-tc-acct.is-empty { display: none; }
 }
 @media (max-width: 600px) {
   .fo-card, .fo-card-tight { padding: 20px 16px; }
@@ -611,7 +613,15 @@
   .fo-h1 { font-size: 22px; }
   .fo-h2 { font-size: 18px; }
   .fo-sumbar-big { font-size: 21px; }
-  .fo-tile-amt { font-size: 21px; }
+  /* 待放行的合計方塊：手機上兩個一排，本次放行合計佔一整排 */
+  .fo-tiles { gap: 10px; }
+  .fo-tile { flex: 1 1 140px; padding: 12px 14px; }
+  .fo-tile.is-main { flex-basis: 100%; }
+  .fo-tile-amt { font-size: 19px; }
+  .fo-tile-sub { font-size: 12.5px; }
+  /* 繳費單：期限、金額換到第二行時，跟上面的文字對齊 */
+  .fo-bill-row .fo-grow { flex-basis: calc(100% - 32px); }
+  .fo-bill-row > .fo-chip { margin-left: 32px; }
   .fo-sumbar-actions, .fo-sumbar-actions .fo-btn { width: 100%; }
   .fo-sumbar-hint { text-align: left; }
   .fo-actions .fo-btn { flex: 1 1 auto; }
