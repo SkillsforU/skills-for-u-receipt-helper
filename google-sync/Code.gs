@@ -623,7 +623,7 @@ function doPost(e) {
       return jsonOut_(getAllStatuses_());
     }
     // 團隊後台的三個頁面（首頁問手冊、認識組織、計畫與預算）
-    if (body.action === 'askHandbook') return jsonOut_(askHandbook_(body));
+    if (body.action === 'askHandbook') return jsonOut_(askHandbook_(body, auth));
     if (body.action === 'getAbout') return jsonOut_(getAbout_());
     if (body.action === 'getAboutOverview') return jsonOut_(getAboutOverview_());
     if (body.action === 'getBudgetOverview') return jsonOut_(getBudgetOverview_(auth));
@@ -1221,7 +1221,8 @@ function setupProjectReviewSheets() {
     .concat(ensureSettingsHeaders_(getOrCreateSheet_(PEOPLE_SHEET_NAME, PEOPLE_HEADERS, SEED_PEOPLE), PEOPLE_HEADERS))
     .concat(ensureSettingsHeaders_(getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []), BUDGET_HEADERS))
     .concat(ensureSettingsHeaders_(glSheet, GLCODE_HEADERS))
-    .concat(ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS));
+    .concat(ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS))
+    .concat(ensureSettingsHeaders_(getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []), NEWS_HEADERS));
   getBatchSheet_();
 
   const created = [];
@@ -2801,6 +2802,9 @@ const KNOWLEDGE_PURPOSE_CHAT = '對話';
 const KNOWLEDGE_PURPOSE_ABOUT = '認識組織';
 const KNOWLEDGE_PURPOSE_BOTH = '兩者';
 const KNOWLEDGE_TEXT_LIMIT = 300000; // 一份手冊最多讀這麼多字，避免太大的檔案拖慢每一次回答
+// 「媒體報導」分頁：認識組織頁的「最新消息」（受訪、評論、報導），由管理員在總表維護，最新的排最前面
+const NEWS_SHEET_NAME = '媒體報導';
+const NEWS_HEADERS = ['日期', '類型（受訪／評論／報導）', '標題', '媒體', '連結', '摘要'];
 const QA_LOG_SHEET_NAME = '小U問答紀錄';
 const QA_LOG_HEADERS = ['時間', '問題', '回答依據']; // 手冊／一般知識／答不出來；不記是誰問的
 
@@ -2961,44 +2965,73 @@ function callGemini_(payload) {
   return { ok: true, text: text };
 }
 
-// 首頁的「小U」：Skills for U 的新手導師，像組織內部的客服，同仁可以問任何事。
-// 組織的事只照手冊和〈團隊後台使用說明〉回答（找不到就說沒寫、建議問誰）；一般工作問題可以用一般知識回答，
-// 但會標成 kind: 'general'，網頁上會註明「一般建議，不是組織規定」。
+// 首頁的「小U」：Skills for U 的新手導師，像組織內部的客服，同仁可以問任何事，也可以跟她聊天。
+// 組織的事只照手冊、〈團隊後台使用說明〉、〈團隊與審核〉、〈組織最新消息〉回答（找不到就說沒寫、建議問誰）；
+// 一般工作問題可以用一般知識回答，標成 kind: 'general'，網頁上會註明「這只是小U的想法，不是組織規定」；
+// 打招呼、道謝、閒聊、問小U自己標成 kind: 'chat'，網頁上不加註記。
 const XIAOU_PERSONA = [
-  '你是「小U」，Skills for U（社團法人國際技能發展協會）的新手導師，在團隊後台陪同仁解決問題，像組織內部的客服。',
-  '你的形象：技職出身的年輕女生，熱心、關心社會議題、以臺灣為主體思考。口吻親切，像可靠的學姊，但說話簡潔，不撒嬌、不用表情符號。',
+  '你是「小U」，Skills for U（社團法人國際技能發展協會）的新手導師，在團隊後台陪同仁解決問題，像組織內部的客服，也像可以隨口聊兩句的同事。',
+  '你的形象：技職出身的年輕女生，熱心、關心社會議題、以臺灣為主體思考。口吻親切自然，像可靠的學姊，說話簡潔，不撒嬌、不用表情符號。',
+  '你的設定：MBTI 是 ESFJ（執政官型），天秤座。熱心又細心，喜歡把事情安排好，最見不得同事卡關。有人問起你自己，就照這個設定回答。',
+  '對話方式：',
+  '• 像真人聊天一樣自然回應：打招呼就打招呼回去，道謝就回應，閒聊就陪聊兩句。不清楚對方想做什麼時，反問一句。',
+  '• 對話紀錄裡有前文時，接著前文理解（例如上一題問代墊款，接著問「那廠商呢？」就是在問廠商的款項怎麼付）。',
+  '• 回答長度跟著問題走：閒聊一兩句就好，問流程再條列步驟。',
   '回答規則：',
-  '1. 組織的事（規定、流程、福利、制度、文化、人事、財務、組織資訊）只能根據〈手冊〉和〈團隊後台使用說明〉回答，並附上出處。找不到就直接說手冊沒有寫到，建議可以問誰（例如直屬主管、會計，或執行長偉翔），不要自己推測。',
-  '2. 一般問題（工作技巧、文書處理、溝通、技職教育常識等）可以用一般知識回答，但不能說成是組織規定。',
-  '3. 不確定就說不確定；不要編造人名、金額、日期、規定或網址。',
-  '4. 用繁體中文（台灣用語）。先講結論，需要步驟時用「• 」開頭條列。不要用 Markdown 標題或表格。',
-  '只輸出 JSON：{"answer": "回答內容", "kind": "handbook" 或 "general" 或 "none", "sources": [{"title": "手冊名稱", "location": "第幾頁或哪一段"}]}',
-  'kind：根據手冊或使用說明回答填 "handbook"；用一般知識回答填 "general"（sources 留空）；答不出來填 "none"。',
+  '1. 組織的事（規定、流程、福利、制度、文化、人事、財務、組織資訊）只能根據〈手冊〉、〈團隊後台使用說明〉、〈團隊與審核〉和〈組織最新消息〉回答，並附上出處。找不到就直接說沒有寫到，建議可以問誰（例如直屬主管、會計，或執行長偉翔），不要自己推測。',
+  '2. 問到組織裡的人（例如老闆、同事是怎樣的人）：只說資料裡寫到的事實（職稱、負責什麼、最近的受訪或評論），不評論個性、不八卦、不替別人下定論；可以建議對方直接找本人聊聊。',
+  '3. 一般問題（工作技巧、文書處理、溝通、技職教育常識等）可以用一般知識回答，但不能說成是組織規定。',
+  '4. 不確定就說不確定；不要編造人名、金額、日期、規定或網址。不要在回答裡寫出任何密碼（例如 Wi-Fi、門禁、帳號密碼），請對方直接問後勤。',
+  '5. 用繁體中文（台灣用語）。先講結論，需要步驟時用「• 」開頭條列。不要用 Markdown 標題或表格。',
+  '只輸出 JSON：{"answer": "回答內容", "kind": "handbook" 或 "general" 或 "chat" 或 "none", "sources": [{"title": "資料名稱", "location": "第幾頁或哪一段"}]}',
+  'kind：根據上面這些資料回答填 "handbook"；用一般知識回答填 "general"（sources 留空）；打招呼、道謝、閒聊、聊你自己填 "chat"（sources 留空）；組織的事但資料裡找不到填 "none"。',
 ].join('\n');
+
+const XIAOU_KINDS = ['handbook', 'general', 'chat', 'none'];
+const XIAOU_HISTORY_MAX = 10;   // 帶最近 10 則對話，讓追問接得上前文
 
 // 系統內建的使用說明（跟著程式一起更新，不用放進知識庫設定）。只寫系統真的這樣運作的事。
 const SYSTEM_GUIDE_TITLE = '團隊後台使用說明';
 const SYSTEM_GUIDE_TEXT = [
-  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了工作手冊和組織文化手冊；人事中心連到 Swingvy；財務底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
+  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了組織手冊和組織文化手冊的重點，還有組織最新的受訪、評論；人事中心連到 Swingvy；財務底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
   '（上傳單據）到「財務 › 上傳單據」，選中心、專案和單據類型，拍照或選檔案（JPG、PNG、PDF，PDF 最大 5 MB）。選好專案就會自動辨識日期、金額、店家和發票號碼，核對後送出。送出後可以按「上傳下一張，沿用」把專案、預算項目和付款方式帶到下一張。',
   '（這筆錢要怎麼付）五選一：我先墊錢了（代墊款，主管核准後每月 5 號跟薪資一起匯）；請組織直接匯款給廠商或外部個人（要填戶名、7 碼分行代碼、帳號，一般在每月 20 號付；每月固定支出可以選在 5 號付）；繳費單（稅金、健保費等，會計用網銀代繳，要填繳費期限）；已經用組織信用卡或零用金付掉了；需要組織刷卡（線上刷卡連結或紙本刷卡）。',
   '（審核與付款時間）各中心主管每月 10–13 號審核。趕時間的單據可以標「緊急」並填希望付款的日期，送出時會馬上通知主管。送出畫面會顯示預計撥款日，實際以財務作業為準。',
   '（看進度）到「財務 › 上傳紀錄」看每一張單據的審核和付款進度，收款帳號只顯示末 4 碼。被退回會在 Slack 收到通知，照退回原因補好再重新上傳。放行時沒有付款的，會寫出原因並排進下一批。',
   '（紙本單據）紙本正本要交給後勤，會計核對紙本和電子檔相符後，才算單據完備。紙本有問題時，上傳人會在 Slack 收到補件通知。',
   '（找誰）付款進度的問題先看「上傳紀錄」，還有疑問找會計；系統用不順或出現錯誤訊息，截圖給執行長偉翔。',
+  '（組織的社群）Facebook：Skills for U https://www.facebook.com/skillsforu2018 ；OPEN 技職 https://www.facebook.com/open.skills.to.all ；臺灣技職教育年會 https://www.facebook.com/profile.php?id=61558222603288 。Instagram：OPEN 技職 https://www.instagram.com/openskillstoall/ 。Threads：OPEN 技職 https://www.threads.com/@openskillstoall 。',
+  '（常用工具）團隊後台的「常用工具」分頁會陸續放上同仁常用的小工具，例如名片掃描；還沒上線的會標「即將推出」。',
 ].join('\n');
 
-function askHandbook_(body) {
+function askHandbook_(body, auth) {
   const question = String(body.question || '').trim().slice(0, 500);
   if (!question) return { ok: false, error: '請先輸入問題。' };
   const kb = loadKnowledgeTexts_();
   const notConfigured = !kb.docs.length;
   const docs = [{ title: SYSTEM_GUIDE_TITLE, text: SYSTEM_GUIDE_TEXT }].concat(kb.docs);
-  const extra = notConfigured
-    ? '\n目前還沒有接上任何組織手冊：組織規定的問題，請說你還沒拿到手冊、建議可以問誰；系統操作和一般問題照常回答。'
+  let extra = notConfigured
+    ? '\n目前還沒有接上任何組織手冊：組織規定的問題，請說你還沒拿到手冊、建議可以問誰；系統操作、閒聊和一般問題照常回答。'
     : '';
-  const knowledge = docs.map(function (d) { return '〈手冊：' + d.title + '〉\n' + d.text; }).join('\n\n');
-  const contents = (Array.isArray(body.history) ? body.history : []).slice(-6)
+  const askerName = String((auth && auth.name) || '').trim();
+  if (askerName) extra += '\n現在跟你說話的同仁是「' + askerName + '」，打招呼時可以叫對方的名字。';
+  const extraDocs = [];
+  try {
+    const team = teamKnowledgeText_();
+    if (team) extraDocs.push({ title: '團隊與審核', text: team });
+  } catch (e) {
+    console.warn('小U讀團隊名單失敗：' + e);
+  }
+  try {
+    const news = newsKnowledgeText_();
+    if (news) extraDocs.push({ title: '組織最新消息', text: news });
+  } catch (e) {
+    console.warn('小U讀媒體報導失敗：' + e);
+  }
+  const knowledge = docs.map(function (d) { return '〈手冊：' + d.title + '〉\n' + d.text; })
+    .concat(extraDocs.map(function (d) { return '〈' + d.title + '〉\n' + d.text; }))
+    .join('\n\n');
+  const contents = (Array.isArray(body.history) ? body.history : []).slice(-XIAOU_HISTORY_MAX)
     .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim(); })
     .map(function (m) {
       return { role: m.role === 'user' ? 'user' : 'model', parts: [{ text: String(m.text).slice(0, 2000) }] };
@@ -3017,7 +3050,7 @@ function askHandbook_(body) {
     parsed = { answer: result.text, kind: 'general', sources: [] };
   }
   let kind = String(parsed.kind || '');
-  if (['handbook', 'general', 'none'].indexOf(kind) === -1) kind = parsed.found === false ? 'none' : 'handbook';
+  if (XIAOU_KINDS.indexOf(kind) === -1) kind = parsed.found === false ? 'none' : 'handbook';
   const answer = String(parsed.answer || '').trim().slice(0, 4000) || '這題我答不出來，可以問直屬主管，或截圖給執行長偉翔。';
   const sources = kind === 'handbook' ? (Array.isArray(parsed.sources) ? parsed.sources : []).slice(0, 6).map(function (s) {
     return { title: String((s && s.title) || '').slice(0, 60), location: String((s && s.location) || '').slice(0, 60) };
@@ -3036,7 +3069,37 @@ function askHandbook_(body) {
 // 記下大家問了什麼、手冊有沒有答案（不記是誰問的），用來找出手冊還缺哪些內容
 function logQuestion_(question, kind) {
   const sheet = getOrCreateSheet_(QA_LOG_SHEET_NAME, QA_LOG_HEADERS, []);
-  sheet.appendRow([nowText_(), question, kind === 'handbook' ? '手冊' : kind === 'general' ? '一般知識' : '答不出來']);
+  const label = { handbook: '手冊', general: '一般知識', chat: '閒聊', none: '答不出來' }[kind] || '答不出來';
+  sheet.appendRow([nowText_(), question, label]);
+}
+
+// 給小U的〈團隊與審核〉：各中心的審核人和專案、誰是會計和放行人（跟「認識組織」頁看得到的一樣，不放 Email）
+function teamKnowledgeText_() {
+  const cfg = loadConfig_();
+  const lines = [];
+  activeCenters_().forEach(function (c) {
+    const approvers = c.approverEmails.map(approverDisplayName_).filter(function (n) { return n; });
+    const projects = activeProjects_().filter(function (p) { return p.center === c.name; }).map(function (p) { return p.name; });
+    lines.push('（' + c.name + '）單據審核人：' + (approvers.length ? approvers.join('、') : '還沒設定') +
+      (projects.length ? '；專案：' + projects.join('、') : ''));
+  });
+  const withRole = function (role) {
+    return cfg.people.filter(function (p) { return p.financeRoles.indexOf(role) !== -1; }).map(function (p) { return p.name; });
+  };
+  const accountants = withRole(FINANCE_ROLE_ACCOUNTANT);
+  const releasers = withRole(FINANCE_ROLE_RELEASER);
+  if (accountants.length) lines.push('會計：' + accountants.join('、') + '（付款批次、付款進度的問題可以找會計）');
+  if (releasers.length) lines.push('放行人：' + releasers.join('、') + '（在銀行端放行付款）');
+  const names = cfg.people.map(function (p) { return p.name; });
+  if (names.length) lines.push('團隊成員：' + names.join('、'));
+  return lines.join('\n');
+}
+
+// 給小U的〈組織最新消息〉：「媒體報導」分頁最新 10 則（受訪、評論、報導）
+function newsKnowledgeText_() {
+  return loadNews_().slice(0, 10).map(function (n) {
+    return [n.date, n.type, n.title, n.outlet, n.summary, n.url].filter(function (v) { return v; }).join('｜');
+  }).join('\n');
 }
 
 function getAbout_() {
@@ -3066,14 +3129,34 @@ function getAbout_() {
       }).map(function (c) { return c.name; }) : [],
     };
   });
-  return { ok: true, handbooks: handbooks, centers: centers, people: people };
+  return { ok: true, handbooks: handbooks, centers: centers, people: people, news: loadNews_() };
+}
+
+function loadNews_() {
+  const sheet = getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []);
+  const types = ['受訪', '評論', '報導'];
+  return readSheetRows_(sheet, NEWS_HEADERS.length).map(function (r) {
+    const type = String(r[1] || '').trim();
+    return {
+      date: formatDateOnly_(r[0]),
+      type: types.indexOf(type) !== -1 ? type : '報導',
+      title: String(r[2] || '').trim().slice(0, 120),
+      outlet: String(r[3] || '').trim().slice(0, 40),
+      url: String(r[4] || '').trim(),
+      summary: String(r[5] || '').trim().slice(0, 160),
+    };
+  }).filter(function (n) {
+    return n.title && /^https?:\/\//.test(n.url);
+  }).sort(function (a, b) {
+    return String(b.date).localeCompare(String(a.date));
+  }).slice(0, 20);
 }
 
 // 認識組織的內容：小U 從「知識庫設定」用途是「認識組織／兩者」的手冊整理出重點（Gemini），
 // 手冊沒改就用快取（6 小時）；手冊一改，檔案的修改時間變了，下次就會重新整理。
 const ABOUT_OVERVIEW_PROMPT = [
   '你是「小U」，Skills for U 的新手導師，要幫新同仁做「認識組織」頁面。根據下面的手冊，整理出這個頁面的內容。',
-  '規則：只能用手冊裡寫的內容，不要補充、不要推測；手冊沒寫的就不要放。用繁體中文（台灣用語），句子短、好讀。',
+  '規則：只能用手冊裡寫的內容，不要補充、不要推測；手冊沒寫的就不要放。不要放任何密碼、門禁或帳號資訊。用繁體中文（台灣用語），句子短、好讀。',
   'intro：name（組織全名，照手冊寫法）、tagline（一句話說明組織在做什麼，30 字內）、summary（2～3 句介紹，120 字內）。',
   'sections：4～7 個段落，依手冊實際內容決定，例如：我們是誰、使命與願景、核心價值、我們怎麼做事、組織架構與分工、工作須知、福利與制度。每個段落 2～6 個重點。',
   '每個重點：title（14 字內）、text（90 字內）、location（出處：第幾頁或哪一段）。每個段落的 handbook 填這段主要出自哪一本手冊（照〈手冊：…〉的名稱）。',

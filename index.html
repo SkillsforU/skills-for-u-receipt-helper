@@ -14,8 +14,9 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <span class="brand-mark">S</span>
-      <span class="brand-name"><span class="brand-org">Skills for U</span><span class="brand-sep">｜</span>團隊後台</span>
+      <img class="brand-logo" src="logo-white.png" alt="Skills for U" width="489" height="112">
+      <span class="brand-divider" aria-hidden="true"></span>
+      <span class="brand-name">團隊後台</span>
       <span class="env-badge" id="envBadge" hidden title="這是新版介面的預覽網址，資料跟正式網址是同一份（正式總表）">新版預覽</span>
     </div>
     <!-- 上方主分頁：網址的 # 決定顯示哪一頁（見 app.js 的 route）。人事中心直接連到 Swingvy（另開分頁）。 -->
@@ -25,6 +26,7 @@
       <a class="tab-btn" href="https://secure.swingvy.com" target="_blank" rel="noopener">人事中心<span class="tab-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟 Swingvy）</span></a>
       <a class="tab-btn" href="#finance" data-route="finance">財務</a>
       <a class="tab-btn" href="#budget" data-route="budget" id="budgetTab" hidden>計畫與預算</a>
+      <a class="tab-btn" href="#tools" data-route="tools">常用工具</a>
     </nav>
     <div class="account-chip" id="accountChip" hidden>
       <span class="account-name" id="accountName"></span>
@@ -48,6 +50,11 @@
   <!-- ============ 計畫與預算（portal.js 畫在 #budgetRoot；只開放給主管和財務）============ -->
   <section class="view" id="view-budget" hidden>
     <div id="budgetRoot"></div>
+  </section>
+
+  <!-- ============ 常用工具（portal.js 畫在 #toolsRoot；所有同仁都看得到，工具陸續上線）============ -->
+  <section class="view" id="view-tools" hidden>
+    <div id="toolsRoot"></div>
   </section>
 
   <!-- ============ 財務：上傳單據／上傳紀錄／財務作業 ============ -->
@@ -382,9 +389,9 @@
 
 <!-- ============ 登入畫面（未登入前蓋住整個畫面）============ -->
 <div class="login-gate" id="loginGate">
+  <img class="login-logo" src="logo-white.png" alt="Skills for U" width="489" height="112">
   <div class="login-card">
-    <span class="brand-mark brand-mark-lg">S</span>
-    <h1 class="login-title">Skills for U｜團隊後台</h1>
+    <h1 class="login-title">團隊後台</h1>
     <p class="login-sub">請用組織 Google 帳號（@skillsforu.org）登入後使用</p>
     <div class="login-btn-wrap"><div id="googleSignInBtn"></div></div>
     <p class="login-hint" id="loginHint" hidden></p>

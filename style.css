@@ -47,16 +47,10 @@ body {
   gap: 12px;
 }
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand-mark {
-  width: 34px; height: 34px;
-  background: #fff;
-  color: var(--navy);
-  border-radius: 9px;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 18px;
-}
-.brand-name { font-weight: 700; font-size: 18px; letter-spacing: 0.02em; }
-.brand-sep { opacity: 0.6; margin: 0 2px; font-weight: 400; }
+/* 組織 LOGO（英文橫式反白，白色去背，放在深藍頂欄上） */
+.brand-logo { display: block; height: 28px; width: auto; flex: none; }
+.brand-divider { width: 1px; height: 20px; background: rgba(255,255,255,0.4); flex: none; }
+.brand-name { font-weight: 700; font-size: 18px; letter-spacing: 0.02em; white-space: nowrap; }
 
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .tab-btn {
@@ -608,26 +602,21 @@ body {
   z-index: 1000;
   background: linear-gradient(160deg, var(--navy) 0%, var(--navy-dark) 100%);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 24px;
   padding: 24px;
 }
+.login-logo { display: block; height: 44px; width: auto; max-width: 100%; }
 .login-card {
   background: var(--card-bg);
   border-radius: var(--radius-lg);
   box-shadow: 0 18px 50px rgba(0,0,0,0.28);
-  padding: 40px 32px;
+  padding: 36px 32px 40px;
   width: 100%;
   max-width: 400px;
   text-align: center;
-}
-.brand-mark-lg {
-  width: 56px; height: 56px;
-  font-size: 30px;
-  border-radius: 14px;
-  margin: 0 auto 18px;
-  background: var(--navy);
-  color: #fff;
 }
 .login-title { font-size: 22px; font-weight: 800; color: var(--navy); margin-bottom: 8px; }
 .login-sub { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin-bottom: 26px; }
@@ -868,8 +857,10 @@ body {
   .app-main { padding: 16px 16px 64px; }
 }
 @media (max-width: 560px) {
-  .brand-org, .brand-sep { display: none; }
-  .brand-name { font-size: 17px; }
+  .brand-logo { height: 22px; }
+  .brand-divider { height: 16px; }
+  .brand-name { font-size: 16px; }
+  .login-logo { height: 36px; }
   .env-badge { margin-left: 4px; }
   .card { padding: 22px 18px 26px; }
 }

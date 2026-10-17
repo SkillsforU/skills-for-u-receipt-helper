@@ -232,13 +232,14 @@ const views = {
   home: document.getElementById("view-home"),
   about: document.getElementById("view-about"),
   budget: document.getElementById("view-budget"),
+  tools: document.getElementById("view-tools"),
   finance: document.getElementById("view-finance"),
   // 財務底下的子頁（沿用舊名字 upload / mine，舊程式碼很多地方用 views.mine 判斷是否正在看上傳紀錄）
   upload: document.getElementById("view-upload"),
   mine: document.getElementById("view-mine"),
   ops: document.getElementById("view-ops"),
 };
-const TOP_VIEWS = ["home", "about", "budget", "finance"];
+const TOP_VIEWS = ["home", "about", "budget", "tools", "finance"];
 const FINANCE_SUBS = ["upload", "mine", "ops"];
 
 function hasFinanceRole() {
@@ -295,6 +296,7 @@ function route() {
   if (top === "home" && window.Portal) window.Portal.showHome();
   if (top === "about" && window.Portal) window.Portal.showAbout();
   if (top === "budget" && window.Portal) window.Portal.showBudget();
+  if (top === "tools" && window.Portal && window.Portal.showTools) window.Portal.showTools();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);

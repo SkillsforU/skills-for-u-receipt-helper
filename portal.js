@@ -1,10 +1,11 @@
 /* ============================================================
-   團隊後台：首頁（和小U聊天）／認識組織／計畫與預算
+   團隊後台：首頁（和小U聊天）／認識組織／計畫與預算／常用工具
    ------------------------------------------------------------
-   app.js 每次切到這三頁（登入後、每次網址 # 改變）都會呼叫對應的函式：
+   app.js 每次切到這幾頁（登入後、每次網址 # 改變）都會呼叫對應的函式：
      Portal.showHome()   → 畫在 #homeRoot（和新手導師小U聊天）
-     Portal.showAbout()  → 畫在 #aboutRoot（小U 從兩本手冊整理的重點、手冊、組織架構、團隊成員）
+     Portal.showAbout()  → 畫在 #aboutRoot（小U 整理的手冊重點、最新消息、手冊、組織架構、團隊成員）
      Portal.showBudget() → 畫在 #budgetRoot（只開放給主管和財務）
+     Portal.showTools()  → 畫在 #toolsRoot（常用工具，所有同仁都看得到）
      Portal.reset()      → 登出時呼叫：清掉這個分頁裡存的對話和快取，畫面也清空
    每個 show 函式都可以重複呼叫：第一次畫整頁，之後只更新該更新的地方（對話不會被清掉）。
    這裡不會往外丟錯誤，出錯一律顯示在頁面裡。
@@ -15,6 +16,46 @@
    ============================================================ */
 (function () {
   "use strict";
+
+  /* ============================================================
+     ★ 小U 的設定、常用工具清單：文案都集中在這裡，要改字改這裡就好 ★
+     ============================================================ */
+  const XIAOU = {
+    name: "小U",
+    title: "Skills for U 新手導師",
+    shortTitle: "新手導師",                                  // 手機版標題列用
+    tags: ["ESFJ 執政官", "天秤座", "技職出身"],
+    bio: "熱心又細心，關心社會議題，也很愛臺灣。兩本組織手冊我都讀過，有問題隨時問我。",
+    note: "回答以手冊為準，拿不準的事再問主管。",
+    // 對話的第一則；{name} 會換成登入者的名字（拿不到名字時就只說「嗨！」）
+    greeting: "嗨，{name}！我是小U，Skills for U 的新手導師。ESFJ 執政官、天秤座，最喜歡把事情安排得好好的，也最見不得同事卡關。組織的規定、流程、文化，工作上卡住的地方，或只是想聊聊天，都可以找我。",
+    faq: ["代墊款怎麼報帳？", "上傳單據後多久會撥款？", "請假要怎麼申請？", "我們的核心價值是什麼？", "新人第一週要做什麼？", "系統用不順可以找誰？"],
+    typing: "小U 正在想…",
+    typingSlow: "比平常久一點，再等我一下…",                                  // 等超過 20 秒才換成這句
+    generalNote: "這只是小U的想法，不是組織規定，結果需要靠自己智慧判斷喔～",   // kind: general 的回答底下
+    notConfiguredNote: "我還沒拿到手冊，組織規定的問題暫時答不了，請管理員在總表「知識庫設定」填好手冊連結。",
+    overviewLoading: "小U 正在讀手冊、整理重點，第一次大約要半分鐘…",
+    // 介紹卡上的「追蹤我們」：用文字標示平台，不放品牌 logo
+    social: [
+      { platform: "Facebook", name: "Skills for U", url: "https://www.facebook.com/skillsforu2018" },
+      { platform: "Facebook", name: "OPEN 技職", url: "https://www.facebook.com/open.skills.to.all" },
+      { platform: "Facebook", name: "臺灣技職教育年會", url: "https://www.facebook.com/profile.php?id=61558222603288" },
+      { platform: "Instagram", name: "OPEN 技職", url: "https://www.instagram.com/openskillstoall/" },
+      { platform: "Threads", name: "OPEN 技職", url: "https://www.threads.com/@openskillstoall" },
+    ],
+  };
+
+  // 常用工具：status "soon" = 即將推出（卡片不能點）。之後上線改成 "ready" 並填 url
+  // （"#finance/upload" 這種站內網址同一頁打開，https:// 開頭的另開分頁）。icon 見 TOOL_ICONS。
+  const TOOLS = [
+    { name: "名片掃描", desc: "拍名片，自動整理成聯絡人", icon: "card", status: "soon" },
+    { name: "會議記錄整理", desc: "上傳錄音或筆記，整理成會議記錄", icon: "notes", status: "soon" },
+    { name: "活動照片整理", desc: "依場次分好活動照片，挑出可以用的", icon: "photo", status: "soon" },
+    { name: "品牌素材", desc: "Logo、色票、簡報範本一次下載", icon: "brand", status: "soon" },
+    { name: "信件與公文範本", desc: "常用的邀請信、感謝信、公文範本", icon: "mail", status: "soon" },
+  ];
+  const TOOLS_INTRO = "同仁常用的小工具會陸續放在這裡。";
+  const TOOLS_NOTE = "想要什麼工具？直接跟小U說，或告訴偉翔。";
 
   /* ---------------- 共用小工具 ---------------- */
   function esc(s) {
@@ -153,7 +194,7 @@
   const S = { email: null, home: null, about: null, budget: null };
   function freshState() {
     S.home = { el: null, messages: [], waiting: false, gen: 0, composing: false, actionsSig: "" };
-    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1, ov: null, ovLoading: false, ovError: "" };
+    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1, newsOpen: false, ov: null, ovLoading: false, ovError: "" };
     S.budget = { el: null, data: null, renderedData: null, fetchedAt: 0, loading: false, error: "", center: "", expanded: new Set() };
   }
   freshState();
@@ -173,7 +214,7 @@
     if (cachedOv && typeof cachedOv === "object" && cachedOv.status === "ready") S.about.ov = normOverview(cachedOv);
   }
   function clearRoots() {
-    ["homeRoot", "aboutRoot", "budgetRoot"].forEach((id) => {
+    ["homeRoot", "aboutRoot", "budgetRoot", "toolsRoot"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = "";
     });
@@ -191,24 +232,21 @@
      首頁：和小U聊天
      ============================================================ */
   const CHAT_MAX = 20;          // 對話最多留 20 則（小U 的開場白不算）
-  const HISTORY_MAX = 6;        // 每次問的時候帶最近 6 則給後端
-  const FAQ = ["代墊款怎麼報帳？", "上傳單據後多久會撥款？", "請假要怎麼申請？", "我們的核心價值是什麼？", "新人第一週要做什麼？", "系統用不順可以找誰？"];
-  const TYPING_TEXT = "小U 正在查資料，大約 10 秒…";
-  const SLOW_TEXT = "比平常久一點，再等我一下…";
-  const GENERAL_NOTE = "一般建議，不是組織規定";
-  const NONE_LABEL = "這題我找不到答案";
-  const NOT_CONFIGURED_NOTE = "我還沒拿到手冊，組織規定的問題暫時答不了，請管理員在總表「知識庫設定」填好手冊連結。";
+  const HISTORY_MAX = 10;       // 每次問的時候帶最近 10 則給後端，追問才接得上前文
   let msgSeq = 0;
   function newId() { msgSeq += 1; return "m" + msgSeq + "x" + Date.now().toString(36); }
   function chatKey() { return "pt.chat.v1." + (S.email || "anon"); }
 
-  // 回答的種類：handbook（手冊或系統說明）、general（一般知識）、none（答不出來）。
-  // 舊版後端沒有 kind：找得到算 handbook，找不到算 none。
+  // 回答的種類：handbook（手冊或系統說明）、general（一般知識）、chat（打招呼、閒聊、問小U自己）、
+  // none（手冊沒寫，回答裡會說可以問誰）。舊版後端沒有 kind：找得到算 handbook，找不到算 none。
+  const KINDS = ["handbook", "general", "chat", "none"];
   function answerKind(res) {
     const k = str(res && res.kind).trim();
-    if (k === "handbook" || k === "general" || k === "none") return k;
+    if (KINDS.includes(k)) return k;
     return res && res.found === false ? "none" : "handbook";
   }
+  // 「知識庫還沒設定」的提醒掛在第一則有這個狀況、而且不是閒聊的回答底下
+  function ncNoteTarget(list) { return list.find((m) => m.notConfigured && m.kind !== "chat"); }
 
   function normSources(list) {
     const seen = new Set();
@@ -288,8 +326,7 @@
   function greetingText() {
     const u = me();
     const name = u && u.name ? str(u.name).trim() : "";
-    return (name ? "嗨，" + name + "！" : "嗨！") +
-      "我是 Skills for U 的新手導師，你可以稱呼我：小U。組織的規定、流程、文化，或是工作上卡住的地方，都可以問我。";
+    return name ? XIAOU.greeting.split("{name}").join(name) : XIAOU.greeting.replace(/，?\{name\}/g, "");
   }
   function actionsSig() { return (userHasFinanceRole() ? "f" : "") + (userCanViewBudget() ? "b" : ""); }
   function actionLinksHtml() {
@@ -304,7 +341,36 @@
       '<span class="pt-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟）</span></a>';
   }
   function faqChipsHtml() {
-    return FAQ.map((s) => '<button type="button" class="pt-chip-btn" data-act="ask" data-q="' + esc(s) + '">' + esc(s) + "</button>").join("");
+    return XIAOU.faq.map((s) => '<button type="button" class="pt-chip-btn" data-act="ask" data-q="' + esc(s) + '">' + esc(s) + "</button>").join("");
+  }
+
+  // 小U 的介紹卡。桌機：左邊整張卡；手機：縮成聊天上方一行，按「認識小U」才展開標籤、介紹和追蹤我們
+  function profileHtml() {
+    return '<aside class="pt-prof" aria-labelledby="ptProfName">' +
+      artHtml() +
+      '<div class="pt-prof-main">' +
+        avatarHtml("lg") +
+        '<div class="pt-prof-text">' +
+          '<h1 class="pt-prof-name" id="ptProfName">' + esc(XIAOU.name) + "</h1>" +
+          '<p class="pt-prof-title"><span class="pt-prof-long">' + esc(XIAOU.title) + '</span><span class="pt-prof-short">' + esc(XIAOU.shortTitle) + "</span></p>" +
+        "</div>" +
+        '<button type="button" class="pt-prof-toggle" data-act="prof-toggle" aria-expanded="false" aria-controls="ptProfMore">認識小U' + CHEVRON + "</button>" +
+      "</div>" +
+      '<div class="pt-prof-more" id="ptProfMore">' +
+        '<ul class="pt-prof-tags" aria-label="小U 的設定">' + XIAOU.tags.map((t) => '<li class="pt-prof-tag">' + esc(t) + "</li>").join("") + "</ul>" +
+        '<p class="pt-prof-bio">' + esc(XIAOU.bio) + "</p>" +
+        '<p class="pt-prof-note">' + esc(XIAOU.note) + "</p>" +
+        '<div class="pt-follow">' +
+          '<h2 class="pt-follow-title" id="ptFollowTitle">追蹤我們</h2>' +
+          '<ul class="pt-follow-list" aria-labelledby="ptFollowTitle">' + XIAOU.social.filter((s) => safeUrl(s.url)).map((s) =>
+            '<li><a class="pt-follow-link" href="' + esc(safeUrl(s.url)) + '" target="_blank" rel="noopener">' +
+              '<span class="pt-follow-platform">' + esc(s.platform) + '</span><span class="sr-only">｜</span>' +
+              '<span class="pt-follow-name">' + esc(s.name) + "</span>" +
+              '<span class="pt-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟）</span></a></li>').join("") +
+          "</ul>" +
+        "</div>" +
+      "</div>" +
+    "</aside>";
   }
 
   function showHome() {
@@ -325,19 +391,7 @@
     const wrap = document.createElement("div");
     wrap.className = "pt-home";
     wrap.innerHTML =
-      // 桌機：左邊的小U介紹卡；手機：縮成聊天上方的一行（頭像＋小U＋新手導師）
-      '<aside class="pt-prof" aria-labelledby="ptProfName">' +
-        artHtml() +
-        '<div class="pt-prof-main">' +
-          avatarHtml("lg") +
-          '<div class="pt-prof-text">' +
-            '<h1 class="pt-prof-name" id="ptProfName">小U</h1>' +
-            '<p class="pt-prof-title"><span class="pt-prof-org">Skills for U </span>新手導師</p>' +
-          "</div>" +
-        "</div>" +
-        '<p class="pt-prof-intro">我讀過兩本組織手冊，也熟悉這個後台，有問題隨時問我。</p>' +
-        '<p class="pt-prof-note">回答以手冊為準，拿不準的事再問主管。</p>' +
-      "</aside>" +
+      profileHtml() +
       '<section class="card pt-card pt-chat" aria-label="和小U聊天">' +
         '<div class="pt-thread">' +
           // 小U 的開場白永遠是第一則，不存進對話紀錄、也不送給後端
@@ -367,7 +421,7 @@
       "</section>";
     // 先把之前的對話放進去再掛到頁面上，螢幕報讀才不會把舊對話整串念一遍
     const log = q(wrap, "log");
-    const firstNc = H.messages.find((m) => m.notConfigured);
+    const firstNc = ncNoteTarget(H.messages);
     H.messages.forEach((m) => log.appendChild(msgNode(m, m === firstNc)));
     root.innerHTML = "";
     root.appendChild(wrap);
@@ -400,6 +454,11 @@
       const act = btn.dataset.act;
       if (act === "ask") { setFaqPanel(false); sendQuestion(btn.dataset.q || btn.textContent, viaKeyboard); }
       else if (act === "faq-toggle") setFaqPanel(btn.getAttribute("aria-expanded") !== "true");
+      else if (act === "prof-toggle") {
+        const open = btn.getAttribute("aria-expanded") !== "true";
+        btn.setAttribute("aria-expanded", String(open));
+        btn.closest(".pt-prof").classList.toggle("is-open", open);
+      }
       else if (act === "clear") clearChat(viaKeyboard);
       else if (act === "retry") retryMessage(btn.dataset.id, viaKeyboard);
     });
@@ -527,7 +586,7 @@
     const history = buildHistory(H.messages.slice(0, idx < 0 ? H.messages.length : idx));
     const slowTimer = setTimeout(() => {
       const t = typing.querySelector('[data-role="ptext"]');
-      if (t) t.textContent = SLOW_TEXT;
+      if (t) t.textContent = XIAOU.typingSlow;
     }, 20000);
     const res = await call("askHandbook", { question: userMsg.text, history }, 90000);
     clearTimeout(slowTimer);
@@ -541,7 +600,7 @@
       const i = H.messages.indexOf(userMsg);
       if (i >= 0) H.messages.splice(i + 1, 0, ans);
       else H.messages.push(ans);
-      const node = msgNode(ans, H.messages.find((m) => m.notConfigured) === ans);
+      const node = msgNode(ans, ncNoteTarget(H.messages) === ans);
       insertAfter(log, node, nodeFor(userMsg));
       trimChat();
       saveChat();
@@ -583,15 +642,16 @@
       if (m.error) n.firstChild.appendChild(errorRow(m));
       return n;
     }
+    // 每種回答都是一樣的泡泡，不加標籤；差別只在底下的小字：
+    // handbook／none／general 有出處就列出處，general 再加一句「只是小U的想法」，chat（閒聊）什麼都不加
     const kind = m.kind || "handbook";
-    n.className = "pt-msg pt-msg-bot" + (kind === "none" ? " pt-msg-hint" : "");
+    n.className = "pt-msg pt-msg-bot";
+    n.dataset.kind = kind;
     let after = "";
-    if (m.sources && m.sources.length) after += '<p class="pt-sources">出處：' + esc(sourcesText(m.sources)) + "</p>";
-    if (kind === "general") after += '<p class="pt-note pt-note-general">' + GENERAL_NOTE + "</p>";
-    if (m.notConfigured && showNcNote) after += '<p class="pt-note pt-note-nc">' + NOT_CONFIGURED_NOTE + "</p>";
-    n.innerHTML = botMsgHtml('<div class="pt-bubble">' +
-      (kind === "none" ? '<p class="pt-hint-label">' + NONE_LABEL + "</p>" : "") +
-      '<div class="pt-answer">' + formatAnswer(m.text) + "</div></div>", after);
+    if (kind !== "chat" && m.sources && m.sources.length) after += '<p class="pt-sources">出處：' + esc(sourcesText(m.sources)) + "</p>";
+    if (kind === "general") after += '<p class="pt-note pt-note-general">' + esc(XIAOU.generalNote) + "</p>";
+    if (m.notConfigured && showNcNote && kind !== "chat") after += '<p class="pt-note pt-note-nc">' + esc(XIAOU.notConfiguredNote) + "</p>";
+    n.innerHTML = botMsgHtml('<div class="pt-bubble"><div class="pt-answer">' + formatAnswer(m.text) + "</div></div>", after);
     return n;
   }
   function errorRow(m) {
@@ -605,7 +665,7 @@
     const n = document.createElement("div");
     n.className = "pt-msg pt-msg-bot pt-msg-pending";
     n.innerHTML = botMsgHtml('<div class="pt-bubble pt-typing">' + DOTS + "</div>",
-      '<p class="pt-typing-note" data-role="ptext">' + TYPING_TEXT + "</p>");
+      '<p class="pt-typing-note" data-role="ptext">' + esc(XIAOU.typing) + "</p>");
     return n;
   }
 
@@ -614,8 +674,10 @@
               ＋手冊、組織架構、團隊成員（getAbout，快）
      兩個分開抓，快的先畫出來；重點第一次要 20～40 秒。
      ============================================================ */
-  const OV_LOADING_TEXT = "小U 正在讀手冊、整理重點，第一次大約要半分鐘…";
-  function aboutKey() { return "pt.about.v1." + (S.email || "anon"); }
+  const NEWS_SHOW = 6;          // 最新消息先列 6 則，其他按「看更多」
+  const NEWS_TYPES = ["受訪", "評論", "報導"];
+  // v2：getAbout 多了 news，舊版快取（沒有 news）不要再用
+  function aboutKey() { return "pt.about.v2." + (S.email || "anon"); }
   function overviewKey() { return "pt.overview.v1." + (S.email || "anon"); }
 
   function normAbout(res) {
@@ -637,6 +699,15 @@
         financeRoles: arr(p.financeRoles).map((x) => str(x).trim()).filter(Boolean),
         approverOf: arr(p.approverOf).map((x) => str(x).trim()).filter(Boolean),
       })),
+      // 媒體報導（後端已經照日期新到舊排好）
+      news: arr(res.news).filter((n) => n && typeof n === "object").map((n) => ({
+        date: str(n.date).trim(),
+        type: NEWS_TYPES.includes(str(n.type).trim()) ? str(n.type).trim() : "報導",
+        title: str(n.title).trim(),
+        outlet: str(n.outlet).trim(),
+        url: safeUrl(n.url),
+        summary: str(n.summary).trim(),
+      })).filter((n) => n.title),
     };
   }
   function normOverview(o) {
@@ -711,7 +782,8 @@
     body.classList.toggle("pt-stale", !!(A.loading && A.data));
     if (A.data) {
       if (A.renderedData !== A.data) {
-        body.innerHTML = handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
+        // 最新消息排在小U整理的手冊重點後面、兩本手冊前面（手冊重點在上面的 overview 區塊）
+        body.innerHTML = newsHtml(A.data.news) + handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
         A.renderedData = A.data;
         if (A.openIdx >= 0) openHandbook(A.openIdx, false); // 重新整理前開著的手冊繼續開著
       }
@@ -734,7 +806,7 @@
     if (A.ov) {
       html = (A.ovError ? '<div class="pt-alert pt-alert-error" role="alert">重點沒有更新成功：' + esc(A.ovError) + "</div>" : "") + overviewHtml(A.ov);
     } else if (A.ovLoading) {
-      html = xiaouBlockHtml(OV_LOADING_TEXT, { typing: true });
+      html = xiaouBlockHtml(XIAOU.overviewLoading, { typing: true });
     } else if (A.ovError) {
       html = xiaouBlockHtml("整理重點的時候出了點問題：" + A.ovError, { retry: true, error: true });
     }
@@ -785,6 +857,58 @@
     else if (act === "retry") loadAbout();
     else if (act === "ov-retry") loadOverview();
     else if (act === "toggle-hb") toggleHandbook(Number(b.dataset.idx));
+    else if (act === "news-more") toggleNews(b);
+  }
+
+  /* ---------- 最新消息：受訪與評論 ---------- */
+  function newsHtml(list) {
+    const A = S.about;
+    let inner;
+    if (!list.length) {
+      inner = '<div class="card pt-card"><p class="empty-state pt-empty">還沒有資料。請管理員在總表「媒體報導」分頁新增。</p></div>';
+    } else {
+      const extra = list.length - NEWS_SHOW;
+      inner = '<div class="card pt-card pt-news-card">' +
+        '<ul class="pt-news" id="ptNewsList">' + list.map((n, i) => newsItemHtml(n, i >= NEWS_SHOW && !A.newsOpen)).join("") + "</ul>" +
+        (extra > 0
+          ? '<button type="button" class="pt-btn pt-btn-ghost pt-news-more" data-act="news-more" aria-expanded="' + !!A.newsOpen + '" aria-controls="ptNewsList">' +
+              newsMoreLabel(!!A.newsOpen, extra) + "</button>"
+          : "") +
+      "</div>";
+    }
+    return '<section class="pt-section" aria-labelledby="ptAboutNews"><h2 class="pt-h2" id="ptAboutNews">最新消息：受訪與評論</h2>' + inner + "</section>";
+  }
+  function newsMoreLabel(open, extra) { return open ? "收起" : "看更多（還有 " + extra + " 則）"; }
+  function newsItemHtml(n, hidden) {
+    const typeCls = n.type === "受訪" ? "is-interview" : n.type === "評論" ? "is-opinion" : "is-report";
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(n.date) ? '<time datetime="' + esc(n.date) + '">' + esc(n.date) + "</time>" : (n.date ? "<span>" + esc(n.date) + "</span>" : "");
+    // 最後一個字和箭頭綁在一起換行，箭頭才不會自己掉到下一行
+    const chars = Array.from(n.title);
+    const tail = chars.pop() || "";
+    const title = n.url
+      ? '<a class="pt-news-title" href="' + esc(n.url) + '" target="_blank" rel="noopener">' + esc(chars.join("")) +
+          '<span class="pt-nowrap">' + esc(tail) + '<span class="pt-ext" aria-hidden="true">↗</span></span><span class="sr-only">（在新分頁開啟）</span></a>'
+      : '<p class="pt-news-title is-plain">' + esc(n.title) + "</p>";
+    return '<li class="pt-news-item' + (hidden ? " pt-news-extra" : "") + '"' + (hidden ? " hidden" : "") + ">" +
+      '<p class="pt-news-meta">' + date + '<span class="pt-badge pt-news-type ' + typeCls + '">' + esc(n.type) + "</span>" +
+        (n.outlet ? '<span class="pt-news-outlet">' + esc(n.outlet) + "</span>" : "") + "</p>" +
+      title +
+      (n.summary ? '<p class="pt-news-summary">' + esc(n.summary) + "</p>" : "") +
+    "</li>";
+  }
+  function toggleNews(btn) {
+    const A = S.about;
+    if (!A.data) return;
+    A.newsOpen = btn.getAttribute("aria-expanded") !== "true";
+    const items = A.el.querySelectorAll("#ptNewsList .pt-news-item");
+    items.forEach((li, i) => {
+      if (i < NEWS_SHOW) return;
+      li.hidden = !A.newsOpen;
+      li.classList.toggle("pt-news-extra", !A.newsOpen);
+    });
+    btn.setAttribute("aria-expanded", String(A.newsOpen));
+    btn.textContent = newsMoreLabel(A.newsOpen, items.length - NEWS_SHOW);
+    if (!A.newsOpen) reveal(btn); // 收起後清單變短，把按鈕捲回畫面裡
   }
 
   // 小U 說一句話的區塊（讀取中／沒有設定／出錯）
@@ -1240,8 +1364,58 @@
       '<p class="pt-table-note">金額單位：新台幣元<span class="pt-swipe-hint">・表格可以左右滑動</span></p>';
   }
 
+  /* ============================================================
+     常用工具（所有同仁都看得到；清單在檔案最上面的 TOOLS）
+     ============================================================ */
+  const TOOL_STATUS = { soon: "即將推出", ready: "可以用了" };
+  // 24×24 的簡單線條圖示（不用外部圖檔）
+  const TOOL_ICONS = {
+    card: '<rect x="3" y="6" width="18" height="13" rx="2"/><circle cx="8.5" cy="11.5" r="2"/><path d="M5.5 16.5c.6-1.4 1.7-2 3-2s2.4.6 3 2M14 10.5h4.5M14 14h3.5"/>',
+    notes: '<path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20z"/><path d="M14 3.5v4h4M9.5 11.5h6M9.5 14.5h6M9.5 17.5h4"/>',
+    photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 15.5l-4.5-4.5L9 18.5M3 17l3.5-3.5 3 3"/>',
+    brand: '<circle cx="12" cy="12" r="8.5"/><circle cx="8.6" cy="10" r="1.2"/><circle cx="12" cy="7.6" r="1.2"/><circle cx="15.4" cy="10" r="1.2"/><path d="M12 20.5c-1.5 0-2-1-2-2s1-1.6 2.2-1.6H14c1.7 0 3.4-1.1 3.4-3"/>',
+    mail: '<rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="M3.5 7l8.5 6.5L20.5 7"/>',
+  };
+  function toolIconHtml(name) {
+    const p = TOOL_ICONS[name] || TOOL_ICONS.notes;
+    return '<span class="pt-tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">' + p + "</svg></span>";
+  }
+
+  function showTools() {
+    const root = document.getElementById("toolsRoot");
+    if (!root) return;
+    try {
+      syncUser();
+      if (root.querySelector(".pt-tools")) return; // 內容是固定的，畫過就不用再畫
+      root.innerHTML =
+        '<div class="pt-page pt-tools">' +
+          '<div class="pt-page-head"><div><h1 class="pt-h1">常用工具</h1><p class="pt-sub">' + esc(TOOLS_INTRO) + "</p></div></div>" +
+          '<ul class="pt-tool-grid">' + TOOLS.map(toolCardHtml).join("") + "</ul>" +
+          '<p class="pt-tools-note">' + esc(TOOLS_NOTE) + "</p>" +
+        "</div>";
+    } catch (e) {
+      renderCrash(root, e);
+    }
+  }
+  function toolCardHtml(t) {
+    const ready = t.status === "ready" && t.url;
+    const external = ready && /^https?:\/\//i.test(t.url);
+    const href = ready ? (external ? safeUrl(t.url) : (/^#[\w/-]*$/.test(t.url) ? t.url : "")) : "";
+    return '<li class="card pt-card pt-tool' + (href ? "" : " is-soon") + '">' +
+      toolIconHtml(t.icon) +
+      '<h2 class="pt-tool-name">' + esc(t.name) + "</h2>" +
+      '<p class="pt-tool-desc">' + esc(t.desc) + "</p>" +
+      '<div class="pt-tool-foot">' +
+        (href
+          ? '<a class="pt-btn pt-btn-primary" href="' + esc(href) + '"' + (external ? ' target="_blank" rel="noopener"' : "") + ">打開" + esc(t.name) +
+              (external ? '<span class="sr-only">（在新分頁開啟）</span>' : "") + "</a>"
+          : '<span class="pt-badge pt-badge-soon">' + esc(TOOL_STATUS[t.status] || TOOL_STATUS.soon) + "</span>") +
+      "</div>" +
+    "</li>";
+  }
+
   /* ---------------- 對外介面 ---------------- */
-  window.Portal = { showHome, showAbout, showBudget, reset };
+  window.Portal = { showHome, showAbout, showBudget, showTools, reset };
 
   // 保險：萬一 app.js 在這支檔案載入前就已經切到這三頁（Portal 還不存在），這裡補畫一次
   try {
@@ -1250,6 +1424,7 @@
       if (visible("view-home")) showHome();
       if (visible("view-about")) showAbout();
       if (visible("view-budget")) showBudget();
+      if (visible("view-tools")) showTools();
     }
   } catch (e) { /* ignore */ }
 })();
