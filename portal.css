@@ -37,7 +37,9 @@
   outline-offset: 2px;
 }
 #homeRoot .pt-input:focus,
-#homeRoot .pt-input:focus-visible {
+#homeRoot .pt-input:focus-visible,
+#aboutRoot .pt-input:focus,
+#aboutRoot .pt-input:focus-visible {
   outline: none;
   border-color: var(--pt-navy);
   box-shadow: 0 0 0 3px rgba(11,72,112,0.18);
@@ -708,9 +710,120 @@
   overflow-wrap: anywhere;
 }
 .pt-person-email:hover { text-decoration-color: var(--pt-navy); }
-.pt-roles { display: flex; flex-wrap: wrap; gap: 6px; }
+.pt-roles { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pt-badge-lead { background: #e3edf4; color: var(--pt-navy); }
 .pt-badge-fin { background: #eef3cf; color: #3a4300; }
+.pt-person-manual { margin-left: auto; min-height: 44px; }
+
+/* 四個子分頁：每頁第一個區塊的標題不用再空一大段（上面已經有頁面標題） */
+.pt-about [data-panel] > :first-child > .pt-section:first-child > .pt-h2 { margin-top: 4px; }
+
+/* ============ 同事使用手冊 ============ */
+/* 名字縮寫的圓形頭像：顏色依人固定（六組淺底深字，對比都在 7:1 以上） */
+.pt-col-av {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pt-col-av-lg { width: 56px; height: 56px; font-size: 18px; }
+.pt-col-av.c0 { background: #e3edf4; color: #0b4870; }
+.pt-col-av.c1 { background: #eef3cf; color: #3a4300; }
+.pt-col-av.c2 { background: #fbe7d6; color: #7a3b0c; }
+.pt-col-av.c3 { background: #e2f2e9; color: #1d5e3e; }
+.pt-col-av.c4 { background: #eee6f6; color: #4f2f73; }
+.pt-col-av.c5 { background: #fbe3e6; color: #8a2632; }
+
+.pt-col-picker { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.pt-col-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 56px;
+  padding: 8px 18px 8px 10px;
+  border: 1.5px solid var(--pt-line);
+  border-radius: 999px;
+  background: #fff;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pt-col-pick:hover { border-color: var(--pt-navy); }
+.pt-col-pick[aria-pressed="true"] { background: var(--pt-navy); border-color: var(--pt-navy); }
+.pt-col-pick-text { display: flex; flex-direction: column; min-width: 0; }
+.pt-col-pick-name { font-size: 15px; font-weight: 800; line-height: 1.35; color: var(--pt-ink); }
+.pt-col-pick-title {
+  max-width: 15em;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--pt-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pt-col-pick[aria-pressed="true"] .pt-col-pick-name { color: #fff; }
+.pt-col-pick[aria-pressed="true"] .pt-col-pick-title { color: #d3e2ec; }
+
+/* 桌機：左邊使用說明書（可能很長），右邊聊天框固定在畫面上、對話在框裡捲；窄螢幕上下排 */
+.pt-col-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); align-items: start; gap: 20px; }
+.pt-manual { min-width: 0; }
+.pt-manual-head { display: flex; align-items: center; gap: 14px; }
+.pt-manual-who { min-width: 0; }
+.pt-manual-name { font-size: 20px; font-weight: 800; line-height: 1.35; color: var(--pt-navy); text-wrap: balance; overflow-wrap: anywhere; }
+.pt-manual-title { margin-top: 2px; font-size: 14px; line-height: 1.5; color: var(--pt-ink-2); }
+.pt-manual-tags { margin-top: 14px; }
+.pt-tag-role { background: #e3edf4; border-color: #cfdde7; }
+.pt-manual-list { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.pt-manual-list > div + div { padding-top: 14px; border-top: 1px solid var(--pt-line-soft); }
+.pt-manual-list dt { font-size: 14px; font-weight: 800; line-height: 1.5; color: var(--pt-navy); }
+.pt-manual-list dd { margin-top: 4px; font-size: 14.5px; line-height: 1.75; color: var(--pt-ink); overflow-wrap: anywhere; }
+.pt-manual-list dd p + p, .pt-manual-list dd p + ul, .pt-manual-list dd ul + p { margin-top: 6px; }
+.pt-col-jump { display: none; }
+.pt-manual-about { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--pt-line-soft); }
+.pt-manual-about .pt-answer { margin-top: 6px; font-size: 14.5px; line-height: 1.75; color: var(--pt-ink-2); overflow-wrap: anywhere; }
+.pt-manual-empty { margin-top: 14px; }
+
+.pt-col-chat {
+  position: sticky;
+  top: calc(var(--topbar-h, 72px) + 16px);
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  height: calc(100vh - var(--topbar-h, 72px) - 112px);   /* 捲到頁底時也不會被推到主選單底下（下面留了頁面底部的空白） */
+  min-height: 460px;
+  max-height: 820px;
+}
+.pt-col-chat .pt-col-notice { flex: none; }
+.pt-col-chat .pt-thread { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -8px; padding: 0 8px 4px; }
+.pt-col-chat .pt-composer { position: static; flex: none; }
+@media (max-width: 900px) {
+  .pt-col-body { grid-template-columns: minmax(0, 1fr); }
+  .pt-col-jump { display: inline-flex; margin-top: 14px; }
+  .pt-col-chat { position: static; display: block; height: auto; min-height: 0; max-height: none; }
+  .pt-col-chat .pt-thread { overflow: visible; margin: 0; padding: 0; }
+  .pt-col-chat .pt-composer { position: sticky; }
+}
+.pt-col-notice {
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--pt-line-soft);
+  border-radius: 10px;
+  background: var(--pt-soft);
+  color: var(--pt-ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
 
 /* ============ 計畫與預算 ============ */
 .pt-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
@@ -946,6 +1059,11 @@
   .pt-tiles-3 .pt-tile:first-child { grid-column: 1 / -1; }   /* 手機：全年在上面整行，已結算、剩餘並排 */
   .pt-swipe-hint-sm { display: inline; }
   .pt-hb-frame { min-height: 280px; }
+  .pt-col-picker { gap: 8px; }
+  .pt-col-pick { min-height: 52px; padding: 6px 14px 6px 8px; gap: 8px; }
+  .pt-col-pick-title { max-width: 11em; }
+  .pt-col-av-lg { width: 48px; height: 48px; font-size: 16px; }
+  .pt-manual-name { font-size: 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

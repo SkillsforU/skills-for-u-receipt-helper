@@ -221,7 +221,8 @@ function escapeHtml(s) {
    分頁切換（團隊後台）
    網址的 # 決定顯示哪一頁，所以 Slack 訊息裡的連結可以直接打開某一頁（例如 #finance/ops/release）：
      #home                  首頁（問手冊，portal.js）
-     #about                 認識組織（portal.js）
+     #about                 認識組織（portal.js）；子頁 #about/culture 組織文化與工作規範、
+                            #about/team 認識團隊、#about/colleagues 同事使用手冊
      #budget                計畫與預算（portal.js；只有主管和財務看得到）
      #finance/upload        上傳單據
      #finance/mine          上傳紀錄
@@ -241,6 +242,8 @@ const views = {
 };
 const TOP_VIEWS = ["home", "about", "budget", "tools", "finance"];
 const FINANCE_SUBS = ["upload", "mine", "ops"];
+// 認識組織底下的子頁：認識組織／組織文化與工作規範／認識團隊／同事使用手冊（畫面由 portal.js 畫）
+const ABOUT_SUBS = ["intro", "culture", "team", "colleagues"];
 
 function hasFinanceRole() {
   return !!(currentUser && Array.isArray(currentUser.financeRoles) && currentUser.financeRoles.length);
@@ -262,6 +265,7 @@ function parseRoute() {
     if (sub === "ops" && !hasFinanceRole()) sub = "upload";
     rest = sub === "ops" ? parts.slice(2) : [];
   }
+  if (top === "about") sub = ABOUT_SUBS.includes(parts[1]) ? parts[1] : "intro";
   return { top, sub, rest };
 }
 
@@ -294,7 +298,14 @@ function route() {
     if (sub === "ops" && window.FinanceOps) window.FinanceOps.show(rest);
   }
   if (top === "home" && window.Portal) window.Portal.showHome();
-  if (top === "about" && window.Portal) window.Portal.showAbout();
+  if (top === "about") {
+    document.querySelectorAll("#aboutTabs .subtab-btn").forEach(a => {
+      const on = a.dataset.sub === sub;
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    if (window.Portal) window.Portal.showAbout(sub);
+  }
   if (top === "budget" && window.Portal) window.Portal.showBudget();
   if (top === "tools" && window.Portal && window.Portal.showTools) window.Portal.showTools();
   window.scrollTo(0, 0);

@@ -624,6 +624,7 @@ function doPost(e) {
     }
     // 團隊後台的三個頁面（首頁問手冊、認識組織、計畫與預算）
     if (body.action === 'askHandbook') return jsonOut_(askHandbook_(body, auth));
+    if (body.action === 'askColleague') return jsonOut_(askColleague_(body, auth));
     if (body.action === 'getAbout') return jsonOut_(getAbout_());
     if (body.action === 'getAboutOverview') return jsonOut_(getAboutOverview_());
     if (body.action === 'getBudgetOverview') return jsonOut_(getBudgetOverview_(auth));
@@ -1222,7 +1223,7 @@ function setupProjectReviewSheets() {
     .concat(ensureSettingsHeaders_(getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []), BUDGET_HEADERS))
     .concat(ensureSettingsHeaders_(glSheet, GLCODE_HEADERS))
     // 手冊、最新消息已經記在「網站後台_資料導入連結」的話，總表就不用再建這兩個備用分頁
-    .concat(registryFind_(HANDBOOK_PURPOSE_PATTERN).length ? [] : ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS))
+    .concat(handbookRows_().length ? [] : ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS))
     .concat(registryFind_(NEWS_PURPOSE_PATTERN).length ? [] : ensureSettingsHeaders_(getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []), NEWS_HEADERS));
   getBatchSheet_();
 
@@ -1317,7 +1318,7 @@ function configConsistencyWarnings_() {
     if (p.financeRoles.length && !p.email) warnings.push('「' + p.name + '」有財務角色但沒有 Email，登入後系統認不出他。');
   });
   if (!loadKnowledgeEntries_().length) {
-    warnings.push('「網站後台_資料導入連結」和總表的「' + KNOWLEDGE_SHEET_NAME + '」都還沒有填任何手冊：小U 回答不了組織的問題，「認識組織」的手冊區也會是空的。');
+    warnings.push('「網站後台_資料導入連結」和總表的「' + KNOWLEDGE_SHEET_NAME + '」都還沒有填任何手冊：小U 回答不了組織的問題，「認識組織 › 組織文化與工作規範」的手冊區也會是空的。');
   }
   return warnings;
 }
@@ -2829,6 +2830,16 @@ const CASHFLOW_SUMMARY_SHEET = '網站摘要';
 const CASHFLOW_CENTER_OWN = '中心營運';  // 「網站摘要」專案欄空白＝中心本身的人事費、業務費
 
 let _registryRows = null; // 同一次執行內只讀一次
+let _registrySs = null;   // 同一次執行內只開一次資料導入那份試算表（最新消息、團隊個性化也可能放在同一份）
+
+// 打開試算表；資料導入那份在同一次執行裡重複用，不要開好幾次
+function openSpreadsheet_(id) {
+  if (id && id === dataRegistryId_()) {
+    if (!_registrySs || _registrySs.getId() !== id) _registrySs = SpreadsheetApp.openById(id);
+    return _registrySs;
+  }
+  return SpreadsheetApp.openById(id);
+}
 
 function dataRegistryId_() {
   const raw = String(PropertiesService.getScriptProperties().getProperty(DATA_REGISTRY_ID_PROP) || '').trim();
@@ -2865,7 +2876,7 @@ function loadRegistry_() {
   const id = dataRegistryId_();
   if (!id) return (_registryRows = []);
   const cache = CacheService.getScriptCache();
-  const key = 'registry_v1_' + id;
+  const key = 'registry_v2_' + id; // v2：多記連結裡的分頁（gid）
   const hit = cache.get(key);
   if (hit) {
     try {
@@ -2874,20 +2885,25 @@ function loadRegistry_() {
   }
   let rows = [];
   try {
-    const values = readAllRows_(SpreadsheetApp.openById(id).getSheets()[0]);
-    // 標題列：前幾列裡有「用途」和「連結」的那一列（上面多一列標題或說明也讀得到）
+    // 資料導入連結的分頁：標題列（前幾列）有「用途」和「連結」的那個分頁，通常是第一個；同一份檔案可以放別的分頁（例如最新消息）
     const trim = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+    let values = null;
     let hi = -1;
-    for (let i = 0; i < Math.min(values.length, 10) && hi < 0; i++) {
-      const cells = values[i].map(trim);
-      if (cells.indexOf('用途') >= 0 && cells.indexOf('連結') >= 0) hi = i;
-    }
-    if (hi < 0) throw new Error('第一個分頁找不到「用途」「連結」欄');
+    openSpreadsheet_(id).getSheets().some(function (sheet) {
+      const v = readAllRows_(sheet);
+      for (let i = 0; i < Math.min(v.length, 10); i++) {
+        const cells = v[i].map(trim);
+        if (cells.indexOf('用途') >= 0 && cells.indexOf('連結') >= 0) { values = v; hi = i; return true; }
+      }
+      return false;
+    });
+    if (hi < 0) throw new Error('找不到有「用途」「連結」欄的分頁');
     const header = values[hi].map(trim);
     const at = function (r, name) { const i = header.indexOf(name); return i < 0 ? '' : trim(r[i]); };
     rows = values.slice(hi + 1).map(function (r) {
       const url = at(r, '連結');
-      return { year: at(r, '年度'), page: at(r, '網站分頁'), purpose: at(r, '用途'), name: at(r, '檔案名稱'), url: url, id: fileIdFromUrl_(url) };
+      const gid = (url.match(/[#?&]gid=(\d+)/) || [])[1] || '';
+      return { year: at(r, '年度'), page: at(r, '網站分頁'), purpose: at(r, '用途'), name: at(r, '檔案名稱'), url: url, id: fileIdFromUrl_(url), gid: gid };
     }).filter(function (r) { return r.purpose && r.id; });
   } catch (e) {
     console.warn('讀不到資料導入連結（' + id + '，要共用給 service@skillsforu.org）：' + e);
@@ -2920,13 +2936,31 @@ function registryPick_(rows) {
 const HANDBOOK_PURPOSE_PATTERN = /手冊/;
 const NEWS_PURPOSE_PATTERN = /最新消息|媒體/;
 const CASHFLOW_PURPOSE_PATTERN = /金流/;
+const PROFILE_PURPOSE_PATTERN = /個性化|同事使用手冊/; // 同事使用手冊（團隊個性化）不算手冊
 
 function registryFind_(pattern) {
   return registryPick_().filter(function (r) { return pattern.test(r.purpose); });
 }
 
+// 小U 和「組織文化與工作規範」讀的手冊（用途有「手冊」，但不是同事使用手冊）
+function handbookRows_() {
+  return registryFind_(HANDBOOK_PURPOSE_PATTERN).filter(function (r) { return !PROFILE_PURPOSE_PATTERN.test(r.purpose); });
+}
+
+// 資料導入連結某一列指到的分頁：連結裡有 #gid= 就用那個分頁；沒有就找跟「檔案名稱」同名的分頁；再沒有就用第一個分頁。
+// 所以同一份試算表的不同分頁，貼各自分頁的網址就好。
+function registrySheet_(row) {
+  const ss = openSpreadsheet_(row.id);
+  const sheets = ss.getSheets();
+  if (row.gid) {
+    const byGid = sheets.filter(function (sh) { return String(sh.getSheetId()) === String(row.gid); })[0];
+    if (byGid) return byGid;
+  }
+  return (row.name && ss.getSheetByName(row.name)) || sheets[0];
+}
+
 function loadKnowledgeEntries_() {
-  const fromRegistry = registryFind_(HANDBOOK_PURPOSE_PATTERN).map(function (r) {
+  const fromRegistry = handbookRows_().map(function (r) {
     return { title: r.purpose, fileId: r.id, purpose: KNOWLEDGE_PURPOSE_BOTH, description: r.name ? '檔案：' + r.name : '' };
   });
   if (fromRegistry.length) return fromRegistry;
@@ -3160,7 +3194,8 @@ function storyKnowledgeText_() {
 // 系統內建的使用說明（跟著程式一起更新，不用放進知識庫設定）。只寫系統真的這樣運作的事。
 const SYSTEM_GUIDE_TITLE = '團隊後台使用說明';
 const SYSTEM_GUIDE_TEXT = [
-  '（團隊後台的分頁）首頁是跟小U對話；認識組織整理了組織手冊和組織文化手冊的重點，還有組織最新的受訪、評論；人事中心連到 Swingvy；核銷作業底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
+  '（團隊後台的分頁）首頁是跟小U對話；認識組織底下有四頁：「認識組織」是組織介紹、我們是誰和最新的受訪、評論，「組織文化與工作規範」是組織手冊和組織文化手冊的重點（也能直接打開手冊），「認識團隊」是組織架構和團隊成員，「同事使用手冊」是同事自己寫的使用說明書；人事中心連到 Swingvy；核銷作業底下有「上傳單據」「上傳紀錄」，會計和放行人另外有「財務作業」；「計畫與預算」只有財務和各中心主管看得到。',
+  '（同事使用手冊）到「認識組織 › 同事使用手冊」選一位同事，可以看他自己寫的工作時段、找他最好的方式、喜歡怎麼收到回饋、可以找他幫忙的事，也可以跟他的虛擬分身聊天。虛擬分身只照使用說明書回答，不代表本人；要本人決定的事請直接找本人。想放上自己的使用說明書，請管理員在「團隊個性化」分頁幫你新增一列，「同意放上網站」填「是」。',
   '（上傳單據）到「核銷作業 › 上傳單據」，選中心、專案和單據類型，拍照或選檔案（JPG、PNG、PDF，PDF 最大 5 MB）。選好專案就會自動辨識日期、金額、店家和發票號碼，核對後送出。送出後可以按「上傳下一張，沿用」把專案、預算項目和付款方式帶到下一張。',
   '（這筆錢要怎麼付）五選一：我先墊錢了（代墊款，主管核准後每月 5 號跟薪資一起匯）；請組織直接匯款給廠商或外部個人（要填戶名、7 碼分行代碼、帳號，一般在每月 20 號付；每月固定支出可以選在 5 號付）；繳費單（稅金、健保費等，會計用網銀代繳，要填繳費期限）；已經用組織信用卡或零用金付掉了；需要組織刷卡（線上刷卡連結或紙本刷卡）。',
   '（審核與付款時間）各中心主管每月 10–13 號審核。趕時間的單據可以標「緊急」並填希望付款的日期，送出時會馬上通知主管。送出畫面會顯示預計撥款日，實際以財務作業為準。',
@@ -3271,6 +3306,163 @@ function newsKnowledgeText_() {
   }).join('\n');
 }
 
+/* ---------- 同事使用手冊：資料導入那份試算表的「團隊個性化」分頁 ----------
+   一人一列，本人自己填；「同意放上網站」填「是」才會出現在團隊後台。欄位看標題裡的字，順序可以換。
+   資料導入連結裡有「團隊個性化」那一列就讀它指的分頁；沒有的話，讀資料導入那份檔案裡叫「團隊個性化」的分頁。 */
+const PROFILE_SHEET_NAME = '團隊個性化';
+const PROFILE_TEXT_LIMIT = 300;
+const PROFILE_ABOUT_LIMIT = 1000;
+// 依序比對（例如「可以找我幫忙的事」要先算「幫忙」，不能被「找我」搶走）
+const PROFILE_FIELDS = [
+  { key: 'email', match: /email|信箱/i },
+  { key: 'consent', match: /同意|公開/ },
+  { key: 'name', match: /姓名|名字/ },
+  { key: 'mbti', match: /mbti/i },
+  { key: 'blood', match: /血型/ },
+  { key: 'zodiac', match: /星座/ },
+  { key: 'help', match: /幫忙|擅長/ },
+  { key: 'feedback', match: /回饋/ },
+  { key: 'contact', match: /找我|聯絡/ },
+  { key: 'hours', match: /時段|習慣/ },
+  { key: 'life', match: /興趣|生活/ },
+  { key: 'voice', match: /說話|語氣|口頭禪/ },
+  { key: 'about', match: /自我描述|自我介紹|關於我/ },
+  { key: 'title', match: /職稱|負責/ },
+];
+const PROFILE_LABELS = {
+  title: '職稱與負責的事', mbti: 'MBTI', blood: '血型', zodiac: '星座', hours: '工作時段與習慣', contact: '找我最好的方式',
+  feedback: '我喜歡怎麼收到回饋', help: '可以找我幫忙的事', life: '興趣與生活', voice: '說話風格', about: '自我描述',
+};
+
+function profilesSheet_() {
+  const row = registryFind_(PROFILE_PURPOSE_PATTERN)[0];
+  try {
+    if (row) return registrySheet_(row);
+    const id = dataRegistryId_();
+    return id ? openSpreadsheet_(id).getSheetByName(PROFILE_SHEET_NAME) : null;
+  } catch (e) {
+    console.warn('讀不到團隊個性化分頁：' + e);
+    return null;
+  }
+}
+
+function isYes_(v) {
+  if (v === true) return true;
+  return /^(是|y|yes|true|v|✓|✔|ok|同意|可以)$/i.test(String(v === undefined || v === null ? '' : v).trim());
+}
+
+// 同意放上網站的同事（id 用 Email 小寫；沒填 Email 就用姓名）
+function loadProfiles_() {
+  const sheet = profilesSheet_();
+  if (!sheet) return [];
+  const values = readAllRows_(sheet);
+  const trim = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+  let hi = -1;
+  for (let i = 0; i < Math.min(values.length, 5) && hi < 0; i++) {
+    if (values[i].map(trim).some(function (h) { return /姓名|名字/.test(h); })) hi = i;
+  }
+  if (hi < 0) return [];
+  const col = {};
+  values[hi].map(trim).forEach(function (h, i) {
+    if (!h) return;
+    for (let f = 0; f < PROFILE_FIELDS.length; f++) {
+      const field = PROFILE_FIELDS[f];
+      if (!(field.key in col) && field.match.test(h)) { col[field.key] = i; break; }
+    }
+  });
+  if (!('name' in col)) return [];
+  const seen = {};
+  return values.slice(hi + 1).map(function (r) {
+    const at = function (k, n) { return k in col ? trim(r[col[k]]).slice(0, n || PROFILE_TEXT_LIMIT) : ''; };
+    const name = at('name', 40);
+    const email = at('email', 120).toLowerCase();
+    const p = { id: email || name, name: name, email: email };
+    Object.keys(PROFILE_LABELS).forEach(function (k) { p[k] = at(k, k === 'about' ? PROFILE_ABOUT_LIMIT : PROFILE_TEXT_LIMIT); });
+    p.consent = 'consent' in col ? isYes_(r[col.consent]) : false;
+    return p;
+  }).filter(function (p) {
+    if (!p.name || !p.consent || seen[p.id]) return false;
+    seen[p.id] = true;
+    return true;
+  }).map(function (p) { delete p.consent; return p; });
+}
+
+// 給虛擬分身的說明書（照本人填的欄位，空白的不放）
+function profileManualText_(p) {
+  return ['title', 'mbti', 'blood', 'zodiac', 'hours', 'contact', 'feedback', 'help', 'life', 'voice', 'about']
+    .filter(function (k) { return p[k]; })
+    .map(function (k) { return '（' + PROFILE_LABELS[k] + '）' + p[k]; })
+    .join('\n');
+}
+
+// 這位同事在團隊後台的角色（哪個中心的主管、財務角色），從人員設定和中心設定來
+function profileRolesText_(p) {
+  try {
+    const cfg = loadConfig_();
+    const person = cfg.people.filter(function (x) {
+      return (p.email && String(x.email || '').toLowerCase() === p.email) || x.name === p.name;
+    })[0];
+    const lines = [];
+    activeCenters_().forEach(function (c) {
+      if (person && c.approverEmails.some(function (e) { return e.toLowerCase() === String(person.email || '').toLowerCase(); })) {
+        lines.push('「' + c.name + '」的主管，負責審核這個中心的單據');
+      }
+    });
+    if (person && person.financeRoles.length) lines.push('財務角色：' + person.financeRoles.join('、'));
+    return lines.join('\n');
+  } catch (e) {
+    return '';
+  }
+}
+
+const COLLEAGUE_PERSONA = [
+  '你是 Skills for U 同事「{name}」的虛擬分身，在團隊後台的「同事使用手冊」陪同仁聊天，讓大家更認識{name}、知道怎麼跟{name}合作。',
+  '規則：',
+  '1. 只能根據下面〈{name} 的使用說明書〉和〈在團隊後台的角色〉回答，這些是本人自己寫的。說明書沒寫到的事不要猜、不要編，直接說說明書沒寫、建議直接問本人，並說用什麼方式找本人比較好。',
+  '2. 用第一人稱，像{name}本人在 Slack 回同事；語氣照〈說話風格〉和〈自我描述〉，簡短自然，可以打招呼、閒聊兩句。',
+  '3. 不能替本人答應任何事（例如幫忙、時間、金額、核准、請假），也不能替本人做決定；遇到這類事，請對方直接找本人。',
+  '4. 不評論其他同事、不八卦，不透露說明書以外的個人資訊；不寫任何密碼。',
+  '5. 有人問你是不是本人，要誠實說你是照本人填的使用說明書回答的虛擬分身。',
+  '6. 用繁體中文（台灣用語），不要用 Markdown 標題或表格。',
+  '只輸出 JSON：{"answer": "回答內容"}',
+].join('\n');
+
+// 跟同事的虛擬分身聊天（不記錄對話內容）
+function askColleague_(body, auth) {
+  const question = String(body.question || '').trim().slice(0, 500);
+  if (!question) return { ok: false, error: '請先輸入問題。' };
+  const id = String(body.colleague || '').trim().toLowerCase();
+  const p = loadProfiles_().filter(function (x) { return x.id.toLowerCase() === id; })[0];
+  if (!p) return { ok: false, error: '找不到這位同事的使用說明書（可能還沒填，或還沒同意放上網站）。' };
+  const roles = profileRolesText_(p);
+  const askerName = String((auth && auth.name) || '').trim();
+  let system = COLLEAGUE_PERSONA.replace(/\{name\}/g, p.name);
+  if (askerName) {
+    system += '\n現在跟你說話的同仁是「' + askerName + '」' + (askerName === p.name ? '，就是本人在試用自己的虛擬分身' : '') + '。';
+  }
+  system += '\n\n〈' + p.name + ' 的使用說明書〉\n' + (profileManualText_(p) || '（還沒寫內容）');
+  if (roles) system += '\n\n〈在團隊後台的角色〉\n' + roles;
+  const contents = (Array.isArray(body.history) ? body.history : []).slice(-XIAOU_HISTORY_MAX)
+    .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim(); })
+    .map(function (m) { return { role: m.role === 'user' ? 'user' : 'model', parts: [{ text: String(m.text).slice(0, 2000) }] }; });
+  contents.push({ role: 'user', parts: [{ text: question }] });
+  const result = callGemini_({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: contents,
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.5 },
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  let answer = '';
+  try {
+    const parsed = JSON.parse(result.text);
+    answer = typeof parsed === 'string' ? parsed : String((parsed || {}).answer || '');
+  } catch (e) {
+    answer = String(result.text || '');
+  }
+  answer = answer.trim().slice(0, 2000) || '這題我答不出來，直接問我本人比較準。';
+  return { ok: true, answer: answer };
+}
+
 function getAbout_() {
   const cfg = loadConfig_();
   const handbooks = loadKnowledgeEntries_()
@@ -3298,7 +3490,13 @@ function getAbout_() {
       }).map(function (c) { return c.name; }) : [],
     };
   });
-  return { ok: true, story: ORG_STORY, handbooks: handbooks, centers: centers, people: people, news: loadNews_() };
+  let profiles = [];
+  try {
+    profiles = loadProfiles_();
+  } catch (e) {
+    console.warn('讀同事使用手冊失敗：' + e);
+  }
+  return { ok: true, story: ORG_STORY, handbooks: handbooks, centers: centers, people: people, news: loadNews_(), profiles: profiles };
 }
 
 // 最新消息的來源：資料導入連結裡「最新消息／媒體」那份試算表的第一個分頁；沒填就用總表的「媒體報導」分頁
@@ -3306,7 +3504,7 @@ function newsSheet_() {
   const row = registryFind_(NEWS_PURPOSE_PATTERN)[0];
   if (row) {
     try {
-      return SpreadsheetApp.openById(row.id).getSheets()[0];
+      return registrySheet_(row);
     } catch (e) {
       console.warn('打不開最新消息的試算表「' + (row.name || row.id) + '」（要共用給 service@skillsforu.org）：' + e);
       return null;

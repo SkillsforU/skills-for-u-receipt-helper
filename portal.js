@@ -208,7 +208,8 @@
   const S = { email: null, home: null, about: null, budget: null };
   function freshState() {
     S.home = { el: null, messages: [], waiting: false, gen: 0, composing: false, actionsSig: "" };
-    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1, newsOpen: false, ov: null, ovLoading: false, ovError: "" };
+    S.about = { el: null, data: null, renderedData: null, loading: false, error: "", openIdx: -1, newsOpen: false, ov: null, ovLoading: false, ovError: "",
+      sub: "intro", colleague: "", chats: {}, composing: false, focusPick: false };
     S.budget = { el: null, data: null, renderedData: null, fetchedAt: 0, loading: false, error: "", center: "", expanded: new Set() };
   }
   freshState();
@@ -690,10 +691,10 @@
      ============================================================ */
   const NEWS_SHOW = 6;          // 最新消息先列 6 則，其他按「看更多」
   const NEWS_TYPES = ["受訪", "評論", "報導"];
-  // 快取版本：about v3（多了 story、news）、overview v2（之前的是示範內容）。資料形狀一改就要升版號。
-  function aboutKey() { return "pt.about.v3." + (S.email || "anon"); }
+  // 快取版本：about v4（多了 profiles：同事使用手冊）、overview v2（之前的是示範內容）。資料形狀一改就要升版號。
+  function aboutKey() { return "pt.about.v4." + (S.email || "anon"); }
   function overviewKey() { return "pt.overview.v2." + (S.email || "anon"); }
-  const OLD_CACHE = /^pt\.(about\.v[12]|overview\.v1)\./;
+  const OLD_CACHE = /^pt\.(about\.v[123]|overview\.v1)\./;
   function purgeOldCaches() {
     try {
       const ss = window.sessionStorage;
@@ -734,6 +735,7 @@
         summary: str(n.summary).trim(),
         image: httpsUrl(n.image), // 預覽圖只收 https://
       })).filter((n) => n.title),
+      profiles: normProfiles(res.profiles), // 同事使用手冊（後端只回同意放上網站的人）
     };
   }
   // 「我們是誰」：沿革（時間軸）＋品牌。資料當不可信：缺欄位的那一項整項跳過，連結只收 https://
@@ -776,13 +778,27 @@
     };
   }
 
-  function showAbout() {
+  /* ---------- 認識組織的四個子分頁（跟核銷作業一樣放在上方，app.js 依網址的 # 切換） ---------- */
+  const ABOUT_SUBS = {
+    intro: { title: "認識組織", sub: "組織介紹、我們是誰，和最新的受訪與評論。" },
+    culture: { title: "組織文化與工作規範", sub: "小U 從兩本手冊整理的重點，也可以直接打開手冊。" },
+    team: { title: "認識團隊", sub: "各中心的主管、專案，和團隊成員。" },
+    colleagues: { title: "同事使用手冊", sub: "選一位同事，看他自己寫的使用說明書，也可以跟他的虛擬分身聊聊。" },
+  };
+  function aboutSubFromHash() {
+    const m = (location.hash || "").match(/^#\/?about\/([a-z]+)/);
+    return m && ABOUT_SUBS[m[1]] ? m[1] : "intro";
+  }
+
+  function showAbout(sub) {
     const root = document.getElementById("aboutRoot");
     if (!root) return;
     try {
       syncUser();
       const A = S.about;
+      A.sub = ABOUT_SUBS[sub] ? sub : aboutSubFromHash();
       if (!A.el || !root.contains(A.el)) mountAbout(root);
+      else applyAboutSub();
       if (!A.data && !A.loading) loadAbout();
       // 重點整理好了就整個工作階段沿用；還沒設定／暫時不能用的狀態，下次進來再問一次
       if ((!A.ov || A.ov.status !== "ready") && !A.ovLoading) loadOverview();
@@ -791,28 +807,57 @@
     }
   }
 
-  // 頁面由上到下：小U整理的介紹（hero）→ 我們是誰 → 最新消息 → 手冊重點 → 兩本手冊 → 組織架構 → 團隊成員。
-  // hero 和手冊重點來自 getAboutOverview（慢），我們是誰、最新消息和下面幾塊來自 getAbout（快），所以分成幾個格子各自畫。
+  // 四個子分頁各一塊（data-panel），一次只顯示一塊：
+  //   認識組織：小U整理的介紹（hero）→ 我們是誰 → 最新消息
+  //   組織文化與工作規範：手冊重點 → 兩本手冊
+  //   認識團隊：組織架構 → 團隊成員
+  //   同事使用手冊：選同事 → 他的使用說明書＋跟虛擬分身聊天
+  // hero 和手冊重點來自 getAboutOverview（慢），其他來自 getAbout（快），所以分成幾個格子各自畫。
   function mountAbout(root) {
     const A = S.about;
     root.innerHTML =
       '<div class="pt-page pt-about">' +
         '<div class="pt-page-head">' +
-          '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織介紹、最新消息、手冊重點、組織架構和團隊成員。</p></div>' +
+          '<div><h1 class="pt-h1" data-role="title"></h1><p class="pt-sub" data-role="subtitle"></p></div>' +
           '<button type="button" class="pt-btn pt-btn-ghost" data-act="refresh">重新整理</button>' +
         "</div>" +
         '<div data-role="alert"></div>' +
-        '<div class="pt-ov" data-role="overview"></div>' +
-        '<div data-role="story"></div>' +
-        '<div data-role="news"></div>' +
-        '<div data-role="ov-sections"></div>' +
-        '<div data-role="body"></div>' +
+        '<div data-role="about-state"></div>' +
+        '<div data-panel="intro">' +
+          '<div class="pt-ov" data-role="overview"></div>' +
+          '<div data-role="story"></div>' +
+          '<div data-role="news"></div>' +
+        "</div>" +
+        '<div data-panel="culture" hidden>' +
+          '<div data-role="ov-sections"></div>' +
+          '<div data-role="handbooks"></div>' +
+        "</div>" +
+        '<div data-panel="team" hidden><div data-role="team"></div></div>' +
+        '<div data-panel="colleagues" hidden><div data-role="colleagues"></div></div>' +
       "</div>";
     A.el = root.firstElementChild;
     A.renderedData = null;
     A.el.addEventListener("click", onAboutClick);
+    bindColleagueChat(A.el);
+    applyAboutSub();
     renderOverview();
     renderAbout();
+  }
+
+  // 換子分頁：改標題、只顯示那一塊
+  function applyAboutSub() {
+    const A = S.about;
+    if (!A.el) return;
+    const meta = ABOUT_SUBS[A.sub] || ABOUT_SUBS.intro;
+    q(A.el, "title").textContent = meta.title;
+    q(A.el, "subtitle").textContent = meta.sub;
+    A.el.querySelectorAll("[data-panel]").forEach((panel) => { panel.hidden = panel.dataset.panel !== A.sub; });
+    // 從「認識團隊」按某人的「使用說明書」過來：焦點放在選到的那位同事上
+    if (A.sub === "colleagues" && A.focusPick) {
+      A.focusPick = false;
+      const btn = A.el.querySelector('.pt-col-pick[aria-pressed="true"]');
+      if (btn) btn.focus({ preventScroll: true });
+    }
   }
 
   function renderAboutButton() {
@@ -824,32 +869,35 @@
     btn.textContent = busy ? "讀取中…" : "重新整理";
   }
 
-  // getAbout 的部分：我們是誰（story 格子）、最新消息（news 格子），以及兩本手冊、組織架構、團隊成員（body 格子）
+  // getAbout 的部分：我們是誰、最新消息（認識組織）、兩本手冊（組織文化與工作規範）、組織架構和團隊成員（認識團隊）、同事使用手冊。
+  // 還沒拿到資料時，讀取中／出錯的提示放在各子分頁共用的 about-state 格子。
+  const ABOUT_BOXES = ["story", "news", "handbooks", "team", "colleagues"];
   function renderAbout() {
     const A = S.about;
     if (!A.el) return;
     renderAboutButton();
     q(A.el, "alert").innerHTML = A.error && A.data ? '<div class="pt-alert pt-alert-error" role="alert">重新整理失敗：' + esc(A.error) + "</div>" : "";
-    const storyBox = q(A.el, "story");
-    const newsBox = q(A.el, "news");
-    const body = q(A.el, "body");
-    [storyBox, newsBox, body].forEach((box) => {
+    ABOUT_BOXES.forEach((role) => {
+      const box = q(A.el, role);
       box.setAttribute("aria-busy", A.loading ? "true" : "false");
       box.classList.toggle("pt-stale", !!(A.loading && A.data));
     });
+    const state = q(A.el, "about-state");
     if (A.data) {
+      state.innerHTML = "";
       if (A.renderedData !== A.data) {
-        storyBox.innerHTML = storyHtml(A.data.story);
-        newsBox.innerHTML = newsHtml(A.data.news);
-        body.innerHTML = handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
+        q(A.el, "story").innerHTML = storyHtml(A.data.story);
+        q(A.el, "news").innerHTML = newsHtml(A.data.news);
+        q(A.el, "handbooks").innerHTML = handbooksHtml(A.data.handbooks);
+        q(A.el, "team").innerHTML = centersHtml(A.data.centers) + peopleHtml(A.data.people, A.data.profiles);
         A.renderedData = A.data;
+        renderColleagues();
         if (A.openIdx >= 0) openHandbook(A.openIdx, false); // 重新整理前開著的手冊繼續開著
       }
     } else {
       A.renderedData = null;
-      storyBox.innerHTML = "";
-      newsBox.innerHTML = "";
-      body.innerHTML = A.loading ? loadingHtml("正在讀取組織資料…") : A.error ? errorCardHtml(A.error) : "";
+      ABOUT_BOXES.forEach((role) => { q(A.el, role).innerHTML = ""; });
+      state.innerHTML = A.loading ? loadingHtml("正在讀取組織資料…") : A.error ? errorCardHtml(A.error) : "";
     }
   }
 
@@ -867,13 +915,16 @@
     if (A.ovLoading && A.ov) return; // 重新整理中：舊內容先留著（變淡），回來再換
     let html = "";
     let sections = "";
+    // 「組織文化與工作規範」的手冊重點還沒好的時候，也放同一句小U的話（讀取中／沒設定／出錯）
     if (A.ov) {
       html = (A.ovError ? '<div class="pt-alert pt-alert-error" role="alert">重點沒有更新成功：' + esc(A.ovError) + "</div>" : "") + overviewTopHtml(A.ov);
-      sections = A.ov.status === "ready" ? overviewSectionsHtml(A.ov.sections) : "";
+      sections = A.ov.status === "ready" ? overviewSectionsHtml(A.ov.sections) : overviewTopHtml(A.ov);
     } else if (A.ovLoading) {
       html = xiaouBlockHtml(XIAOU.overviewLoading, { typing: true });
+      sections = html;
     } else if (A.ovError) {
       html = xiaouBlockHtml("整理重點的時候出了點問題：" + A.ovError, { retry: true, error: true });
+      sections = html;
     }
     top.innerHTML = html;
     secs.innerHTML = sections;
@@ -924,6 +975,17 @@
     else if (act === "ov-retry") loadOverview();
     else if (act === "toggle-hb") toggleHandbook(Number(b.dataset.idx));
     else if (act === "news-more") toggleNews(b);
+    else if (act === "pick-col") pickColleague(b.dataset.id);
+    else if (act === "col-ask") sendColleagueQuestion(b.dataset.q || b.textContent, e.detail === 0);
+    else if (act === "col-clear") clearColleagueChat(e.detail === 0);
+    else if (act === "col-retry") retryColleague(b.dataset.id);
+    else if (act === "col-jump") jumpToColleagueChat();
+    else if (act === "open-manual") {
+      const A = S.about;
+      if (b.dataset.id && b.dataset.id !== A.colleague) { A.colleague = b.dataset.id; renderColleagues(); }
+      A.focusPick = true;
+      location.hash = "#about/colleagues";
+    }
   }
 
   /* ---------- 最新消息：受訪與評論 ---------- */
@@ -1141,7 +1203,12 @@
     return '<section class="pt-section" aria-labelledby="ptAboutOrg"><h2 class="pt-h2" id="ptAboutOrg">組織架構</h2>' + inner + "</section>";
   }
 
-  function personHtml(p) {
+  function profileFor(person, profiles) {
+    const email = person.email.toLowerCase();
+    return arr(profiles).find((x) => (email && x.email === email) || x.name === person.name) || null;
+  }
+  function personHtml(p, profiles) {
+    const prof = profileFor(p, profiles);
     const badges = p.approverOf.map((c) => '<span class="pt-badge pt-badge-lead">' + esc(c) + "主管</span>")
       .concat(p.financeRoles.map((r) => '<span class="pt-badge pt-badge-fin">財務・' + esc(r) + "</span>"));
     const email = /^[^\s@<>"']+@[^\s@<>"']+$/.test(p.email)
@@ -1149,18 +1216,321 @@
       : '<span class="pt-person-email pt-muted">' + (esc(p.email) || "—") + "</span>";
     return '<li class="pt-person">' +
       '<span class="pt-person-name">' + (esc(p.name) || "（未填姓名）") + "</span>" + email +
-      '<span class="pt-roles">' + (badges.length ? '<span class="sr-only">角色：</span>' + badges.join("") : "") + "</span>" +
+      '<span class="pt-roles">' + (badges.length ? '<span class="sr-only">角色：</span>' + badges.join("") : "") +
+        (prof ? '<button type="button" class="pt-textbtn pt-person-manual" data-act="open-manual" data-id="' + esc(prof.id) + '">使用說明書<span class="sr-only">：' + esc(p.name) + "</span></button>" : "") +
+      "</span>" +
     "</li>";
   }
-  function peopleHtml(list) {
+  function peopleHtml(list, profiles) {
     const inner = list.length
       ? '<div class="card pt-card pt-people-card">' +
           '<div class="pt-people-head" aria-hidden="true"><span>姓名</span><span>Email</span><span>角色</span></div>' +
-          '<ul class="pt-people">' + list.map(personHtml).join("") + "</ul>" +
+          '<ul class="pt-people">' + list.map((p) => personHtml(p, profiles)).join("") + "</ul>" +
         "</div>"
       : '<div class="card pt-card"><p class="empty-state pt-empty">還沒有成員資料。</p></div>';
     return '<section class="pt-section" aria-labelledby="ptAboutPeople"><h2 class="pt-h2" id="ptAboutPeople">團隊成員' +
       (list.length ? '<span class="pt-h2-count">' + list.length + " 人</span>" : "") + "</h2>" + inner + "</section>";
+  }
+
+  /* ============================================================
+     同事使用手冊：選一位同事 → 他自己寫的使用說明書＋跟他的虛擬分身聊天
+     資料來自「團隊個性化」分頁（只有同意放上網站的人）；聊天只存在這個分頁的記憶體裡，不存瀏覽器、後端也不記錄。
+     ============================================================ */
+  const COL_CHAT_MAX = 20;
+  const COL_FIELDS = [
+    ["hours", "工作時段與習慣"], ["contact", "找我最好的方式"], ["feedback", "我喜歡怎麼收到回饋"],
+    ["help", "可以找我幫忙的事"], ["life", "興趣與生活"], ["voice", "說話風格"],
+  ];
+  const COL_SUGGEST = ["介紹一下你自己", "怎麼找你最快？", "你喜歡怎麼收到回饋？", "可以找你幫忙什麼？"];
+  const PROFILE_KEYS = ["email", "title", "mbti", "blood", "zodiac", "hours", "contact", "feedback", "help", "life", "voice", "about"];
+
+  function normProfiles(list) {
+    return arr(list).filter((p) => p && typeof p === "object").map((p) => {
+      const o = { id: str(p.id).trim(), name: str(p.name).trim() };
+      PROFILE_KEYS.forEach((k) => { o[k] = str(p[k]).trim(); });
+      o.email = o.email.toLowerCase();
+      return o;
+    }).filter((p) => p.id && p.name);
+  }
+  // 頭像用名字：中文取後兩個字（王小明 → 小明），英文取字首
+  function initialsOf(name) {
+    const n = str(name).trim();
+    if (!n) return "?";
+    if (/^[\x00-\x7F\s]+$/.test(n)) return n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
+    const chars = Array.from(n.replace(/\s+/g, ""));
+    return chars.length >= 3 ? chars.slice(-2).join("") : chars.join("");
+  }
+  function hueClass(id) {
+    let h = 0;
+    for (const ch of str(id)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return "c" + (h % 6);
+  }
+  function colAvatarHtml(p, size) {
+    return '<span class="pt-col-av ' + hueClass(p.id) + (size ? " pt-col-av-" + size : "") + '" aria-hidden="true">' + esc(initialsOf(p.name)) + "</span>";
+  }
+  function colleagueChat(id) {
+    const A = S.about;
+    if (!A.chats[id]) A.chats[id] = { messages: [], waiting: false, gen: 0 };
+    return A.chats[id];
+  }
+  function currentColleague() {
+    const A = S.about;
+    return (A.data ? A.data.profiles : []).find((p) => p.id === A.colleague) || null;
+  }
+
+  function renderColleagues() {
+    const A = S.about;
+    if (!A.el || !A.data) return;
+    const box = q(A.el, "colleagues");
+    const list = A.data.profiles;
+    if (!list.length) {
+      box.innerHTML = '<div class="card pt-card"><p class="empty-state pt-empty">還沒有同事放上使用說明書。管理員在資料導入那份試算表的「團隊個性化」分頁新增，「同意放上網站」填「是」就會出現在這裡。</p></div>';
+      return;
+    }
+    if (!list.some((p) => p.id === A.colleague)) A.colleague = list[0].id;
+    const sel = currentColleague();
+    box.innerHTML =
+      '<div class="pt-col-picker" role="group" aria-label="選一位同事">' + list.map((p) =>
+        '<button type="button" class="pt-col-pick" data-act="pick-col" data-id="' + esc(p.id) + '" aria-pressed="' + (p.id === sel.id) + '">' +
+          colAvatarHtml(p) +
+          '<span class="pt-col-pick-text"><span class="pt-col-pick-name">' + esc(p.name) + "</span>" +
+            (p.title ? '<span class="pt-col-pick-title">' + esc(p.title) + "</span>" : "") + "</span>" +
+        "</button>").join("") +
+      "</div>" +
+      '<div class="pt-col-body">' + manualHtml(sel) + colChatHtml(sel) + "</div>";
+    renderColLog(sel);
+    const th = colThreadScroller();
+    if (th) th.scrollTop = th.scrollHeight; // 切回聊過的同事：從最新的對話開始看
+  }
+
+  function manualHtml(p) {
+    const A = S.about;
+    const person = (A.data ? A.data.people : []).find((x) => profileFor(x, [p]));
+    const tags = [p.mbti && "MBTI " + p.mbti, p.zodiac, p.blood && (/型$/.test(p.blood) ? p.blood : p.blood + " 型")].filter(Boolean);
+    const roles = person ? person.approverOf.map((c) => c + "主管").concat(person.financeRoles.map((r) => "財務・" + r)) : [];
+    // 每一欄可能寫了好幾段：跟小U的回答一樣分段（只認 **粗體** 和 • 清單，其他一律當純文字）
+    const rows = COL_FIELDS.filter((f) => p[f[0]]).map((f) => "<div><dt>" + esc(f[1]) + '</dt><dd class="pt-answer">' + formatAnswer(p[f[0]]) + "</dd></div>").join("");
+    return '<article class="card pt-card pt-manual" aria-labelledby="ptManualName">' +
+      '<div class="pt-manual-head">' + colAvatarHtml(p, "lg") +
+        '<div class="pt-manual-who"><h2 class="pt-manual-name" id="ptManualName">' + esc(p.name) + " 的使用說明書</h2>" +
+          (p.title ? '<p class="pt-manual-title">' + esc(p.title) + "</p>" : "") + "</div>" +
+      "</div>" +
+      (tags.length || roles.length
+        ? '<ul class="pt-tags pt-manual-tags">' + tags.map((t) => '<li class="pt-tag">' + esc(t) + "</li>").join("") +
+            roles.map((r) => '<li class="pt-tag pt-tag-role">' + esc(r) + "</li>").join("") + "</ul>"
+        : "") +
+      // 手機上說明書很長，聊天在最下面：給一顆按鈕直接跳過去（桌機聊天固定在右邊，不需要）
+      '<button type="button" class="pt-btn pt-btn-ghost pt-col-jump" data-act="col-jump">跟虛擬的' + esc(p.name) + "聊聊</button>" +
+      (rows ? '<dl class="pt-manual-list">' + rows + "</dl>" : "") +
+      (p.about ? '<div class="pt-manual-about"><h3 class="pt-h3">自我描述</h3><div class="pt-answer">' + formatAnswer(p.about) + "</div></div>" : "") +
+      (!rows && !p.about && !tags.length ? '<p class="pt-small pt-muted pt-manual-empty">還沒寫內容。</p>' : "") +
+    "</article>";
+  }
+
+  function colChatHtml(p) {
+    const empty = !colleagueChat(p.id).messages.length;
+    const nm = esc(p.name);
+    return '<section class="card pt-card pt-chat pt-col-chat" id="ptColChat" aria-label="和虛擬的' + nm + '聊天">' +
+      '<p class="pt-col-notice">虛擬的' + nm + "：照本人填的使用說明書回答，不代表本人；要本人決定的事，請直接找本人。</p>" +
+      '<div class="pt-thread">' +
+        '<div class="pt-msg pt-msg-bot pt-greeting">' +
+          colBotHtml(p, '<div class="pt-bubble"><p>嗨，我是虛擬的' + nm + "。想知道怎麼跟我合作、可以找我幫什麼忙，都可以問我。</p></div>") +
+        "</div>" +
+        '<div class="pt-faq pt-col-suggest" data-role="col-suggest"' + (empty ? "" : " hidden") + ">" +
+          '<div class="pt-faq-list" role="group" aria-label="可以這樣問">' +
+            COL_SUGGEST.map((t) => '<button type="button" class="pt-chip-btn" data-act="col-ask" data-q="' + esc(t) + '">' + esc(t) + "</button>").join("") +
+          "</div>" +
+        "</div>" +
+        '<div class="pt-log' + (empty ? " is-empty" : "") + '" data-role="col-log" role="log" aria-live="polite" aria-label="和虛擬的' + nm + '的對話"></div>' +
+      "</div>" +
+      '<form class="pt-composer" data-role="col-form" novalidate>' +
+        '<label class="sr-only" for="ptColInput">問虛擬的' + nm + "</label>" +
+        '<div class="pt-composer-row">' +
+          '<textarea id="ptColInput" class="textarea-input pt-input" data-role="col-input" rows="1" maxlength="500" placeholder="問虛擬的' + nm + '…"></textarea>' +
+          '<button type="submit" class="pt-send" data-role="col-send">送出</button>' +
+        "</div>" +
+        '<div class="pt-composer-foot">' +
+          '<p class="pt-composer-hint">按 Enter 送出，Shift + Enter 換行</p>' +
+          '<button type="button" class="pt-textbtn" data-act="col-clear"' + (empty ? " hidden" : "") + ">清除對話</button>" +
+        "</div>" +
+      "</form>" +
+    "</section>";
+  }
+  function colBotHtml(p, bubbleHtml, after) {
+    return colAvatarHtml(p) + '<div class="pt-msg-body"><p class="pt-msg-name">虛擬的' + esc(p.name) + "</p>" + bubbleHtml + (after || "") + "</div>";
+  }
+  function colMsgNode(p, m) {
+    const n = document.createElement("div");
+    n.dataset.id = m.id;
+    if (m.role === "user") {
+      n.className = "pt-msg pt-msg-user";
+      n.innerHTML = '<div class="pt-msg-body"><div class="pt-bubble"><span class="sr-only">你問：</span>' + esc(m.text) + "</div></div>";
+      if (m.error) {
+        const r = document.createElement("div");
+        r.className = "pt-msg-error";
+        r.innerHTML = '<p class="pt-msg-error-text">沒有收到回答：' + esc(m.error) + "</p>" +
+          '<button type="button" class="pt-btn pt-btn-ghost pt-btn-sm" data-act="col-retry" data-id="' + esc(m.id) + '">重試</button>';
+        n.firstChild.appendChild(r);
+      }
+      return n;
+    }
+    n.className = "pt-msg pt-msg-bot";
+    n.innerHTML = colBotHtml(p, '<div class="pt-bubble"><div class="pt-answer">' + formatAnswer(m.text) + "</div></div>");
+    return n;
+  }
+  function colTypingNode(p) {
+    const n = document.createElement("div");
+    n.className = "pt-msg pt-msg-bot pt-msg-pending";
+    n.innerHTML = colBotHtml(p, '<div class="pt-bubble pt-typing">' + DOTS + "</div>", '<p class="pt-typing-note">虛擬的' + esc(p.name) + " 正在想…</p>");
+    return n;
+  }
+
+  // 對話整段照狀態重畫（最多 20 則，很快）；回傳最後一則，給捲動用
+  function renderColLog(p) {
+    const A = S.about;
+    if (!A.el || A.colleague !== p.id) return null;
+    const log = q(A.el, "col-log");
+    if (!log) return null;
+    const C = colleagueChat(p.id);
+    log.innerHTML = "";
+    C.messages.forEach((m) => log.appendChild(colMsgNode(p, m)));
+    if (C.waiting) log.appendChild(colTypingNode(p));
+    const empty = !C.messages.length;
+    log.classList.toggle("is-empty", empty);
+    const sug = q(A.el, "col-suggest");
+    if (sug) sug.hidden = !empty;
+    const clear = A.el.querySelector('[data-act="col-clear"]');
+    if (clear) clear.hidden = empty;
+    const send = q(A.el, "col-send");
+    if (send) send.disabled = C.waiting;
+    A.el.querySelectorAll('[data-act="col-retry"], [data-act="col-ask"]').forEach((b) => { b.disabled = C.waiting; });
+    return log.lastElementChild;
+  }
+  // 桌機：聊天框固定在右邊、對話在框裡自己捲；手機：整頁捲（跟首頁一樣避開底部的輸入框）
+  function colThreadScroller() {
+    const th = S.about.el && S.about.el.querySelector(".pt-col-chat .pt-thread");
+    return th && getComputedStyle(th).overflowY !== "visible" ? th : null;
+  }
+  function revealColleague(node) {
+    if (!node || !node.isConnected) return;
+    const th = colThreadScroller();
+    if (!th) { reveal(node, S.about.el && S.about.el.querySelector(".pt-col-chat .pt-composer")); return; }
+    try {
+      const t = th.getBoundingClientRect();
+      const r = node.getBoundingClientRect();
+      if (!r.height) return;
+      let dy = 0;
+      if (r.bottom > t.bottom - 8) dy = r.bottom - (t.bottom - 8);
+      if (r.top - dy < t.top + 8) dy = r.top - (t.top + 8); // 回答比框高：先看到開頭
+      if (Math.abs(dy) >= 1) th.scrollTop += dy;
+    } catch (e) { /* 捲不動就算了 */ }
+  }
+  function jumpToColleagueChat() {
+    const A = S.about;
+    const chat = A.el && A.el.querySelector(".pt-col-chat");
+    if (!chat) return;
+    try {
+      const top = chat.getBoundingClientRect().top + window.scrollY - topbarBottom() - 12;
+      window.scrollTo(0, Math.max(0, top));
+    } catch (e) { /* ignore */ }
+    // 焦點移到聊天區（不直接點輸入框：手機鍵盤一跳出來，建議問題就被擋住了）
+    chat.setAttribute("tabindex", "-1");
+    chat.focus({ preventScroll: true });
+  }
+
+  function bindColleagueChat(el) {
+    const isInput = (t) => t && t.matches && t.matches('[data-role="col-input"]');
+    el.addEventListener("submit", (e) => {
+      if (!e.target.matches('[data-role="col-form"]')) return;
+      e.preventDefault();
+      submitColleague();
+    });
+    el.addEventListener("keydown", (e) => {
+      if (!isInput(e.target) || e.key !== "Enter" || e.shiftKey) return;
+      // 注音／倉頡選字時按的 Enter 不能送出
+      if (e.isComposing || e.keyCode === 229 || S.about.composing) return;
+      e.preventDefault();
+      submitColleague();
+    });
+    el.addEventListener("compositionstart", (e) => { if (isInput(e.target)) S.about.composing = true; });
+    el.addEventListener("compositionend", (e) => { if (isInput(e.target)) S.about.composing = false; });
+    el.addEventListener("focusout", (e) => { if (isInput(e.target)) S.about.composing = false; });
+    el.addEventListener("input", (e) => { if (isInput(e.target)) autoGrow(e.target); });
+  }
+  function submitColleague() {
+    const A = S.about;
+    const p = currentColleague();
+    if (!p || !A.el || colleagueChat(p.id).waiting) return;
+    const input = q(A.el, "col-input");
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
+    input.value = "";
+    autoGrow(input);
+    sendColleagueQuestion(text, false);
+  }
+  function sendColleagueQuestion(text, refocus) {
+    const p = currentColleague();
+    if (!p) return;
+    const C = colleagueChat(p.id);
+    const question = str(text).trim().slice(0, 500);
+    if (!question || C.waiting) return;
+    const msg = { id: newId(), role: "user", text: question };
+    C.messages.push(msg);
+    askColleagueFor(p, msg);
+    if (refocus && S.about.el) { const input = q(S.about.el, "col-input"); if (input) input.focus(); }
+  }
+  async function askColleagueFor(p, userMsg) {
+    const A = S.about;
+    const C = colleagueChat(p.id);
+    if (C.waiting) return;
+    C.waiting = true;
+    const gen = C.gen;
+    delete userMsg.error;
+    while (C.messages.length > COL_CHAT_MAX) C.messages.shift();
+    revealColleague(renderColLog(p));
+    const idx = C.messages.indexOf(userMsg);
+    const history = C.messages.slice(0, idx < 0 ? C.messages.length : idx)
+      .filter((m) => m.role === "assistant" || !m.error)
+      .slice(-HISTORY_MAX)
+      .map((m) => ({ role: m.role, text: m.text }));
+    const res = await call("askColleague", { colleague: p.id, question: userMsg.text, history }, 90000);
+    if (A !== S.about || gen !== C.gen) return; // 換人登入或清除對話了：丟掉這個回答
+    C.waiting = false;
+    if (res.ok) {
+      const ans = { id: newId(), role: "assistant", text: str(res.answer).trim() || "這題我答不出來，直接問我本人比較準。" };
+      const i = C.messages.indexOf(userMsg);
+      if (i >= 0) C.messages.splice(i + 1, 0, ans); else C.messages.push(ans);
+      while (C.messages.length > COL_CHAT_MAX) C.messages.shift();
+    } else {
+      userMsg.error = res.error || "沒有收到回答。";
+    }
+    const last = renderColLog(p); // 使用者這時候看的是別位同事：只存起來，切回來就看得到
+    if (last) revealColleague(res.ok ? last : (A.el.querySelector('.pt-col-chat .pt-msg[data-id="' + userMsg.id + '"]') || last));
+  }
+  function retryColleague(id) {
+    const p = currentColleague();
+    if (!p) return;
+    const C = colleagueChat(p.id);
+    const m = C.messages.find((x) => x.id === id);
+    if (m && !C.waiting) askColleagueFor(p, m);
+  }
+  function clearColleagueChat(refocus) {
+    const p = currentColleague();
+    if (!p) return;
+    const C = colleagueChat(p.id);
+    C.gen += 1;
+    C.waiting = false;
+    C.messages = [];
+    renderColLog(p);
+    if (refocus && S.about.el) { const input = q(S.about.el, "col-input"); if (input) input.focus(); }
+  }
+  function pickColleague(id) {
+    const A = S.about;
+    if (!A.data || !A.data.profiles.some((p) => p.id === id) || id === A.colleague) return;
+    A.colleague = id;
+    renderColleagues();
+    const btn = A.el.querySelector('.pt-col-pick[aria-pressed="true"]');
+    if (btn) btn.focus(); // 換完同事，焦點留在選單上
   }
 
   /* ============================================================
@@ -1649,7 +2019,7 @@
     if (typeof isSignedIn === "function" && isSignedIn()) {
       const visible = (id) => { const el = document.getElementById(id); return !!(el && !el.hidden); };
       if (visible("view-home")) showHome();
-      if (visible("view-about")) showAbout();
+      if (visible("view-about")) showAbout(aboutSubFromHash());
       if (visible("view-budget")) showBudget();
       if (visible("view-tools")) showTools();
     }
