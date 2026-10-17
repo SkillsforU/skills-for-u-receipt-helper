@@ -1221,8 +1221,9 @@ function setupProjectReviewSheets() {
     .concat(ensureSettingsHeaders_(getOrCreateSheet_(PEOPLE_SHEET_NAME, PEOPLE_HEADERS, SEED_PEOPLE), PEOPLE_HEADERS))
     .concat(ensureSettingsHeaders_(getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []), BUDGET_HEADERS))
     .concat(ensureSettingsHeaders_(glSheet, GLCODE_HEADERS))
-    .concat(ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS))
-    .concat(ensureSettingsHeaders_(getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []), NEWS_HEADERS));
+    // 手冊、最新消息已經記在「網站後台_資料導入連結」的話，總表就不用再建這兩個備用分頁
+    .concat(registryFind_(HANDBOOK_PURPOSE_PATTERN).length ? [] : ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS))
+    .concat(registryFind_(NEWS_PURPOSE_PATTERN).length ? [] : ensureSettingsHeaders_(getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []), NEWS_HEADERS));
   getBatchSheet_();
 
   const created = [];
@@ -1249,7 +1250,7 @@ function setupProjectReviewSheets() {
 
   // 設定之間對不上的地方（改名沒改完、打錯字）一律講出來：這類問題平常不會報錯，
   // 只會讓同仁「選不到某個專案」或「寫入審核表失敗」，很難從網頁上看出原因。
-  const configWarnings = headerConflicts.concat(configConsistencyWarnings_());
+  const configWarnings = headerConflicts.concat(configConsistencyWarnings_()).concat(registryWarnings_());
   const warningBlock = configWarnings.length > 0
     ? '\n\n⚠️ 設定需要確認：\n' + configWarnings.map(function (w) { return '• ' + w; }).join('\n')
     : '';
@@ -1316,7 +1317,7 @@ function configConsistencyWarnings_() {
     if (p.financeRoles.length && !p.email) warnings.push('「' + p.name + '」有財務角色但沒有 Email，登入後系統認不出他。');
   });
   if (!loadKnowledgeEntries_().length) {
-    warnings.push('「' + KNOWLEDGE_SHEET_NAME + '」還沒有填任何手冊：首頁的「問手冊」和「認識組織」的手冊區會是空的。');
+    warnings.push('「網站後台_資料導入連結」和總表的「' + KNOWLEDGE_SHEET_NAME + '」都還沒有填任何手冊：小U 回答不了組織的問題，「認識組織」的手冊區也會是空的。');
   }
   return warnings;
 }
@@ -2812,7 +2813,123 @@ const LINK_PREVIEW_RETRY_SECONDS = 1800;  // 抓不到的，30 分鐘後再試
 const QA_LOG_SHEET_NAME = '小U問答紀錄';
 const QA_LOG_HEADERS = ['時間', '問題', '回答依據']; // 手冊／一般知識／答不出來；不記是誰問的
 
+/* ---------- 資料導入連結：團隊後台要讀的檔案，統一記在這份試算表 ----------
+   「網站後台_資料導入連結」第一個分頁，一列一個檔案：年度｜網站分頁｜用途｜檔案名稱｜連結｜…
+   系統看「用途」找檔案：
+   - 有「手冊」→ 小U 和「認識組織」讀的手冊（標題用「用途」那格）
+   - 有「最新消息」或「媒體」→ 最新消息：受訪與評論（讀那份試算表的第一個分頁）
+   - 有「金流表」→ 計畫與預算（讀它的「網站摘要」分頁）
+   同一個用途有好幾年時，用今年那一列；沒有今年就用最新年度（「不分年度」也可以）。
+   這份試算表的網址（或檔案 ID）放在指令碼屬性 DATA_REGISTRY_ID，不寫進程式碼（GitHub 是公開的）；
+   預覽測試可以填另一份副本。沒設定、或這份表格沒有填某種檔案時，照舊讀總表的「知識庫設定」「媒體報導」分頁、
+   用收支總表算計畫與預算。 */
+const DATA_REGISTRY_ID_PROP = 'DATA_REGISTRY_ID';
+const REGISTRY_CACHE_SECONDS = 300;     // 改了資料導入連結，最晚 5 分鐘生效
+const CASHFLOW_SUMMARY_SHEET = '網站摘要';
+const CASHFLOW_CENTER_OWN = '中心營運';  // 「網站摘要」專案欄空白＝中心本身的人事費、業務費
+
+let _registryRows = null; // 同一次執行內只讀一次
+
+function dataRegistryId_() {
+  const raw = String(PropertiesService.getScriptProperties().getProperty(DATA_REGISTRY_ID_PROP) || '').trim();
+  return fileIdFromUrl_(raw) || raw; // 貼整個網址或只貼 ID 都可以
+}
+
+// 給選單①的檢查：資料導入連結有沒有設定、打不打得開；金流表的「網站摘要」有沒有找不到的列
+function registryWarnings_() {
+  const id = dataRegistryId_();
+  if (!id) return ['指令碼屬性還沒有 ' + DATA_REGISTRY_ID_PROP + '（填「網站後台_資料導入連結」的網址）：手冊、最新消息、計畫與預算會照舊讀總表的分頁。'];
+  try {
+    SpreadsheetApp.openById(id);
+  } catch (e) {
+    return ['打不開「網站後台_資料導入連結」（指令碼屬性 ' + DATA_REGISTRY_ID_PROP + '）：請確認網址正確、已經共用給 service@skillsforu.org。'];
+  }
+  if (!loadRegistry_().length) {
+    return ['「網站後台_資料導入連結」的第一個分頁讀不到任何檔案：標題列要有「用途」「連結」兩欄，下面每一列填用途和連結。'];
+  }
+  if (!registryFind_(CASHFLOW_PURPOSE_PATTERN).length) return [];
+  const cf = cashflowOverview_();
+  if (!cf.ok) return ['計畫與預算：' + cf.error];
+  return (cf.warnings || []).map(function (w) { return '計畫與預算：' + w; });
+}
+
+// 整份表格讀成一列一列（第一列是標題）
+function readAllRows_(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 1) return [];
+  return sheet.getRange(1, 1, last, sheet.getMaxColumns()).getValues();
+}
+
+function loadRegistry_() {
+  if (_registryRows) return _registryRows;
+  const id = dataRegistryId_();
+  if (!id) return (_registryRows = []);
+  const cache = CacheService.getScriptCache();
+  const key = 'registry_v1_' + id;
+  const hit = cache.get(key);
+  if (hit) {
+    try {
+      return (_registryRows = JSON.parse(hit));
+    } catch (e) { /* 壞掉的快取就重讀 */ }
+  }
+  let rows = [];
+  try {
+    const values = readAllRows_(SpreadsheetApp.openById(id).getSheets()[0]);
+    // 標題列：前幾列裡有「用途」和「連結」的那一列（上面多一列標題或說明也讀得到）
+    const trim = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+    let hi = -1;
+    for (let i = 0; i < Math.min(values.length, 10) && hi < 0; i++) {
+      const cells = values[i].map(trim);
+      if (cells.indexOf('用途') >= 0 && cells.indexOf('連結') >= 0) hi = i;
+    }
+    if (hi < 0) throw new Error('第一個分頁找不到「用途」「連結」欄');
+    const header = values[hi].map(trim);
+    const at = function (r, name) { const i = header.indexOf(name); return i < 0 ? '' : trim(r[i]); };
+    rows = values.slice(hi + 1).map(function (r) {
+      const url = at(r, '連結');
+      return { year: at(r, '年度'), page: at(r, '網站分頁'), purpose: at(r, '用途'), name: at(r, '檔案名稱'), url: url, id: fileIdFromUrl_(url) };
+    }).filter(function (r) { return r.purpose && r.id; });
+  } catch (e) {
+    console.warn('讀不到資料導入連結（' + id + '，要共用給 service@skillsforu.org）：' + e);
+    return (_registryRows = []);
+  }
+  try {
+    cache.put(key, JSON.stringify(rows), REGISTRY_CACHE_SECONDS);
+  } catch (e) { /* 存不了就下次再讀 */ }
+  return (_registryRows = rows);
+}
+
+// 每一種用途只留一列：今年 > 最新年度 > 不分年度
+function registryPick_(rows) {
+  const thisYear = Number(Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy'));
+  const score = function (r) {
+    const y = Number(String(r.year).replace(/[^\d]/g, ''));
+    if (y === thisYear) return 1e6;
+    return y > 0 ? y : 0;
+  };
+  const best = {};
+  const order = [];
+  (rows || loadRegistry_()).forEach(function (r) {
+    const k = r.purpose;
+    if (!(k in best)) { best[k] = r; order.push(k); return; }
+    if (score(r) > score(best[k])) best[k] = r;
+  });
+  return order.map(function (k) { return best[k]; });
+}
+
+const HANDBOOK_PURPOSE_PATTERN = /手冊/;
+const NEWS_PURPOSE_PATTERN = /最新消息|媒體/;
+const CASHFLOW_PURPOSE_PATTERN = /金流/;
+
+function registryFind_(pattern) {
+  return registryPick_().filter(function (r) { return pattern.test(r.purpose); });
+}
+
 function loadKnowledgeEntries_() {
+  const fromRegistry = registryFind_(HANDBOOK_PURPOSE_PATTERN).map(function (r) {
+    return { title: r.purpose, fileId: r.id, purpose: KNOWLEDGE_PURPOSE_BOTH, description: r.name ? '檔案：' + r.name : '' };
+  });
+  if (fromRegistry.length) return fromRegistry;
   const sheet = getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []);
   return readSheetRows_(sheet, KNOWLEDGE_HEADERS.length).map(function (r) {
     const link = String(r[1] || '').trim();
@@ -2886,7 +3003,7 @@ function extractKnowledgeText_(fileId) {
       name: '（團隊後台暫存，可刪除）' + file.getName(),
       mimeType: 'application/vnd.google-apps.presentation',
     });
-    if (copy.code !== 200) throw new Error('檔案太大（' + Math.round(file.getSize() / 1024 / 1024) + ' MB），轉成 Google 簡報也失敗（HTTP ' + copy.code + '）。請把它另存成 Google 簡報，再把那份的連結填進「知識庫設定」。');
+    if (copy.code !== 200) throw new Error('檔案太大（' + Math.round(file.getSize() / 1024 / 1024) + ' MB），轉成 Google 簡報也失敗（HTTP ' + copy.code + '）。請把它另存成 Google 簡報，再把那份的連結填進「網站後台_資料導入連結」。');
     const tempId = JSON.parse(copy.text).id;
     try {
       const res = driveApi_('get', 'files/' + tempId + '/export?mimeType=text%2Fplain');
@@ -3052,6 +3169,7 @@ const SYSTEM_GUIDE_TEXT = [
   '（找誰）付款進度的問題先看「上傳紀錄」，還有疑問找會計；系統用不順或出現錯誤訊息，截圖給執行長偉翔。',
   '（組織的社群）Facebook：Skills for U https://www.facebook.com/skillsforu2018 ；OPEN 技職 https://www.facebook.com/open.skills.to.all ；臺灣技職教育年會 https://www.facebook.com/profile.php?id=61558222603288 。Instagram：OPEN 技職 https://www.instagram.com/openskillstoall/ 。Threads：OPEN 技職 https://www.threads.com/@openskillstoall 。',
   '（常用工具）團隊後台的「常用工具」分頁會陸續放上同仁常用的小工具，例如名片掃描；還沒上線的會標「即將推出」。',
+  '（計畫與預算）數字來自當年度金流表的「網站摘要」分頁，會計每月結算完更新：「全年」是 1–12 月合計（還沒結算的月份是預估），「已結算」是 1 月到結算月的實際支出，「剩餘」是全年減已結算。',
 ].join('\n');
 
 function askHandbook_(body, auth) {
@@ -3183,8 +3301,23 @@ function getAbout_() {
   return { ok: true, story: ORG_STORY, handbooks: handbooks, centers: centers, people: people, news: loadNews_() };
 }
 
+// 最新消息的來源：資料導入連結裡「最新消息／媒體」那份試算表的第一個分頁；沒填就用總表的「媒體報導」分頁
+function newsSheet_() {
+  const row = registryFind_(NEWS_PURPOSE_PATTERN)[0];
+  if (row) {
+    try {
+      return SpreadsheetApp.openById(row.id).getSheets()[0];
+    } catch (e) {
+      console.warn('打不開最新消息的試算表「' + (row.name || row.id) + '」（要共用給 service@skillsforu.org）：' + e);
+      return null;
+    }
+  }
+  return getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []);
+}
+
 function loadNews_() {
-  const sheet = getOrCreateSheet_(NEWS_SHEET_NAME, NEWS_HEADERS, []);
+  const sheet = newsSheet_();
+  if (!sheet) return [];
   const types = ['受訪', '評論', '報導'];
   const rows = readSheetRows_(sheet, NEWS_HEADERS.length).map(function (r) {
     return {
@@ -3356,7 +3489,7 @@ function getAboutOverview_() {
   });
   if (!entries.length) {
     return { ok: true, overview: { status: 'notConfigured', sections: [], intro: null, updatedAt: '',
-      message: '還沒有設定手冊。請管理員在總表「知識庫設定」填入工作手冊、組織文化手冊的連結，用途填「認識組織」或「兩者」。' } };
+      message: '還沒有設定手冊。請管理員在「網站後台_資料導入連結」填入組織手冊、組織文化手冊的連結（用途要有「手冊」兩個字）。' } };
   }
   let fingerprint;
   try {
@@ -3420,10 +3553,96 @@ function getAboutOverview_() {
   return { ok: true, overview: overview };
 }
 
-// 計畫與預算：預算（預算項目設定「預算金額」欄）對照收支總表的實際金額。
-// 已核准（含已付款）＝已用；待審核＝審核中；被退回的不算。只開放給中心審核人和有財務角色的人。
+// 試算表的數字格：公式算出來的是數字；手打的「1,234」也認得；空白、「找不到」等文字回傳 NaN
+function sheetNumber_(v) {
+  if (typeof v === 'number') return v;
+  const t = String(v === undefined || v === null ? '' : v).replace(/[,\s]/g, '');
+  return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
+}
+
+// 計畫與預算讀金流表的「網站摘要」分頁（資料導入連結裡「金流表」那一列）。網站只顯示這一頁的總結。
+// 「網站摘要」的格式：A2 年度、B3 結算到幾月；A 欄寫「中心」的那一列是標題，下面一列一筆：
+//   中心｜專案（空白＝中心本身）｜類別｜全年｜已結算｜剩餘｜執行率｜來源分頁｜來源列｜…，遇到「合計」就停。
+// 回傳的形狀跟原本的計畫與預算一樣（中心 → 專案 → 項目），多 source: 'cashflow'：
+//   預算＝全年（含還沒結算月份的預估）、已付款＝已結算，前端改用「全年／已結算／剩餘」的字。
+// 資料導入連結沒有金流表就回傳 null（改用收支總表算）。
+function cashflowOverview_() {
+  const row = registryFind_(CASHFLOW_PURPOSE_PATTERN)[0];
+  if (!row) return null;
+  let ss;
+  try {
+    ss = SpreadsheetApp.openById(row.id);
+  } catch (e) {
+    return { ok: false, error: '打不開金流表「' + (row.name || row.id) + '」：請確認已經共用給 service@skillsforu.org。' };
+  }
+  const sheet = ss.getSheetByName(CASHFLOW_SUMMARY_SHEET);
+  if (!sheet) return { ok: false, error: '金流表「' + ss.getName() + '」裡沒有「' + CASHFLOW_SUMMARY_SHEET + '」分頁。' };
+  const values = readAllRows_(sheet);
+  let year = '';
+  let month = 0;
+  let headerRow = -1;
+  values.forEach(function (r, i) {
+    const a = String(r[0] || '').trim();
+    if (headerRow >= 0) return;
+    if (a === '年度') year = String(r[1] || '').trim();
+    else if (a === '結算到幾月') month = Math.max(0, Math.min(12, Math.floor(Number(r[1]) || 0)));
+    else if (a === '中心') headerRow = i;
+  });
+  if (headerRow < 0) return { ok: false, error: '「' + CASHFLOW_SUMMARY_SHEET + '」找不到標題列（A 欄寫「中心」的那一列）。' };
+  const zero = function () { return { approved: 0, paid: 0, pending: 0, count: 0 }; };
+  const centers = [];
+  const warnings = [];
+  for (let i = headerRow + 1; i < values.length; i++) {
+    const r = values[i];
+    const center = String(r[0] || '').trim();
+    if (center === '合計') break;
+    if (!center) continue;
+    const project = String(r[1] || '').trim();
+    const category = String(r[2] || '').trim() || '支出';
+    const full = sheetNumber_(r[3]);
+    const settled = sheetNumber_(r[4]);
+    const ok = isFinite(full) && isFinite(settled);
+    if (!ok) warnings.push('「' + center + (project ? '／' + project : '') + '／' + category + '」在金流表找不到數字：請檢查「' + CASHFLOW_SUMMARY_SHEET + '」第 ' + (i + 1) + ' 列的來源分頁和來源列。');
+    let c = centers.filter(function (x) { return x.name === center; })[0];
+    if (!c) { c = { name: center, projects: [] }; centers.push(c); }
+    const pname = project || CASHFLOW_CENTER_OWN;
+    let p = c.projects.filter(function (x) { return x.name === pname; })[0];
+    if (!p) {
+      p = { name: pname, own: !project, status: '', budget: 0, approved: 0, paid: 0, pending: 0, items: [], unassigned: zero() };
+      c.projects.push(p);
+    }
+    const budget = ok ? full : 0;
+    const paid = ok ? settled : 0;
+    p.items.push({ category: category, item: '', budget: budget, approved: paid, paid: paid, pending: 0, count: 0, missing: !ok });
+    p.budget += budget;
+    p.approved += paid;
+    p.paid += paid;
+  }
+  centers.forEach(function (c) {
+    c.projects.sort(function (a, b) { return (a.own ? 0 : 1) - (b.own ? 0 : 1); }); // 中心營運排第一個，其他照網站摘要的順序
+  });
+  const totals = { budget: 0, approved: 0, paid: 0, pending: 0 };
+  centers.forEach(function (c) {
+    c.projects.forEach(function (p) {
+      totals.budget += p.budget;
+      totals.approved += p.approved;
+      totals.paid += p.paid;
+    });
+  });
+  const out = {
+    ok: true, source: 'cashflow', year: year, settledMonth: month, sourceName: ss.getName(),
+    generatedAt: nowText_(), totals: totals, centers: centers,
+  };
+  if (warnings.length) out.warnings = warnings;
+  return out;
+}
+
+// 計畫與預算：有金流表就讀「網站摘要」（上面 cashflowOverview_）；沒有的話，用預算（預算項目設定「預算金額」欄）
+// 對照收支總表的實際金額：已核准（含已付款）＝已用；待審核＝審核中；被退回的不算。只開放給中心審核人和有財務角色的人。
 function getBudgetOverview_(auth) {
   if (!canViewBudget_(auth.email)) return { ok: false, error: '這一頁只開放給主管和財務。' };
+  const cashflow = cashflowOverview_();
+  if (cashflow) return cashflow;
   const cfg = loadConfig_();
   const table = readMasterTable_();
   const blank = function () { return { approved: 0, paid: 0, pending: 0, count: 0 }; };
@@ -3665,13 +3884,13 @@ function testSlackFinanceWebhook() {
 }
 
 /**
- * 知識庫測試（同上）。填好總表「知識庫設定」後執行：逐份讀取手冊，在記錄印出每一份讀到幾個字、有沒有錯誤。
+ * 知識庫測試（同上）。填好「網站後台_資料導入連結」（或總表「知識庫設定」）後執行：逐份讀取手冊，在記錄印出每一份讀到幾個字、有沒有錯誤。
  * 第一次執行時 Google 可能會要求授權（讀取雲端硬碟檔案），按允許即可。
  */
 function testKnowledgeBase() {
   var entries = loadKnowledgeEntries_();
   if (!entries.length) {
-    Logger.log('「' + KNOWLEDGE_SHEET_NAME + '」還沒有填任何手冊。');
+    Logger.log('「網站後台_資料導入連結」和「' + KNOWLEDGE_SHEET_NAME + '」都還沒有填任何手冊。');
     return;
   }
   entries.forEach(function (e) {

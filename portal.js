@@ -33,7 +33,7 @@
     typing: "小U 正在想…",
     typingSlow: "比平常久一點，再等我一下…",                                  // 等超過 20 秒才換成這句
     generalNote: "這只是小U的想法，不是組織規定，結果需要靠自己智慧判斷喔～",   // kind: general 的回答底下
-    notConfiguredNote: "我還沒拿到手冊，組織規定的問題暫時答不了，請管理員在總表「知識庫設定」填好手冊連結。",
+    notConfiguredNote: "我還沒拿到手冊，組織規定的問題暫時答不了，請管理員在「網站後台_資料導入連結」填好手冊連結。",
     overviewLoading: "小U 正在讀手冊、整理重點，第一次大約要半分鐘…",
     // 介紹卡上的「追蹤我們」：用文字標示平台，不放品牌 logo
     social: [
@@ -985,7 +985,7 @@
   // 最上面那一格：整理好了是 hero；還沒設定／暫時不能用就是小U的一句話
   function overviewTopHtml(ov) {
     if (ov.status === "notConfigured") {
-      return xiaouBlockHtml(ov.message || "手冊還沒設定好，我暫時沒辦法整理重點。請管理員在總表「知識庫設定」填好手冊連結。");
+      return xiaouBlockHtml(ov.message || "手冊還沒設定好，我暫時沒辦法整理重點。請管理員在「網站後台_資料導入連結」填好手冊連結。");
     }
     if (ov.status === "unavailable") {
       return xiaouBlockHtml(ov.message || "我現在沒辦法整理重點，等一下再試試看。", { retry: true });
@@ -1059,7 +1059,7 @@
   function handbooksHtml(list) {
     let inner;
     if (!list.length) {
-      inner = '<div class="card pt-card"><p class="empty-state pt-empty">手冊還沒設定。請管理員到總表「知識庫設定」分頁填入手冊連結。</p></div>';
+      inner = '<div class="card pt-card"><p class="empty-state pt-empty">手冊還沒設定。請管理員在「網站後台_資料導入連結」填入手冊連結。</p></div>';
     } else {
       inner = '<div class="pt-hb-list">' + list.map((h, i) => {
         const actions = [];
@@ -1155,6 +1155,24 @@
      ============================================================ */
   const BUDGET_FRESH_MS = 20000; // 20 秒內切回來直接用剛抓的資料
   const FOOTNOTE = "已用金額來自收支總表：已核准（含已付款）的單據才算已用，被退回的不算。預算金額請在總表「預算項目設定」分頁的「預算金額」欄填寫。";
+  // 金流表模式（後端回 source: "cashflow"）：數字來自當年度金流表的「網站摘要」分頁，網站只顯示總結。
+  // 預算＝全年（1–12 月，還沒結算的月份是預估），已付款＝已結算（1 月到結算月），剩餘＝全年減已結算。
+  function cfMonths(d) {
+    const m = d.settledMonth;
+    const range = (a, b) => (a === b ? a + " 月" : a + "–" + b + " 月");
+    return {
+      settled: m > 0 ? range(1, m) : "",
+      left: m > 0 && m < 12 ? range(m + 1, 12) : "",
+    };
+  }
+  function cfFootnote(d) {
+    const mm = cfMonths(d);
+    let how;
+    if (!mm.settled) how = "：已結算是已經結算月份的實際支出，全年是已結算加上還沒結算月份的預估";
+    else if (!mm.left) how = "，結算到 12 月：全年和已結算都是 1–12 月的實際支出";
+    else how = "，結算到 " + d.settledMonth + " 月：已結算是 " + mm.settled + "的實際支出，全年是已結算加上 " + mm.left + "的預估";
+    return "數字來自" + (d.year ? " " + d.year + " 年" : "") + "金流表的「網站摘要」分頁" + how + "，剩餘是全年減已結算。數字有問題請找會計，在金流表修正。";
+  }
 
   function normProject(p) {
     p = p && typeof p === "object" ? p : {};
@@ -1162,10 +1180,12 @@
     return {
       name: str(p.name).trim() || "（未命名專案）",
       status: str(p.status).trim(),
+      own: p.own === true, // 金流表模式：中心本身的人事費、業務費
       budget: num(p.budget), approved: num(p.approved), paid: num(p.paid), pending: num(p.pending),
       items: arr(p.items).filter((it) => it && typeof it === "object").map((it) => ({
         category: str(it.category).trim(), item: str(it.item).trim(),
         budget: num(it.budget), approved: num(it.approved), paid: num(it.paid), pending: num(it.pending), count: num(it.count),
+        missing: it.missing === true, // 金流表模式：這一列在金流表找不到數字
       })),
       unassigned: { approved: num(u.approved), paid: num(u.paid), pending: num(u.pending), count: num(u.count) },
     };
@@ -1184,7 +1204,13 @@
     const totals = t
       ? { budget: num(t.budget), approved: num(t.approved), paid: num(t.paid), pending: num(t.pending) }
       : sumProjects([].concat(...centers.map((c) => c.projects)));
-    return { generatedAt: str(res.generatedAt).trim(), totals, centers };
+    const cashflow = str(res.source).trim() === "cashflow";
+    return {
+      generatedAt: str(res.generatedAt).trim(), totals, centers, cashflow,
+      year: cashflow ? str(res.year).trim() : "",
+      settledMonth: cashflow ? Math.max(0, Math.min(12, Math.floor(num(res.settledMonth)))) : 0,
+      warnings: cashflow ? arr(res.warnings).map((w) => str(w).trim()).filter(Boolean).slice(0, 20) : [],
+    };
   }
 
   // 執行率：超過預算＝超支（紅），90% 以上＝接近上限（黃），其他深藍。預算是 0 回傳 null（不顯示比率）。
@@ -1253,7 +1279,10 @@
     const btn = B.el.querySelector('[data-act="refresh"]');
     btn.disabled = B.loading;
     btn.textContent = B.loading ? "讀取中…" : "重新整理";
-    q(B.el, "stamp").textContent = B.data && B.data.generatedAt ? "資料時間：" + B.data.generatedAt : "";
+    const stamp = [];
+    if (B.data && B.data.cashflow) stamp.push((B.data.year ? B.data.year + " 年金流表" : "金流表") + (B.data.settledMonth ? "・結算到 " + B.data.settledMonth + " 月" : ""));
+    if (B.data && B.data.generatedAt) stamp.push("資料時間：" + B.data.generatedAt);
+    q(B.el, "stamp").textContent = stamp.join("・");
     q(B.el, "alert").innerHTML = B.error && B.data ? '<div class="pt-alert pt-alert-error" role="alert">重新整理失敗：' + esc(B.error) + "</div>" : "";
     const body = q(B.el, "body");
     body.setAttribute("aria-busy", B.loading ? "true" : "false");
@@ -1322,9 +1351,15 @@
   }
 
   function budgetBodyHtml(d) {
-    const footnote = '<p class="pt-footnote">' + FOOTNOTE + "</p>";
+    const footnote = '<p class="pt-footnote">' + esc(d.cashflow ? cfFootnote(d) : FOOTNOTE) + "</p>";
+    const warn = d.warnings.length
+      ? '<div class="pt-alert pt-alert-warn" role="status"><p>金流表有 ' + d.warnings.length + " 列找不到數字，下面先算 0：</p>" +
+          '<ul class="pt-alert-list">' + d.warnings.map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul></div>"
+      : "";
     if (!d.centers.some((c) => c.projects.length)) {
-      return '<div class="card pt-card"><p class="empty-state pt-empty">目前沒有計畫資料。中心和專案要先在總表設定好，這裡才會出現。</p></div>' + footnote;
+      return warn + '<div class="card pt-card"><p class="empty-state pt-empty">' +
+        (d.cashflow ? "金流表的「網站摘要」分頁還沒有資料列。" : "目前沒有計畫資料。中心和專案要先在總表設定好，這裡才會出現。") +
+        "</p></div>" + footnote;
     }
     const B = S.budget;
     const filter = d.centers.length > 1
@@ -1334,15 +1369,32 @@
             .join("") +
         "</div>"
       : "";
-    return filter + '<div data-role="view">' + budgetViewHtml(d, B.center) + "</div>" + footnote;
+    return warn + filter + '<div data-role="view">' + budgetViewHtml(d, B.center) + "</div>" + footnote;
   }
 
   function budgetViewHtml(d, center) {
     const centers = center ? d.centers.filter((c) => c.name === center) : d.centers;
     const totals = center ? sumProjects([].concat(...centers.map((c) => c.projects))) : d.totals;
     return '<h2 class="pt-scope">' + (center ? esc(center) + "合計" : "全部中心合計") + "</h2>" +
-      tilesHtml(totals) +
-      centers.map((c) => centerBlockHtml(c, d.centers.indexOf(c))).join("");
+      (d.cashflow ? cfTilesHtml(totals, d) : tilesHtml(totals)) +
+      centers.map((c) => centerBlockHtml(c, d.centers.indexOf(c), d)).join("");
+  }
+
+  // 金流表模式的上方數字：全年／已結算／剩餘（不標超支、接近上限：已結算本來就算在全年裡面）
+  function cfTilesHtml(t, d) {
+    const mm = cfMonths(d);
+    const rate = rateInfo(t.paid, t.budget);
+    const left = t.budget - t.paid;
+    const tiles = [
+      { label: "全年（1–12 月）", value: moneyHtml(t.budget), note: mm.left ? "含 " + mm.left + "預估" : "" },
+      { label: "已結算" + (mm.settled ? "（" + mm.settled + "）" : ""), value: moneyHtml(t.paid), note: rate ? "執行率 " + rate.text : "" },
+      { label: "剩餘" + (mm.left ? "（" + mm.left + "）" : ""), value: moneyHtml(left), over: left < 0 },
+    ];
+    return '<dl class="pt-tiles pt-tiles-3">' + tiles.map((x) =>
+      '<div class="pt-tile' + (x.over ? " is-over" : "") + '"><dt>' + esc(x.label) + "</dt><dd>" +
+        '<span class="pt-tile-value">' + x.value + "</span>" +
+        (x.note ? '<span class="pt-tile-note">' + esc(x.note) + "</span>" : "") +
+      "</dd></div>").join("") + "</dl>";
   }
 
   function tilesHtml(t) {
@@ -1364,16 +1416,85 @@
       "</dd></div>").join("") + "</dl>";
   }
 
-  function centerBlockHtml(c, ci) {
+  function centerBlockHtml(c, ci, d) {
     // 已結束的專案排到後面，其他照總表順序
     const projects = c.projects.map((p, pi) => ({ p, pi }))
       .sort((a, b) => (Number(isEnded(a.p)) - Number(isEnded(b.p))) || (a.pi - b.pi));
+    // 金流表模式：「中心營運」不算專案
+    const count = d && d.cashflow ? c.projects.filter((p) => !p.own).length : c.projects.length;
     return '<section class="pt-center-block" aria-labelledby="ptBc' + ci + '">' +
-      '<h2 class="pt-h2" id="ptBc' + ci + '">' + esc(c.name) + '<span class="pt-h2-count">' + c.projects.length + " 個專案</span></h2>" +
+      '<h2 class="pt-h2" id="ptBc' + ci + '">' + esc(c.name) + (count ? '<span class="pt-h2-count">' + count + " 個專案</span>" : "") + "</h2>" +
       (projects.length
-        ? '<div class="pt-projects">' + projects.map(({ p, pi }) => projectHtml(c, p, ci, pi)).join("") + "</div>"
+        ? '<div class="pt-projects">' + projects.map(({ p, pi }) => (d && d.cashflow ? cfProjectHtml(c, p, ci, pi) : projectHtml(c, p, ci, pi))).join("") + "</div>"
         : '<div class="card pt-card"><p class="pt-muted">這個中心還沒有專案。</p></div>') +
     "</section>";
+  }
+
+  // 金流表模式的專案卡片：已結算比例、全年／已結算／剩餘；有兩列以上（例如人事費用、營運費用）才有明細
+  function cfProjectHtml(c, p, ci, pi) {
+    const B = S.budget;
+    const open = B.expanded.has(c.name + "\n" + p.name);
+    const rate = rateInfo(p.paid, p.budget);
+    const missing = p.items.filter((it) => it.missing).length;
+    const panelId = "ptBi" + ci + "-" + pi;
+    const left = p.budget - p.paid;
+    let meter;
+    if (!rate) {
+      meter = '<p class="pt-meter-none">' + (missing ? "金流表找不到這一項的數字" : "全年金額是 0") + "</p>";
+    } else {
+      meter = '<div class="pt-meter-row">' +
+        '<p class="pt-meter-text is-ok"><span>已結算 <strong>' + rate.text + "</strong></span>" +
+          '<span class="pt-meter-left">剩餘 ' + esc(left < 0 ? "−" + money(-left) : money(left)) + "</span></p>" +
+        '<div class="pt-meter is-ok" aria-hidden="true"><span style="width:' + rate.width.toFixed(2) + '%"></span></div>' +
+      "</div>";
+    }
+    const showItems = p.items.length > 1;
+    return '<article class="card pt-card pt-proj' + (p.own ? " is-own" : "") + '">' +
+      '<div class="pt-proj-head"><h3 class="pt-h3">' + esc(p.name) + "</h3></div>" +
+      meter +
+      '<dl class="pt-nums pt-nums-3">' +
+        "<div><dt>全年</dt><dd>" + esc(money(p.budget)) + "</dd></div>" +
+        "<div><dt>已結算</dt><dd>" + esc(money(p.paid)) + "</dd></div>" +
+        "<div><dt>剩餘</dt><dd>" + esc(left < 0 ? "−" + money(-left) : money(left)) + "</dd></div>" +
+      "</dl>" +
+      (missing && p.items.length > 1 ? '<p class="pt-small pt-cf-missing">有 ' + missing + " 項在金流表找不到數字，先算 0。</p>" : "") +
+      (showItems
+        ? '<button type="button" class="pt-expand" data-act="expand" data-ci="' + ci + '" data-pi="' + pi + '" aria-expanded="' + open + '" aria-controls="' + panelId + '">' +
+            "<span>明細（" + p.items.length + " 項）</span>" + CHEVRON +
+          "</button>" +
+          '<div class="pt-items" id="' + panelId + '"' + (open ? "" : " hidden") + ">" + cfItemsTableHtml(p) + "</div>"
+        : "") +
+    "</article>";
+  }
+
+  function cfItemsTableHtml(p) {
+    const dash = '<span class="pt-muted">—</span>';
+    const rows = p.items.map((it) => {
+      if (it.missing) {
+        return '<tr class="pt-row-missing"><td>' + (esc(it.category) || dash) + "</td>" +
+          '<td class="num"><span class="pt-muted">找不到</span></td><td class="num">' + dash + '</td><td class="num">' + dash + "</td><td></td></tr>";
+      }
+      const rate = rateInfo(it.paid, it.budget);
+      const left = it.budget - it.paid;
+      return "<tr>" +
+        "<td>" + (esc(it.category) || dash) + "</td>" +
+        '<td class="num">' + plain(it.budget) + "</td>" +
+        '<td class="num">' + plain(it.paid) + "</td>" +
+        '<td class="num' + (left < 0 ? " is-neg" : "") + '">' + signedPlain(left) + "</td>" +
+        "<td>" + (rate
+          ? '<span class="pt-rate is-ok"><span class="pt-minibar is-ok" aria-hidden="true"><span style="width:' + rate.width.toFixed(2) + '%"></span></span>' +
+            '<span class="pt-rate-text">' + rate.text + "</span></span>"
+          : "") + "</td>" +
+      "</tr>";
+    });
+    return '<div class="pt-table-wrap" role="region" tabindex="0" aria-label="' + esc(p.name) + ' 明細">' +
+      '<table class="pt-table pt-table-cf">' +
+        '<caption class="sr-only">' + esc(p.name) + " 明細（金額單位：新台幣元）</caption>" +
+        '<thead><tr><th scope="col">類別</th><th scope="col" class="num">全年</th><th scope="col" class="num">已結算</th>' +
+          '<th scope="col" class="num">剩餘</th><th scope="col">執行率</th></tr></thead>' +
+        "<tbody>" + rows.join("") + "</tbody>" +
+      "</table></div>" +
+      '<p class="pt-table-note">金額單位：新台幣元<span class="pt-swipe-hint-sm">・表格可以左右滑動</span></p>';
   }
 
   function projectHtml(c, p, ci, pi) {
