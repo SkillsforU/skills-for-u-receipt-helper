@@ -3118,8 +3118,8 @@ const ORG_STORY = {
   summary: 'Skills for U 從一個人的技職媒體起家：2014 年偉翔創立《技職3.0》報導技職議題，2018 年擴大成社團法人國際技能發展協會。現在協會經營 Skills for U 和 OPEN 技職兩個品牌，每年舉辦臺灣技職教育年會。',
   milestones: [
     { year: '2014', title: '創立《技職3.0》', text: '偉翔創立獨立媒體《技職3.0》，報導技職與職訓議題，也做技職政策的專題報導，曾被立委拿來質詢教育部。' },
-    { year: '2018', title: '成立 Skills for U', text: '把一個人經營的《技職3.0》擴大成非營利組織：社團法人國際技能發展協會（Skills for U）。' },
-    { year: '2019', title: '國手走進國慶英雄團隊', text: '推動國際技能競賽國手加入國慶大會的英雄團隊遊行。' },
+    { year: '2018', title: '成立 Skills for U', text: '把一個人經營的《技職3.0》擴大成非營利組織：Skills for U（社團法人國際技能發展協會）。' },
+    { year: '2023', title: '臺灣技職教育年會', text: '舉辦臺灣技職教育年會，邀請產官學一起討論技職人才培育。' },
     { year: '2024', title: '技職力100', text: '舉辦「技職力100」全國評選，找出能在校園和企業之間擴散的育才模式，每兩年一屆。' },
     { year: '2026', title: '藍色未來 BlueFuture', text: '帶技職青年進入 AI 供應鏈的職位：2026–2028 年要讓至少 500 位技職青年在 AI 供應鏈就業。' },
   ],
@@ -3474,10 +3474,13 @@ function hostOf_(url) {
 
 // 認識組織的內容：小U 從「知識庫設定」用途是「認識組織／兩者」的手冊整理出重點（Gemini），
 // 手冊沒改就用快取（6 小時）；手冊一改，檔案的修改時間變了，下次就會重新整理。
+// 組織名稱的寫法（認識組織最上面的大標題固定用這個，不讓 AI 自己寫）
+const ORG_DISPLAY_NAME = 'Skills for U（社團法人國際技能發展協會）';
+
 const ABOUT_OVERVIEW_PROMPT = [
   '你是「小U」，Skills for U 的新手導師，要幫新同仁做「認識組織」頁面。根據下面的手冊，整理出這個頁面的內容。',
   '規則：只能用手冊裡寫的內容，不要補充、不要推測；手冊沒寫的就不要放。不要放任何密碼、門禁或帳號資訊。用繁體中文（台灣用語），句子短、好讀。',
-  'intro：name（組織全名，照手冊寫法）、tagline（一句話說明組織在做什麼，30 字內）、summary（2～3 句介紹，120 字內）。',
+  'intro：name 一律寫「' + ORG_DISPLAY_NAME + '」、tagline（一句話說明組織在做什麼，30 字內）、summary（2～3 句介紹，120 字內；提到組織名稱時寫 Skills for U）。',
   'sections：4～7 個段落，依手冊實際內容決定，例如：我們是誰、使命與願景、核心價值、我們怎麼做事、組織架構與分工、工作須知、福利與制度。每個段落 2～6 個重點。',
   '每個重點：title（14 字內）、text（90 字內）、location（出處：第幾頁或哪一段）。每個段落的 handbook 填這段主要出自哪一本手冊（照〈手冊：…〉的名稱）。',
   '只輸出 JSON：{"intro": {"name": "", "tagline": "", "summary": ""}, "sections": [{"title": "", "handbook": "", "points": [{"title": "", "text": "", "location": ""}]}]}',
@@ -3498,7 +3501,7 @@ function getAboutOverview_() {
     return { ok: true, overview: { status: 'unavailable', sections: [], intro: null, updatedAt: '', message: '讀不到手冊檔案：' + ((err && err.message) || err) } };
   }
   const cache = CacheService.getScriptCache();
-  const key = ('about_v1_' + fingerprint).slice(0, 240);
+  const key = ('about_v2_' + fingerprint).slice(0, 240); // v2：大標題固定用 ORG_DISPLAY_NAME
   const hit = cache.get(key);
   if (hit) {
     try { return { ok: true, overview: JSON.parse(hit) }; } catch (e) { /* 快取壞了就重做 */ }
@@ -3534,7 +3537,7 @@ function getAboutOverview_() {
     status: 'ready',
     message: problems.length ? problems.join('；') : '',
     updatedAt: nowText_(),
-    intro: { name: str(intro.name, 60), tagline: str(intro.tagline, 60), summary: str(intro.summary, 240) },
+    intro: { name: ORG_DISPLAY_NAME, tagline: str(intro.tagline, 60), summary: str(intro.summary, 240) },
     sections: parsed.sections.slice(0, 8).map(function (sec) {
       return {
         title: str(sec && sec.title, 30),

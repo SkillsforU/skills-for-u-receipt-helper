@@ -32,10 +32,17 @@ body {
 }
 
 /* ---------- topbar ---------- */
+/* 主選單固定在畫面最上面，往下捲也看得到（app.js 會量高度寫進 --topbar-h，給捲動定位用） */
 .topbar {
   background: var(--navy);
   color: #fff;
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(8, 54, 84, 0.18);
 }
+/* 用 # 連結或程式把東西捲到最上面時，讓出主選單的高度，不會被蓋住 */
+html { scroll-padding-top: calc(var(--topbar-h, 72px) + 12px); }
 .topbar-inner {
   max-width: 1120px; /* 主選單有五個分頁，跟寬版頁面同寬 */
   margin: 0 auto;

@@ -301,6 +301,19 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
+// 主選單固定在最上面（style.css 的 .topbar）：量它的高度寫進 --topbar-h，
+// 給 scroll-padding-top 和小U介紹卡的固定位置用（手機兩列、桌機一列，視窗變寬變窄都會跟著改）
+function syncTopbarHeight() {
+  const bar = document.querySelector(".topbar");
+  if (!bar) return;
+  document.documentElement.style.setProperty("--topbar-h", Math.round(bar.getBoundingClientRect().height) + "px");
+}
+syncTopbarHeight();
+window.addEventListener("resize", syncTopbarHeight);
+try {
+  if (window.ResizeObserver) new ResizeObserver(syncTopbarHeight).observe(document.querySelector(".topbar"));
+} catch (e) { /* 舊瀏覽器：靠 resize 事件 */ }
+
 // 舊程式碼的相容名稱：switchView("upload") / switchView("mine")
 function switchView(name) {
   navigate(FINANCE_SUBS.includes(name) ? "finance/" + name : name);

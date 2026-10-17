@@ -204,8 +204,8 @@
   background: #fff;
   box-shadow: var(--pt-shadow);
 }
-/* 介紹卡比畫面矮的時候才固定住，不然下半部（追蹤我們）會看不到 */
-@media (min-height: 800px) { .pt-prof { position: sticky; top: 16px; } }   /* 卡片約 760px 高 */
+/* 介紹卡比畫面矮的時候才固定住，不然下半部（追蹤我們）會看不到；固定在主選單下面 */
+@media (min-height: 880px) { .pt-prof { position: sticky; top: calc(var(--topbar-h, 72px) + 16px); } }   /* 卡片約 760px 高＋主選單 */
 .pt-art {
   display: flex;
   justify-content: center;

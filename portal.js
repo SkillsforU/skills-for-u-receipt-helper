@@ -143,8 +143,17 @@
     } catch (e) { /* ignore */ }
   }
 
+  // 主選單固定在最上面：捲動時要讓出它蓋住的高度
+  function topbarBottom() {
+    try {
+      const bar = document.querySelector(".topbar");
+      const r = bar && bar.getBoundingClientRect();
+      return r && r.bottom > 0 ? r.bottom : 0;
+    } catch (e) { return 0; }
+  }
+
   // 把 node 捲進畫面。obstruct = 底下固定住的輸入框，要讓出它的高度（瀏覽器內建的 scrollIntoView
-  // 不知道它擋住了東西）；內容比畫面高時優先露出開頭，讓人從第一行讀起。
+  // 不知道它擋住了東西）；內容比畫面高時優先露出開頭，讓人從第一行讀起。上面讓出固定的主選單。
   function reveal(node, obstruct) {
     try {
       if (!node || !node.isConnected) return;
@@ -156,7 +165,7 @@
         const o = obstruct.getBoundingClientRect();
         if (o.height && o.top > 0 && o.top < vh) bottom = Math.min(bottom, o.top - 12);
       }
-      const top = 12;
+      const top = topbarBottom() + 12;
       let dy = 0;
       if (r.bottom > bottom) dy = r.bottom - bottom;
       if (r.top - dy < top) dy = r.top - top;
@@ -782,19 +791,20 @@
     }
   }
 
-  // 頁面由上到下：小U整理的介紹（hero）→ 我們是誰 → 手冊重點 → 最新消息 → 兩本手冊 → 組織架構 → 團隊成員。
-  // hero 和手冊重點來自 getAboutOverview（慢），我們是誰和下面幾塊來自 getAbout（快），所以分成幾個格子各自畫。
+  // 頁面由上到下：小U整理的介紹（hero）→ 我們是誰 → 最新消息 → 手冊重點 → 兩本手冊 → 組織架構 → 團隊成員。
+  // hero 和手冊重點來自 getAboutOverview（慢），我們是誰、最新消息和下面幾塊來自 getAbout（快），所以分成幾個格子各自畫。
   function mountAbout(root) {
     const A = S.about;
     root.innerHTML =
       '<div class="pt-page pt-about">' +
         '<div class="pt-page-head">' +
-          '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織介紹、手冊重點、組織架構和團隊成員。</p></div>' +
+          '<div><h1 class="pt-h1">認識組織</h1><p class="pt-sub">組織介紹、最新消息、手冊重點、組織架構和團隊成員。</p></div>' +
           '<button type="button" class="pt-btn pt-btn-ghost" data-act="refresh">重新整理</button>' +
         "</div>" +
         '<div data-role="alert"></div>' +
         '<div class="pt-ov" data-role="overview"></div>' +
         '<div data-role="story"></div>' +
+        '<div data-role="news"></div>' +
         '<div data-role="ov-sections"></div>' +
         '<div data-role="body"></div>' +
       "</div>";
@@ -814,28 +824,31 @@
     btn.textContent = busy ? "讀取中…" : "重新整理";
   }
 
-  // getAbout 的部分：我們是誰（story 格子），以及最新消息、兩本手冊、組織架構、團隊成員（body 格子）
+  // getAbout 的部分：我們是誰（story 格子）、最新消息（news 格子），以及兩本手冊、組織架構、團隊成員（body 格子）
   function renderAbout() {
     const A = S.about;
     if (!A.el) return;
     renderAboutButton();
     q(A.el, "alert").innerHTML = A.error && A.data ? '<div class="pt-alert pt-alert-error" role="alert">重新整理失敗：' + esc(A.error) + "</div>" : "";
     const storyBox = q(A.el, "story");
+    const newsBox = q(A.el, "news");
     const body = q(A.el, "body");
-    [storyBox, body].forEach((box) => {
+    [storyBox, newsBox, body].forEach((box) => {
       box.setAttribute("aria-busy", A.loading ? "true" : "false");
       box.classList.toggle("pt-stale", !!(A.loading && A.data));
     });
     if (A.data) {
       if (A.renderedData !== A.data) {
         storyBox.innerHTML = storyHtml(A.data.story);
-        body.innerHTML = newsHtml(A.data.news) + handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
+        newsBox.innerHTML = newsHtml(A.data.news);
+        body.innerHTML = handbooksHtml(A.data.handbooks) + centersHtml(A.data.centers) + peopleHtml(A.data.people);
         A.renderedData = A.data;
         if (A.openIdx >= 0) openHandbook(A.openIdx, false); // 重新整理前開著的手冊繼續開著
       }
     } else {
       A.renderedData = null;
       storyBox.innerHTML = "";
+      newsBox.innerHTML = "";
       body.innerHTML = A.loading ? loadingHtml("正在讀取組織資料…") : A.error ? errorCardHtml(A.error) : "";
     }
   }
@@ -918,7 +931,7 @@
     const A = S.about;
     let inner;
     if (!list.length) {
-      inner = '<div class="card pt-card"><p class="empty-state pt-empty">還沒有資料。請管理員在總表「媒體報導」分頁新增。</p></div>';
+      inner = '<div class="card pt-card"><p class="empty-state pt-empty">還沒有資料。請管理員在最新消息的試算表貼上文章連結（試算表記在「網站後台_資料導入連結」）。</p></div>';
     } else {
       const extra = list.length - NEWS_SHOW;
       inner = '<ul class="pt-news" id="ptNewsList">' + list.map((n, i) => newsItemHtml(n, i >= NEWS_SHOW && !A.newsOpen)).join("") + "</ul>" +
