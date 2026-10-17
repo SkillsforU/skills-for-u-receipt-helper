@@ -13,11 +13,11 @@ const CENTERS_KEY = "skillsForU_centers_v1"; // string[]，中心名稱清單
 const PROJECTS_BY_CENTER_KEY = "skillsForU_projectsByCenter_v1"; // { [中心名稱]: string[] }，專案現在歸在中心底下
 const BUDGET_ITEMS_KEY = "skillsForU_budgetItems_v1"; // { [專案名稱]: string[] }，跟名單一樣是雲端快取，離線時仍能沿用上次抓到的
 const DEFAULT_UPLOADERS = ["黃偉翔", "胡琬茜", "鐘梓豪", "林新樺", "張晏瑄", "王嘉麗", "羅禎瑩", "李唐", "郭采媛"];
-const DEFAULT_PROJECTS = ["組織發展中心", "組織行銷中心", "人才培育中心"];
-const DEFAULT_CENTERS = ["組織發展中心", "組織行銷中心", "人才培育中心"];
+const DEFAULT_PROJECTS = ["組織發展中心", "品牌行銷中心", "人才培育中心"];
+const DEFAULT_CENTERS = ["組織發展中心", "品牌行銷中心", "人才培育中心"];
 const DEFAULT_PROJECTS_BY_CENTER = {
   "組織發展中心": ["組織發展中心"],
-  "組織行銷中心": ["組織行銷中心"],
+  "品牌行銷中心": ["品牌行銷中心"],
   "人才培育中心": ["人才培育中心"],
 };
 const UNSPECIFIED_BUDGET_ITEM = "不確定預算項目"; // 跟 Code.gs 的 UNSPECIFIED_BUDGET_ITEM 保持一致
@@ -129,12 +129,6 @@ function saveBudgetItemsByProject(map) {
   localStorage.setItem(BUDGET_ITEMS_KEY, JSON.stringify(map || {}));
 }
 
-// 名單是否由試算表管理（啟用雲端同步就是）
-function listsManagedByCloud() {
-  const c = loadSyncConfig();
-  return !!(c.enabled && c.url);
-}
-
 // 從 Apps Script 抓最新名單覆蓋本機快取。回傳是否成功。
 async function fetchListsFromCloud() {
   if (!isSignedIn()) return { ok: false, error: "尚未登入" };
@@ -224,25 +218,124 @@ function escapeHtml(s) {
 }
 
 /* ============================================================
-   分頁切換
+   分頁切換（團隊後台）
+   網址的 # 決定顯示哪一頁，所以 Slack 訊息裡的連結可以直接打開某一頁（例如 #finance/ops/release）：
+     #home                  首頁（問手冊，portal.js）
+     #about                 認識組織（portal.js）；子頁 #about/culture 組織文化與工作規範、
+                            #about/team 認識團隊、#about/colleagues 同事使用手冊
+     #budget                計畫與預算（portal.js；只有主管和財務看得到）
+     #finance/upload        上傳單據
+     #finance/mine          上傳紀錄
+     #finance/ops/...       財務作業（finance.js；只有人員設定裡有「財務角色」的人看得到）
+   人事中心直接連到 Swingvy，不在這裡處理。
    ============================================================ */
 const views = {
+  home: document.getElementById("view-home"),
+  about: document.getElementById("view-about"),
+  budget: document.getElementById("view-budget"),
+  tools: document.getElementById("view-tools"),
+  finance: document.getElementById("view-finance"),
+  // 財務底下的子頁（沿用舊名字 upload / mine，舊程式碼很多地方用 views.mine 判斷是否正在看上傳紀錄）
   upload: document.getElementById("view-upload"),
   mine: document.getElementById("view-mine"),
-  lists: document.getElementById("view-lists"),
+  ops: document.getElementById("view-ops"),
 };
-document.getElementById("tabs").addEventListener("click", (e) => {
-  const btn = e.target.closest(".tab-btn");
-  if (!btn) return;
-  switchView(btn.dataset.view);
-});
+const TOP_VIEWS = ["home", "about", "budget", "tools", "finance"];
+const FINANCE_SUBS = ["upload", "mine", "ops"];
+// 認識組織底下的子頁：認識組織／組織文化與工作規範／認識團隊／同事使用手冊（畫面由 portal.js 畫）
+const ABOUT_SUBS = ["intro", "culture", "team", "colleagues"];
+
+function hasFinanceRole() {
+  return !!(currentUser && Array.isArray(currentUser.financeRoles) && currentUser.financeRoles.length);
+}
+function canViewBudget() {
+  return !!(currentUser && currentUser.canViewBudget);
+}
+
+// 解析網址的 #，回傳實際要顯示的頁面（沒有權限的頁面一律退回可以看的頁面）
+function parseRoute() {
+  const parts = (location.hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
+  let top = parts[0] || "home";
+  if (!TOP_VIEWS.includes(top)) top = "home";
+  if (top === "budget" && !canViewBudget()) top = "home";
+  let sub = "";
+  let rest = [];
+  if (top === "finance") {
+    sub = FINANCE_SUBS.includes(parts[1]) ? parts[1] : "upload";
+    if (sub === "ops" && !hasFinanceRole()) sub = "upload";
+    rest = sub === "ops" ? parts.slice(2) : [];
+  }
+  if (top === "about") sub = ABOUT_SUBS.includes(parts[1]) ? parts[1] : "intro";
+  return { top, sub, rest };
+}
+
+// 換頁一律改網址的 #，真正切換畫面交給 route()（瀏覽器上一頁／下一頁也會跟著對）
+function navigate(path) {
+  if (location.hash === "#" + path) route();
+  else location.hash = "#" + path;
+}
+
+function route() {
+  if (!isSignedIn()) return; // 登入前畫面被登入畫面蓋住，登入成功後 onSignedIn 會再呼叫一次
+  const { top, sub, rest } = parseRoute();
+  TOP_VIEWS.forEach(name => { views[name].hidden = name !== top; });
+  document.querySelectorAll("#tabs .tab-btn[data-route]").forEach(a => {
+    const on = a.dataset.route === top;
+    a.classList.toggle("active", on);
+    if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  document.querySelector(".app-main").classList.toggle("app-main-wide", top !== "finance" || sub === "ops");
+  if (top === "finance") {
+    FINANCE_SUBS.forEach(name => { views[name].hidden = name !== sub; });
+    document.querySelectorAll("#financeTabs .subtab-btn").forEach(a => {
+      const on = a.dataset.sub === sub;
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    // 快取夠新（20 秒內）就直接用快取秒開，太舊才真的重抓一次；
+    // 送出單據後那一刻已經在背景偷偷刷新過快取了（見 submitRecord），所以通常切過來就是最新的。
+    if (sub === "mine") ensureMineDataFresh();
+    if (sub === "ops" && window.FinanceOps) window.FinanceOps.show(rest);
+  }
+  if (top === "home" && window.Portal) window.Portal.showHome();
+  if (top === "about") {
+    document.querySelectorAll("#aboutTabs .subtab-btn").forEach(a => {
+      const on = a.dataset.sub === sub;
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    if (window.Portal) window.Portal.showAbout(sub);
+  }
+  if (top === "budget" && window.Portal) window.Portal.showBudget();
+  if (top === "tools" && window.Portal && window.Portal.showTools) window.Portal.showTools();
+  window.scrollTo(0, 0);
+}
+window.addEventListener("hashchange", route);
+
+// 主選單固定在最上面（style.css 的 .topbar）：量它的高度寫進 --topbar-h，
+// 給 scroll-padding-top 和小U介紹卡的固定位置用（手機兩列、桌機一列，視窗變寬變窄都會跟著改）
+function syncTopbarHeight() {
+  const bar = document.querySelector(".topbar");
+  if (!bar) return;
+  document.documentElement.style.setProperty("--topbar-h", Math.round(bar.getBoundingClientRect().height) + "px");
+}
+syncTopbarHeight();
+window.addEventListener("resize", syncTopbarHeight);
+try {
+  if (window.ResizeObserver) new ResizeObserver(syncTopbarHeight).observe(document.querySelector(".topbar"));
+} catch (e) { /* 舊瀏覽器：靠 resize 事件 */ }
+
+// 舊程式碼的相容名稱：switchView("upload") / switchView("mine")
 function switchView(name) {
-  Object.entries(views).forEach(([key, el]) => { el.hidden = key !== name; });
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
-  // 快取夠新（20 秒內）就直接用快取秒開，太舊才真的重抓一次；
-  // 送出單據後那一刻已經在背景偷偷刷新過快取了（見 submitRecord），所以通常切過來就是最新的。
-  if (name === "mine") ensureMineDataFresh();
-  if (name === "lists") renderListsView();
+  navigate(FINANCE_SUBS.includes(name) ? "finance/" + name : name);
+}
+
+// 登入後依角色決定要不要顯示「財務作業」「計畫與預算」分頁
+function applyRoleVisibility() {
+  const opsTab = document.getElementById("opsTab");
+  if (opsTab) opsTab.hidden = !hasFinanceRole();
+  const budgetTab = document.getElementById("budgetTab");
+  if (budgetTab) budgetTab.hidden = !canViewBudget();
 }
 
 /* ============================================================
@@ -329,40 +422,74 @@ dzRemoveBtn.addEventListener("click", (e) => {
   resetFileSelection();
 });
 
+// 選好檔案就自動開始辨識：檔案讀完（圖片縮好／PDF 讀進來）＋專案選好，兩個都到位就開始。
+// 「開始辨識」按鈕留著，萬一想重新辨識或自動沒有跑起來時可以手動按。
+const PDF_MAX_BYTES = 5 * 1024 * 1024;
+const PDF_PREP_WAIT_MS = 8000; // PDF 先轉成壓縮圖片再送（快很多），最多等 8 秒，等不到就直接送原始 PDF
+let fileReady = false;
+let ocrRunning = false;
+let ocrStartedFor = null; // 已經對哪個檔案跑過辨識（避免改專案時又重跑一次、蓋掉已經填的內容）
+
 function resetFileSelection() {
   selectedFile = null;
   selectedImageDataUrl = null;
   selectedPdfDataUrl = null;
   selectedPdfPreviewImages = null;
+  fileReady = false;
+  ocrStartedFor = null;
   fileInput.value = "";
   dzPreview.hidden = true;
   dropzoneInner.hidden = false;
   updateStartButtonState();
 }
 
+function showFileProblem(msg) {
+  const box = document.getElementById("fileTooBig");
+  box.textContent = msg;
+  box.hidden = false;
+}
+
 function handleFileSelected(file) {
+  document.getElementById("fileTooBig").hidden = true;
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+  if (isPdf && file.size > PDF_MAX_BYTES) {
+    resetFileSelection();
+    showFileProblem(`這個 PDF 有 ${(file.size / 1024 / 1024).toFixed(1)} MB，超過 5 MB 上限。請只存單據那幾頁再上傳，或直接用手機拍照上傳（照片沒有大小限制）。`);
+    return;
+  }
+  if (!isPdf && !/^image\//.test(file.type || "")) {
+    resetFileSelection();
+    showFileProblem("只支援 JPG、PNG 照片或 PDF 檔。");
+    return;
+  }
   selectedFile = file;
-  const isPdf = file.type === "application/pdf";
+  fileReady = false;
+  ocrStartedFor = null;
   if (isPdf) {
     selectedImageDataUrl = null;
     selectedPdfDataUrl = null;
     selectedPdfPreviewImages = null;
     dzPreviewImg.hidden = true;
-    const cloudOcrReady = loadSyncConfig().cloudOcrEnabled;
-    dzFilename.textContent = "📄 " + file.name + (cloudOcrReady
-      ? "（PDF 檔，將使用雲端 OCR 辨識）"
-      : "（PDF 檔，離線辨識不支援 PDF，請於下一步手動輸入欄位，或到「雲端同步設定」開啟雲端 OCR）");
+    dzFilename.textContent = "📄 " + file.name + "（PDF）";
     dropzoneInner.hidden = true;
     dzPreview.hidden = false;
     const reader = new FileReader();
     reader.onload = () => {
+      if (selectedFile !== file) return; // 讀完之前已經換了別的檔案
       selectedPdfDataUrl = reader.result;
-      // 先在背景把 PDF 轉成壓縮圖片備用，開始辨識時如果轉檔還沒完成，就直接送原始 PDF，不會卡住等待
-      if (cloudOcrReady) {
-        renderPdfToCompressedImages(selectedPdfDataUrl).then(images => {
-          selectedPdfPreviewImages = images.length ? images : null;
-        });
-      }
+      let settled = false;
+      const markReady = () => {
+        if (settled || selectedFile !== file) return;
+        settled = true;
+        fileReady = true;
+        updateStartButtonState();
+      };
+      renderPdfToCompressedImages(selectedPdfDataUrl).then(images => {
+        if (selectedFile !== file) return;
+        selectedPdfPreviewImages = images.length ? images : null;
+        markReady();
+      });
+      setTimeout(markReady, PDF_PREP_WAIT_MS);
     };
     reader.readAsDataURL(file);
     updateStartButtonState();
@@ -371,16 +498,26 @@ function handleFileSelected(file) {
   const reader = new FileReader();
   reader.onload = () => {
     downscaleImage(reader.result, 1400).then(dataUrl => {
+      if (selectedFile !== file) return;
       selectedImageDataUrl = dataUrl;
       dzPreviewImg.hidden = false;
       dzPreviewImg.src = dataUrl;
       dzFilename.textContent = file.name;
       dropzoneInner.hidden = true;
       dzPreview.hidden = false;
+      fileReady = true;
       updateStartButtonState();
     });
   };
   reader.readAsDataURL(file);
+}
+
+function maybeAutoStartOcr() {
+  const whoReady = !!(uploaderSelect.value && projectSelect.value);
+  const isNone = docTypeSelect.value === DOC_TYPE_NONE;
+  document.getElementById("ocrWaitHint").hidden = !(selectedFile && !whoReady && !isNone);
+  if (!selectedFile || !fileReady || !whoReady || isNone || ocrRunning || ocrStartedFor === selectedFile) return;
+  runOcr();
 }
 
 function downscaleImage(dataUrl, maxDim) {
@@ -420,9 +557,10 @@ function updateStartButtonState() {
   const isNone = docTypeSelect.value === DOC_TYPE_NONE;
   dropzone.hidden = isNone;
   startOcrBtn.hidden = isNone;
-  startOcrBtn.disabled = !(selectedFile && whoReady);
+  startOcrBtn.disabled = !(selectedFile && fileReady && whoReady) || ocrRunning;
   noFileBtn.hidden = !isNone;
   noFileBtn.disabled = !whoReady;
+  maybeAutoStartOcr();
 }
 // 沒有單據 → 直接進手動填寫，帶空的辨識結果進確認表單
 noFileBtn.addEventListener("click", () => openConfirmForm({ rawText: "", confidenceMean: 0, guesses: {} }));
@@ -446,13 +584,27 @@ function cloudFieldsToConfirmForm(fields) {
     date: f.invoiceDate || null,
     amount: f.amount ? Number(f.amount) : null,
     vendor: f.vendor || null,
+    invoiceNumber: f.invoiceNumber || null,
   };
   const rawText = f.items ? `（雲端 OCR 摘要）${f.items}` : "（雲端 OCR，未提供原始文字）"; // 只當背景參考文字，不再填進表單欄位
   openConfirmForm({ rawText, confidenceMean: Number(f.confidence) || 0, guesses });
 }
 
 async function runOcr() {
-  const isPdf = selectedFile && selectedFile.type === "application/pdf";
+  if (ocrRunning || !selectedFile) return;
+  ocrRunning = true;
+  ocrStartedFor = selectedFile;
+  document.getElementById("ocrWaitHint").hidden = true;
+  try {
+    await runOcrInner();
+  } finally {
+    ocrRunning = false;
+    startOcrBtn.disabled = !(selectedFile && fileReady && uploaderSelect.value && projectSelect.value);
+  }
+}
+
+async function runOcrInner() {
+  const isPdf = selectedFile && (selectedFile.type === "application/pdf" || /\.pdf$/i.test(selectedFile.name || ""));
   const syncConfig = loadSyncConfig();
   const cloudOcrReady = syncConfig.enabled && syncConfig.url && syncConfig.cloudOcrEnabled;
 
@@ -544,7 +696,11 @@ function normalizeCjkSpacing(text) {
 
 /* ---------------- OCR 文字 → 欄位判讀（規則式，供人工確認用） ---------------- */
 function extractFieldsFromText(text) {
-  const guesses = { date: null, amount: null, vendor: null };
+  const guesses = { date: null, amount: null, vendor: null, invoiceNumber: null };
+
+  // 統一發票號碼：2 個英文字母＋8 位數字（例如 AB-12345678）
+  const invM = text.toUpperCase().match(/\b([A-Z]{2})[\s-]?(\d{8})\b/);
+  if (invM) guesses.invoiceNumber = invM[1] + "-" + invM[2];
 
   // 日期：民國年（3碼，加1911換算西元）或西元年
   const dateRe = /(\d{2,4})[年./-](\d{1,2})[月./-](\d{1,2})日?/g;
@@ -597,119 +753,154 @@ const f_quoteTotal = document.getElementById("f_quoteTotal");
 const f_linkedQuote = document.getElementById("f_linkedQuote");
 const f_vendor = document.getElementById("f_vendor");
 const f_purpose = document.getElementById("f_purpose");
-const f_payStatus = document.getElementById("f_payStatus");
-const f_payMethod = document.getElementById("f_payMethod");
-const f_cardForm = document.getElementById("f_cardForm");
-const f_repayTarget = document.getElementById("f_repayTarget");
+const f_invoiceNo = document.getElementById("f_invoiceNo");
 const f_payeePerson = document.getElementById("f_payeePerson");
-const f_payeeVendor = document.getElementById("f_payeeVendor");
-const f_paymentDetail = document.getElementById("f_paymentDetail");
+const f_accName = document.getElementById("f_accName");
+const f_branch = document.getElementById("f_branch");
+const f_account = document.getElementById("f_account");
+const f_fixed = document.getElementById("f_fixed");
+const f_fixedDate = document.getElementById("f_fixedDate");
+const f_billDue = document.getElementById("f_billDue");
+const f_cardLink = document.getElementById("f_cardLink");
 const f_cardConfirm1 = document.getElementById("f_cardConfirm1");
 const f_cardConfirm2 = document.getElementById("f_cardConfirm2");
 const f_urgentDate = document.getElementById("f_urgentDate");
 
-/* 付款方式改成「連動式」，判斷基準是「組織的錢出去了沒」：
-   已付款 → 組織信用卡 / 零用金（選完就結束）
-   未付款 → 組織匯款 →（外部廠商→填匯款帳號 / 組織人員→選代墊款的人）
-            組織信用卡 →（連結→填刷卡連結 / 紙本→勾兩項確認）
-   對應後端 Code.gs 的 PAY_STATUS_* / PAY_STATUS_OPTIONS / REPAY_TARGET_* 選項字串，兩邊要一致。 */
+/* 付款方式（2026-10 改版）：一題「這筆錢要怎麼付？」五選一，再對應回總表原本的
+   付款狀態／付款方式／還款對象三欄（後端 Code.gs 的 PAY_STATUS_* / PAY_METHOD_* / REPAY_TARGET_* 要一致）。
+   判斷基準仍是「組織的錢出去了沒」：已經付掉（已付款）／還沒付（未付款）。 */
 const PAY_STATUS_PAID = "已付款";
 const PAY_STATUS_UNPAID = "未付款";
 const PM_CARD = "組織信用卡";
 const PM_PETTY = "零用金";
 const PM_TRANSFER = "組織匯款";
+const PM_BILL = "網銀代繳";
 const REPAY_MEMBER = "組織人員";
 const REPAY_VENDOR = "外部廠商";
 const CARD_FORM_LINK = "連結";
 const CARD_FORM_PAPER = "紙本";
-const PAY_METHODS_BY_STATUS = {
-  [PAY_STATUS_PAID]: [PM_CARD, PM_PETTY],
-  [PAY_STATUS_UNPAID]: [PM_TRANSFER, PM_CARD],
+const PAY_OPTIONS = {
+  reimb:    { label: "我先墊錢了", payStatus: PAY_STATUS_UNPAID, payMethod: PM_TRANSFER, repayTarget: REPAY_MEMBER },
+  transfer: { label: "直接匯款給對方", payStatus: PAY_STATUS_UNPAID, payMethod: PM_TRANSFER, repayTarget: REPAY_VENDOR },
+  bill:     { label: "繳費單", payStatus: PAY_STATUS_UNPAID, payMethod: PM_BILL, repayTarget: REPAY_VENDOR },
+  paid:     { label: "已經付掉了", payStatus: PAY_STATUS_PAID },
+  card:     { label: "需要組織刷卡", payStatus: PAY_STATUS_UNPAID, payMethod: PM_CARD },
 };
+// 總表的三欄 → 五個選項（上傳紀錄、詳情顯示用）
+function payOptionOf(r) {
+  if (r.payStatus === PAY_STATUS_PAID) return "paid";
+  if (r.payMethod === PM_BILL) return "bill";
+  if (r.payMethod === PM_CARD) return "card";
+  if (r.payMethod === PM_TRANSFER) return r.repayTarget === REPAY_MEMBER ? "reimb" : "transfer";
+  return "";
+}
 
-// 只有「未付款」才允許標記緊急：已付款的錢早就出去了，催主管審核不會改變任何事。
+// 分行代碼前 3 碼＝銀行代碼（財金資訊公司公告的金融機構代碼，列常用的；查不到會請同仁再確認）
+const BANK_CODES = {
+  "004": "臺灣銀行", "005": "土地銀行", "006": "合作金庫", "007": "第一銀行", "008": "華南銀行", "009": "彰化銀行",
+  "011": "上海商銀", "012": "台北富邦", "013": "國泰世華", "015": "中國輸出入銀行", "016": "高雄銀行", "017": "兆豐銀行",
+  "018": "農業金庫", "021": "花旗銀行", "048": "王道銀行", "050": "臺灣企銀", "052": "渣打銀行", "053": "台中銀行",
+  "054": "京城銀行", "081": "滙豐銀行", "101": "瑞興銀行", "102": "華泰銀行", "103": "新光銀行", "108": "陽信銀行",
+  "118": "板信銀行", "147": "三信銀行", "700": "中華郵政", "803": "聯邦銀行", "805": "遠東商銀", "806": "元大銀行",
+  "807": "永豐銀行", "808": "玉山銀行", "809": "凱基銀行", "810": "星展銀行", "812": "台新銀行", "816": "安泰銀行",
+  "822": "中國信託", "823": "將來銀行", "824": "LINE Bank", "826": "樂天銀行",
+};
+function digitsOnly(v, max) { return String(v || "").replace(/\D/g, "").slice(0, max || 30); }
+
+function currentPayOption() {
+  const el = document.querySelector('input[name="payOption"]:checked');
+  return el ? el.value : "";
+}
+function radioValue(name) {
+  const el = document.querySelector(`input[name="${name}"]:checked`);
+  return el ? el.value : "";
+}
+function setRadio(name, value) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === value; });
+}
+
+// 只有「還沒付」的才允許標記緊急：已付款的錢早就出去了，催主管審核不會改變任何事。
 function paymentAllowsUrgency_() {
-  return f_payStatus.value === PAY_STATUS_UNPAID;
+  const opt = currentPayOption();
+  return !!opt && opt !== "paid";
 }
 
-f_payStatus.addEventListener("change", onPayStatusChange);
-f_payMethod.addEventListener("change", onPayMethodChange);
-f_cardForm.addEventListener("change", updatePaymentSubfields);
-// 還款對象也會改變撥款日期的推算結果（外部廠商 20 號／組織人員 5 號），
-// 光呼叫 updatePaymentSubfields 不會重算，一定要跟著補呼叫 updatePayoutEstimate，
-// 不然要等使用者剛好去點一下「審核急迫性」（原本沒事做的按鈕）才會意外觸發到。
-f_repayTarget.addEventListener("change", () => { updatePaymentSubfields(); updatePayoutEstimate(); });
+document.getElementById("payOptions").addEventListener("change", () => { onPayOptionChange(); clearFormError(); });
+document.querySelectorAll('input[name="cardForm"]').forEach(el => el.addEventListener("change", updatePaymentSubfields));
+f_fixed.addEventListener("change", () => { updatePaymentSubfields(); updatePayoutEstimate(); });
+f_fixedDate.addEventListener("change", updatePayoutEstimate);
+f_billDue.addEventListener("change", updatePayoutEstimate);
+f_branch.addEventListener("input", () => { f_branch.value = digitsOnly(f_branch.value, 7); updateBankHint(); });
+f_account.addEventListener("input", () => { f_account.value = digitsOnly(f_account.value, 20); updateAccountHint(); });
 
-// 付款狀態變了 → 重建「付款方式」下拉的選項
-function onPayStatusChange() {
-  const status = f_payStatus.value;
-  const methods = PAY_METHODS_BY_STATUS[status] || [];
-  f_payMethod.innerHTML = '<option value="">請選擇付款方式</option>' +
-    methods.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
-  document.getElementById("payMethodField").hidden = !status;
-  f_payMethod.value = "";
-  onPayMethodChange();
-}
-
-function onPayMethodChange() {
+function onPayOptionChange() {
   updatePaymentSubfields();
   updateUrgencyVisibility();
   updatePayoutEstimate();
 }
 
-// 依「付款狀態 + 付款方式 + 信用卡形式 / 還款對象」決定要顯示哪些細節欄位
+// 依選到的付款方式，只顯示那個選項需要的欄位
 function updatePaymentSubfields() {
-  const isUnpaid = f_payStatus.value === PAY_STATUS_UNPAID;
-  const isTransfer = isUnpaid && f_payMethod.value === PM_TRANSFER;
-  const isCardUnpaid = isUnpaid && f_payMethod.value === PM_CARD;
+  const opt = currentPayOption();
+  document.getElementById("reimbPanel").hidden = opt !== "reimb";
+  document.getElementById("transferPanel").hidden = opt !== "transfer";
+  document.getElementById("billPanel").hidden = opt !== "bill";
+  document.getElementById("paidPanel").hidden = opt !== "paid";
+  document.getElementById("cardPanel").hidden = opt !== "card";
+  if (opt === "reimb") populatePayeePersonOptions();
+  document.getElementById("fixedDateField").hidden = !(opt === "transfer" && f_fixed.checked);
+  if (opt === "transfer" && f_fixed.checked && !f_fixedDate.options.length) populateFixedDateOptions();
+  const cardForm = radioValue("cardForm");
+  document.getElementById("cardLinkField").hidden = !(opt === "card" && cardForm === CARD_FORM_LINK);
+  document.getElementById("cardConfirmField").hidden = !(opt === "card" && cardForm === CARD_FORM_PAPER);
+  document.querySelectorAll(".pay-option").forEach(l => l.classList.toggle("selected", l.querySelector("input").checked));
+}
 
-  // 信用卡形式（僅未付款・信用卡）
-  document.getElementById("cardFormField").hidden = !isCardUnpaid;
-  if (!isCardUnpaid) f_cardForm.value = "";
-
-  // 還款對象（僅未付款・匯款）
-  document.getElementById("repayTargetField").hidden = !isTransfer;
-  if (!isTransfer) f_repayTarget.value = "";
-
-  const showPerson = isTransfer && f_repayTarget.value === REPAY_MEMBER;
-  document.getElementById("payeePersonField").hidden = !showPerson;
-  if (showPerson) populatePayeePersonOptions();
-
-  const showVendor = isTransfer && f_repayTarget.value === REPAY_VENDOR;
-  document.getElementById("payeeVendorField").hidden = !showVendor;
-
-  // 共用輸入框：外部廠商→匯款帳號；信用卡連結→刷卡連結；其餘隱藏
-  const detailField = document.getElementById("paymentDetailField");
-  const label = document.getElementById("paymentDetailLabel");
-  const hint = document.getElementById("paymentDetailHint");
-  if (showVendor) {
-    detailField.hidden = false;
-    label.innerHTML = '匯款帳號資訊 <span class="req">*</span>';
-    f_paymentDetail.placeholder = "銀行／分行、帳號";
-    hint.className = "field-hint-example";
-    hint.innerHTML = "<strong>範例：</strong>\n華南銀行 城東分行　008_1083\n帳號：94480081415416";
-  } else if (isCardUnpaid && f_cardForm.value === CARD_FORM_LINK) {
-    detailField.hidden = false;
-    label.innerHTML = '刷卡連結 <span class="req">*</span>';
-    f_paymentDetail.placeholder = "貼上對方提供的線上刷卡網址";
-    hint.className = "field-hint";
-    hint.textContent = "範例：https://payment.example.com/pay/abc123";
+function updateBankHint() {
+  const hint = document.getElementById("bankHint");
+  const code = f_branch.value.slice(0, 3);
+  const bank = BANK_CODES[code];
+  hint.classList.remove("hint-ok", "hint-bad");
+  if (f_branch.value.length < 3) {
+    hint.textContent = "銀行代碼 3 碼＋分行代碼 4 碼，例如 0081234";
+  } else if (!bank) {
+    hint.textContent = `清單裡沒有銀行代碼「${code}」（農會、信用合作社可能不在清單裡）。請再對一次存摺，確定沒錯就可以送出`;
+    hint.classList.add("hint-bad");
+  } else if (f_branch.value.length < 7) {
+    hint.textContent = `${bank}（${code}），還差 ${7 - f_branch.value.length} 碼分行代碼`;
   } else {
-    detailField.hidden = true;
+    hint.textContent = `可以使用：${bank}（${code}）・分行代碼 ${f_branch.value.slice(3)}`;
+    hint.classList.add("hint-ok");
   }
-
-  // 紙本刷卡兩項確認（僅未付款・信用卡・紙本）
-  document.getElementById("cardConfirmField").hidden = !(isCardUnpaid && f_cardForm.value === CARD_FORM_PAPER);
+}
+function updateAccountHint() {
+  const hint = document.getElementById("accountHint");
+  hint.textContent = f_account.value
+    ? `共 ${f_account.value.length} 碼：${f_account.value.replace(/(\d{4})(?=\d)/g, "$1 ")}`
+    : "只要數字，「-」和空格會自動拿掉";
 }
 
 function populatePayeePersonOptions() {
   const current = f_payeePerson.value;
   const people = loadUploaders();
+  const me = uploaderSelect.value;
   f_payeePerson.innerHTML = '<option value="">請選擇代墊款的人</option>' +
-    people.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+    people.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}${p === me ? "（我自己）" : ""}</option>`).join("");
   // 預設帶入登入者本人，但可以改成別人（幫同事代送單據的情況）
-  const preferred = people.includes(current) ? current : uploaderSelect.value;
+  const preferred = people.includes(current) ? current : me;
   if (people.includes(preferred)) f_payeePerson.value = preferred;
+}
+
+// 每月固定支出可以選的 5 號：要先經過主管審核（每月 10–13 號），所以最早一樣照代墊款的規則排，往後列 3 個
+function populateFixedDateOptions() {
+  const first = computeExpectedPayoutDate(PAY_STATUS_UNPAID, PM_TRANSFER, REPAY_MEMBER, new Date());
+  const current = f_fixedDate.value;
+  const opts = [0, 1, 2].map(i => new Date(first.getFullYear(), first.getMonth() + i, 5));
+  f_fixedDate.innerHTML = opts.map(d => {
+    const v = fmtDateYMD(d);
+    return `<option value="${v}">${v}（${d.getMonth() + 1} 月 5 號）</option>`;
+  }).join("");
+  if (opts.some(d => fmtDateYMD(d) === current)) f_fixedDate.value = current;
 }
 
 /* ---------------- 單據類型 / 報價單 ----------------
@@ -855,13 +1046,14 @@ function updatePeriodField() {
 }
 
 /* ---------------- 預計撥款日期 ----------------
-   組織 5 號／20 號固定發款。以「送出審核當下」而不是發票日期為準：
-   - 組織匯款（非組織人員／廠商）：9 號前送出 → 當月 20 號；9 號（含）後 → 次月 20 號
-   - 組織匯款（組織人員／同仁代墊）：9 號前送出 → 次月 5 號；9 號（含）後 → 次次月 5 號
-   其他付款方式（零用金／信用卡）沒有固定發款週期規則，不自動推算。
-   標記緊急時，改用上傳人自己選的「希望完成付款日期」，不套用這個公式。 */
+   組織 5 號／20 號固定發款。以「送出審核當下」而不是發票日期為準（主管每月 10–13 號審核）：
+   - 匯款給廠商／外部個人：9 號前送出 → 當月 20 號；9 號（含）後 → 次月 20 號
+   - 代墊款（組織人員）：9 號前送出 → 次月 5 號；9 號（含）後 → 次次月 5 號
+   - 每月固定支出：同仁自己選要在哪個 5 號付
+   - 繳費單：繳費期限前最近的 5 號或 20 號（來不及的話提醒標記緊急）
+   其他（已經付掉了、需要組織刷卡）沒有固定發款週期，不自動推算。
+   標記緊急時，改用上傳人自己選的「希望完成付款日期」。 */
 function computeExpectedPayoutDate(payStatus, payMethod, repayTarget, submitDate) {
-  // 只有「未付款・組織匯款」有固定發款週期；其餘（已付款、信用卡）不自動推算
   if (payStatus !== PAY_STATUS_UNPAID || payMethod !== PM_TRANSFER) return null;
   const day = submitDate.getDate();
   const y = submitDate.getFullYear();
@@ -877,20 +1069,61 @@ function computeExpectedPayoutDate(payStatus, payMethod, repayTarget, submitDate
 function fmtDateYMD(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+function parseYMD(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+// 繳費期限當天或之前最近的付款日（5 號或 20 號）
+function latestPayDayOnOrBefore(d) {
+  if (d.getDate() >= 20) return new Date(d.getFullYear(), d.getMonth(), 20);
+  if (d.getDate() >= 5) return new Date(d.getFullYear(), d.getMonth(), 5);
+  return new Date(d.getFullYear(), d.getMonth() - 1, 20);
+}
+
+// 回傳 { date: Date|null, text: 給人看的說明, warn: 要不要用提醒色 }
+function payoutPlan(now) {
+  const opt = currentPayOption();
+  if (!opt) return { date: null, text: "" };
+  if (opt === "paid") return { date: null, text: "這筆已經付掉了，不會再付款；只需要主管審核和紙本核對。" };
+  if (opt === "card") return { date: null, text: "主管核准後，會計會用組織信用卡處理。" };
+  if (opt === "reimb") {
+    const d = computeExpectedPayoutDate(PAY_STATUS_UNPAID, PM_TRANSFER, REPAY_MEMBER, now);
+    return { date: d, text: `預計 ${fmtDateYMD(d)} 撥款（代墊款每月 5 號跟薪資一起匯；實際以財務作業為準）` };
+  }
+  if (opt === "transfer") {
+    if (f_fixed.checked && f_fixedDate.value) {
+      return { date: parseYMD(f_fixedDate.value), text: `預計 ${f_fixedDate.value} 撥款（每月固定支出，在 5 號付）` };
+    }
+    const d = computeExpectedPayoutDate(PAY_STATUS_UNPAID, PM_TRANSFER, REPAY_VENDOR, now);
+    return { date: d, text: `預計 ${fmtDateYMD(d)} 撥款（廠商款每月 20 號付；實際以財務作業為準）` };
+  }
+  if (opt === "bill") {
+    const due = parseYMD(f_billDue.value);
+    if (!due) return { date: null, text: "填好繳費期限，會計會在期限前用網銀代繳。" };
+    const earliest = computeExpectedPayoutDate(PAY_STATUS_UNPAID, PM_TRANSFER, REPAY_VENDOR, now);
+    const target = latestPayDayOnOrBefore(due);
+    if (target < earliest) {
+      return { date: due, warn: true, text: `繳費期限 ${f_billDue.value} 來不及照一般流程（主管每月 10–13 號審核）付款，請標記「緊急」。` };
+    }
+    return { date: target, text: `會計會在 ${fmtDateYMD(target)} 那批用網銀代繳（繳費期限 ${f_billDue.value}）` };
+  }
+  return { date: null, text: "" };
+}
 
 function updatePayoutEstimate() {
   const banner = document.getElementById("payoutEstimateBanner");
   if (currentUrgent) {
-    banner.hidden = true; // 緊急件的日期由「希望完成付款日期」欄位處理，不重複顯示這個提示
+    banner.hidden = !paymentAllowsUrgency_();
+    banner.className = "form-field span-2 confidence-banner low";
+    banner.textContent = f_urgentDate.value
+      ? `緊急件：送出後會馬上通知主管，希望在 ${f_urgentDate.value} 前完成付款`
+      : "緊急件：請填希望完成付款的日期";
     return;
   }
-  const estimated = computeExpectedPayoutDate(f_payStatus.value, f_payMethod.value, f_repayTarget.value, new Date());
-  if (!estimated) {
-    banner.hidden = true;
-    return;
-  }
-  banner.hidden = false;
-  banner.textContent = `💰 依目前送出時間推算，預計撥款日期為 ${fmtDateYMD(estimated)}（實際仍以財務作業為準）`;
+  const plan = payoutPlan(new Date());
+  banner.hidden = !plan.text;
+  banner.className = "form-field span-2 confidence-banner " + (plan.warn ? "low" : "mid");
+  banner.textContent = plan.text;
 }
 
 /* 緊急／一般切換：緊急件會在送出當下立刻發 Slack 通知主管，一般件只進定期彙總提醒 */
@@ -900,45 +1133,149 @@ urgencyToggle.addEventListener("click", (e) => {
   const btn = e.target.closest(".seg-btn");
   if (!btn) return;
   currentUrgent = btn.dataset.urgent === "1";
-  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b === btn));
+  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => {
+    b.classList.toggle("active", b === btn);
+    b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+  });
   document.getElementById("urgentDateField").hidden = !currentUrgent;
   updatePayoutEstimate();
 });
+f_urgentDate.addEventListener("change", updatePayoutEstimate);
 function resetUrgency() {
   currentUrgent = false;
-  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.urgent === "0"));
+  urgencyToggle.querySelectorAll(".seg-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.urgent === "0");
+    b.setAttribute("aria-pressed", b.dataset.urgent === "0" ? "true" : "false");
+  });
   document.getElementById("urgentDateField").hidden = true;
   f_urgentDate.value = "";
 }
 
-// 切換到不支援急迫性的付款方式時，順手把已經選好的「緊急」清掉，
-// 避免使用者先勾了緊急、再改付款方式，結果送出一筆看不見卻標著緊急的紀錄。
+// 切換到不能標緊急的付款方式（已經付掉了）時，順手把已經選好的「緊急」清掉，
+// 避免使用者先按了緊急、再改付款方式，結果送出一筆看不見卻標著緊急的紀錄。
 function updateUrgencyVisibility() {
   const allowed = paymentAllowsUrgency_();
   document.getElementById("urgencyField").hidden = !allowed;
   if (!allowed) resetUrgency();
 }
 
+/* ---------------- 看起來像重複上傳的提醒（只提醒，不擋送出） ---------------- */
+// 發票號碼統一成「AB-12345678」的樣子再比對（有人會打成小寫、少了「-」）
+function normalizeInvoiceNo(v) {
+  const raw = String(v || "").trim().toUpperCase();
+  const m = raw.replace(/[^A-Z0-9]/g, "").match(/^([A-Z]{2})(\d{8})$/);
+  return m ? m[1] + "-" + m[2] : raw;
+}
+function updateDuplicateWarning() {
+  const box = document.getElementById("dupWarning");
+  const amount = Number(f_amount.value) || 0;
+  const date = f_date.value;
+  const inv = f_invoiceNo.value.trim() ? normalizeInvoiceNo(f_invoiceNo.value) : "";
+  const vendor = f_vendor.value.trim();
+  const me = uploaderSelect.value;
+  const pool = (quoteRecordsSnapshot || []).filter(r => r.status !== "已退回");
+  let hit = null;
+  let byInvoice = false;
+  if (inv) {
+    hit = pool.find(r => r.invoiceNumber && normalizeInvoiceNo(r.invoiceNumber) === inv) || null;
+    byInvoice = !!hit;
+  }
+  if (!hit && amount > 0 && date) {
+    hit = pool.find(r => Number(r.amount) === amount && r.invoiceDate === date && ((vendor && r.vendor === vendor) || r.uploader === me)) || null;
+  }
+  if (!hit) { box.hidden = true; return; }
+  const when = String(hit.uploadedAt || "").slice(0, 10);
+  const who = hit.uploader === me ? "你" : hit.uploader;
+  const what = `${hit.vendor || hit.purpose || "—"} NT$ ${Number(hit.amount || 0).toLocaleString("en-US")}`;
+  box.textContent = byInvoice
+    ? `發票號碼 ${inv} 已經上傳過了：${what}（${who}在 ${when} 上傳）。確定不是重複再送出。`
+    : `${who}在 ${when} 上傳過一筆很像的單據：${what}（${hit.invoiceDate}，${hit.purpose || "—"}）。如果是來回兩張票可以不用理會；確定不是重複再送出。`;
+  box.hidden = false;
+}
+[f_amount, f_date, f_vendor, f_invoiceNo].forEach(el => el.addEventListener("change", updateDuplicateWarning));
+
+// 表單錯誤：除了跳出提示，也在送出按鈕上方留一行，免得提示消失後不知道哪裡沒填
+function showFormError(msg, focusEl) {
+  const box = document.getElementById("formError");
+  box.textContent = msg;
+  box.hidden = false;
+  showToast(msg);
+  if (focusEl && focusEl.focus) focusEl.focus();
+}
+function clearFormError() {
+  document.getElementById("formError").hidden = true;
+}
+
+function setAiTag(key, on) {
+  const el = document.querySelector(`.ai-tag[data-ai="${key}"]`);
+  if (el) el.hidden = !on;
+}
+
+// 「上傳下一張，沿用…」：把上一筆的專案、預算項目、付款方式跟收款資料帶到下一筆（見 doneCard）
+let lastSubmission = null;
+let carryOver = null;
+
 function openConfirmForm({ rawText, confidenceMean, guesses }) {
   currentOcrRawText = rawText;
   rawOcrText.textContent = rawText || "（此檔案未執行文字辨識，請手動輸入欄位）";
+  clearFormError();
+  document.getElementById("doneCard").hidden = true;
 
   f_date.value = guesses.date || "";
   updatePeriodField();
   f_amount.value = guesses.amount || "";
   f_vendor.value = guesses.vendor || "";
+  f_invoiceNo.value = guesses.invoiceNumber ? normalizeInvoiceNo(guesses.invoiceNumber) : "";
+  setAiTag("date", !!guesses.date);
+  setAiTag("amount", !!guesses.amount);
+  setAiTag("vendor", !!guesses.vendor);
+  setAiTag("invoiceNo", !!guesses.invoiceNumber);
   f_purpose.value = "";
   populateBudgetItemOptions(projectSelect.value); // 專案在上傳這步就選好了，這裡直接依它填出對應的預算項目清單
-  f_payStatus.value = "";
-  f_cardForm.value = "";
-  f_repayTarget.value = "";
-  f_payeeVendor.value = "";
-  f_paymentDetail.value = "";
+
+  // 付款方式全部清空，再看要不要沿用上一筆
+  f_payeePerson.innerHTML = "";
+  setRadio("payOption", "");
+  setRadio("paidBy", "");
+  setRadio("cardForm", "");
+  f_accName.value = "";
+  f_branch.value = "";
+  f_account.value = "";
+  f_fixed.checked = false;
+  f_fixedDate.innerHTML = "";
+  f_billDue.value = "";
+  f_cardLink.value = "";
   f_cardConfirm1.checked = false;
   f_cardConfirm2.checked = false;
-  onPayStatusChange(); // 重建付款方式下拉、收起所有細節欄位、重算緊急與撥款預估
+  if (carryOver) {
+    const c = carryOver;
+    const budgetSel = document.getElementById("f_budgetItem");
+    if (c.budgetItem && [...budgetSel.options].some(o => o.value === c.budgetItem)) budgetSel.value = c.budgetItem;
+    setRadio("payOption", c.payOption || "");
+    if (c.payOption === "reimb") {
+      populatePayeePersonOptions();
+      if (c.payee) f_payeePerson.value = c.payee;
+    }
+    if (c.payOption === "transfer") {
+      f_accName.value = c.accName || "";
+      f_branch.value = c.branch || "";
+      f_account.value = c.account || "";
+      f_fixed.checked = !!c.fixed;
+      if (c.fixed) {
+        populateFixedDateOptions();
+        if ([...f_fixedDate.options].some(o => o.value === c.fixedDate)) f_fixedDate.value = c.fixedDate;
+      }
+    }
+    if (c.payOption === "paid") setRadio("paidBy", c.paidBy || "");
+    if (c.payOption === "card") setRadio("cardForm", c.cardForm || "");
+    carryOver = null;
+  }
+  updateBankHint();
+  updateAccountHint();
+  updatePaymentSubfields();
   resetUrgency();
   updateUrgencyVisibility();
+  updatePayoutEstimate();
 
   // 報價單相關：報價總額、關聯報價單（後續款）
   f_quoteTotal.value = "";
@@ -947,7 +1284,8 @@ function openConfirmForm({ rawText, confidenceMean, guesses }) {
   document.getElementById("f_mismatchReason").value = "";
   document.getElementById("mismatchReasonField").hidden = true;
   document.getElementById("quoteOverpayWarning").hidden = true;
-  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); updateMismatchField(); });
+  document.getElementById("dupWarning").hidden = true;
+  refreshOpenQuotes().then(() => { populateLinkedQuoteOptions(); updateQuoteFields(); updateMismatchField(); updateDuplicateWarning(); });
 
   setFlag("flag-date", !!guesses.date);
   setFlag("flag-amount", !!guesses.amount);
@@ -995,109 +1333,98 @@ function suggestFileName(record, originalName) {
 }
 
 function submitRecord() {
+  clearFormError();
   const docType = docTypeSelect.value || DOC_TYPE_RECEIPT;
   const linkedQuoteId = f_linkedQuote.value || "";
 
-  if (!f_date.value) { showToast("請填寫發票 / 收據日期"); f_date.focus(); return; }
-  if (!f_amount.value || Number(f_amount.value) <= 0) { showToast("請填寫金額"); f_amount.focus(); return; }
-  if (!f_purpose.value.trim()) { showToast("請填寫活動／用途說明"); f_purpose.focus(); return; }
+  if (!f_date.value) return showFormError("請填寫發票 / 收據日期", f_date);
+  if (!f_amount.value || Number(f_amount.value) <= 0) return showFormError("請填寫金額", f_amount);
+  if (!f_purpose.value.trim()) return showFormError("請填寫活動／用途說明", f_purpose);
   const f_budgetItem = document.getElementById("f_budgetItem");
-  if (!f_budgetItem.value) { showToast("請選擇預算項目（真的不知道可以選「不確定預算項目」）"); f_budgetItem.focus(); return; }
+  if (!f_budgetItem.value) return showFormError("請選擇預算項目（真的不知道可以選「不確定預算項目」）", f_budgetItem);
 
   // 沒傳檔案：只有「單據類型＝沒有單據」才允許不附檔；發票/收據、報價單一定要有憑證檔。
   const hasFile = !!(selectedImageDataUrl || selectedPdfDataUrl);
   if (!hasFile && docType !== DOC_TYPE_NONE) {
-    showToast("請先上傳憑證檔案（若這筆真的沒有單據，請把「單據類型」改成『沒有單據』）");
-    return;
+    return showFormError("請先上傳憑證檔案（若這筆真的沒有單據，請把「單據類型」改成『沒有單據』）");
   }
-  // 「沒有單據」有兩種合法情況：
-  //  (1) 固定支出、本來就沒有憑證（例如房租）＝ 獨立一筆（linkedQuoteId 空）→ 直接放行
-  //  (2) 某張報價單的後續款（之後補發票）＝ 有選 linkedQuoteId
-  // 所以這裡不再強制一定要綁報價單（房租就是靠這條放行的）。
+  // 「沒有單據」有兩種合法情況：固定支出（例如房租）＝獨立一筆；或某張報價單的後續款（有選 linkedQuoteId）
   let quoteTotal = "";
   if (docType === DOC_TYPE_QUOTE && !linkedQuoteId) {
-    if (!f_quoteTotal.value || Number(f_quoteTotal.value) <= 0) {
-      showToast("報價單請填「報價總額」"); f_quoteTotal.focus(); return;
-    }
+    if (!f_quoteTotal.value || Number(f_quoteTotal.value) <= 0) return showFormError("報價單請填「報價總額」", f_quoteTotal);
     quoteTotal = Number(f_quoteTotal.value);
   } else if (linkedQuoteId) {
-    // 後續款（訂金/尾款）也把原本那張報價單的報價總額一起帶進去，純粹是方便財務在總表
-    // 對帳時，同一個案子的每一列都看得到報價總額是多少，不用另外回頭找母筆——
-    // 不是新的「真相來源」，真正的總額還是以母筆那筆為準，這裡只是複製一份方便查看。
+    // 後續款（訂金/尾款）也把原本那張報價單的報價總額一起帶進去，方便財務在總表對帳時每一列都看得到總額
+    //（真正的總額還是以母筆為準，這裡只是複製一份方便查看）。
     const parentQuote = quoteRecordsSnapshot.find(r => r.id === linkedQuoteId);
     if (parentQuote && parentQuote.quoteTotal) quoteTotal = Number(parentQuote.quoteTotal);
   }
 
-  const payStatus = f_payStatus.value;
-  if (!payStatus) { showToast("請選擇付款狀態"); f_payStatus.focus(); return; }
-  const payMethod = f_payMethod.value;
-  if (!payMethod) { showToast("請選擇付款方式"); f_payMethod.focus(); return; }
-
-  const isUnpaid = payStatus === PAY_STATUS_UNPAID;
-  const isTransfer = isUnpaid && payMethod === PM_TRANSFER;
-  const isCardUnpaid = isUnpaid && payMethod === PM_CARD;
-  let repayTarget = "";
+  // ---- 這筆錢要怎麼付？ ----
+  const opt = currentPayOption();
+  if (!opt) return showFormError("請先選「這筆錢要怎麼付？」", document.querySelector('input[name="payOption"]'));
+  const map = PAY_OPTIONS[opt];
+  const payStatus = map.payStatus;
+  let payMethod = map.payMethod || "";
+  const repayTarget = map.repayTarget || "";
   let cardForm = "";
-
-  if (isTransfer) {
-    repayTarget = f_repayTarget.value;
-    if (!repayTarget) { showToast("請選擇還款對象"); f_repayTarget.focus(); return; }
-    if (repayTarget === REPAY_MEMBER && !f_payeePerson.value) {
-      showToast("請選擇代墊款的人"); f_payeePerson.focus(); return;
+  let payee = "";
+  let paymentDetail = "";
+  const payExtra = { payeeAccountName: "", payeeBankName: "", payeeBranchCode: "", payeeAccountNo: "", fixedExpense: false, billDueDate: "" };
+  if (opt === "reimb") {
+    if (!f_payeePerson.value) return showFormError("請選擇代墊款的人", f_payeePerson);
+    payee = f_payeePerson.value;
+  } else if (opt === "transfer") {
+    const accName = f_accName.value.trim();
+    const branch = digitsOnly(f_branch.value, 7);
+    const account = digitsOnly(f_account.value, 20);
+    if (!accName) return showFormError("請填寫戶名（跟存摺上的一樣）", f_accName);
+    if (branch.length !== 7) return showFormError("分行代碼要 7 碼（銀行代碼 3 碼＋分行代碼 4 碼，例如 0081234）", f_branch);
+    if (account.length < 6) return showFormError("請填寫帳號（只要數字）", f_account);
+    if (f_fixed.checked && !f_fixedDate.value) return showFormError("請選擇這筆固定支出要在哪一天付", f_fixedDate);
+    payee = accName;
+    Object.assign(payExtra, {
+      payeeAccountName: accName, payeeBankName: BANK_CODES[branch.slice(0, 3)] || "",
+      payeeBranchCode: branch, payeeAccountNo: account, fixedExpense: f_fixed.checked,
+    });
+  } else if (opt === "bill") {
+    if (!f_billDue.value) return showFormError("請填繳費期限", f_billDue);
+    payee = f_vendor.value.trim();
+    payExtra.billDueDate = f_billDue.value;
+  } else if (opt === "paid") {
+    payMethod = radioValue("paidBy");
+    if (!payMethod) return showFormError("請選擇是用組織信用卡還是零用金付的", document.querySelector('input[name="paidBy"]'));
+  } else if (opt === "card") {
+    cardForm = radioValue("cardForm");
+    if (!cardForm) return showFormError("請選擇刷卡方式（線上刷卡連結或紙本刷卡）", document.querySelector('input[name="cardForm"]'));
+    if (cardForm === CARD_FORM_LINK) {
+      if (!f_cardLink.value.trim()) return showFormError("請貼上刷卡連結", f_cardLink);
+      paymentDetail = f_cardLink.value.trim();
     }
-    if (repayTarget === REPAY_VENDOR) {
-      if (!f_payeeVendor.value.trim()) { showToast("請填寫戶名"); f_payeeVendor.focus(); return; }
-      if (!f_paymentDetail.value.trim()) { showToast("請填寫匯款帳號資訊"); f_paymentDetail.focus(); return; }
+    if (cardForm === CARD_FORM_PAPER && !(f_cardConfirm1.checked && f_cardConfirm2.checked)) {
+      return showFormError("紙本刷卡請先勾選兩項確認（對方沒辦法接受匯款、也沒辦法提供刷卡連結）", f_cardConfirm1);
     }
   }
-  if (isCardUnpaid) {
-    cardForm = f_cardForm.value;
-    if (!cardForm) { showToast("請選擇信用卡付款方式（連結或紙本）"); f_cardForm.focus(); return; }
-    if (cardForm === CARD_FORM_LINK && !f_paymentDetail.value.trim()) {
-      showToast("請填寫刷卡連結"); f_paymentDetail.focus(); return;
-    }
-    if (cardForm === CARD_FORM_PAPER && (!f_cardConfirm1.checked || !f_cardConfirm2.checked)) {
-      showToast("請勾選兩項確認後才能送出（信用卡紙本付款須先確認無法匯款、無法線上刷卡）");
-      return;
-    }
-  }
-  // 只有未付款才允許緊急；即使切換過程殘留勾選，已付款一律視為一般
+  // 只有還沒付的才允許緊急；即使切換過程殘留勾選，已經付掉的一律視為一般
   const urgent = paymentAllowsUrgency_() && currentUrgent;
-  if (urgent && !f_urgentDate.value) {
-    showToast("標記緊急時，請選擇希望完成付款日期"); f_urgentDate.focus(); return;
-  }
+  if (urgent && !f_urgentDate.value) return showFormError("標記緊急時，請填希望完成付款日期", f_urgentDate);
 
   // 金額超過報價總額 → 必填「不符原因」（追加或算錯都在這裡說明，不擋送出，只要有填就好）
   const overpay = quoteOverpayInfo();
   const mismatchReason = document.getElementById("f_mismatchReason").value.trim();
   if (overpay.over && !mismatchReason) {
-    showToast("本次金額超過報價總額，請填寫「金額不符原因」後再送出");
-    document.getElementById("f_mismatchReason").focus();
-    return;
+    return showFormError("本次金額超過報價總額，請填寫「金額不符原因」後再送出", document.getElementById("f_mismatchReason"));
   }
-
-  // 收款對象：匯款・組織人員記人名、匯款・外部廠商記戶名，其他情況無（款項已由組織支付／刷卡）
-  const payee = isTransfer
-    ? (repayTarget === REPAY_MEMBER ? f_payeePerson.value : f_payeeVendor.value.trim())
-    : "";
-  const paymentDetail = (isTransfer && repayTarget === REPAY_VENDOR) ? f_paymentDetail.value.trim()
-    : (isCardUnpaid && cardForm === CARD_FORM_LINK) ? f_paymentDetail.value.trim()
-    : "";
   // 「確認事項」一欄身兼兩用：信用卡紙本的兩項確認、以及報價金額不符原因。
-  // 兩者幾乎不會同時發生，真的同時就把兩段用換行接起來放同一欄。
-  const cardConfirmText = (isCardUnpaid && cardForm === CARD_FORM_PAPER)
+  const cardConfirmText = cardForm === CARD_FORM_PAPER
     ? "我已確認對方無法使用匯款付款；我已確認對方無法提供線上刷卡連結" : "";
   const confirmNote = [cardConfirmText, (overpay.over ? mismatchReason : "")].filter(Boolean).join("\n");
 
-  const expectedPayoutDate = urgent
-    ? f_urgentDate.value
-    : (() => {
-        const d = computeExpectedPayoutDate(payStatus, payMethod, repayTarget, new Date());
-        return d ? fmtDateYMD(d) : "";
-      })();
+  const plan = payoutPlan(new Date());
+  const expectedPayoutDate = urgent ? f_urgentDate.value : (plan.date ? fmtDateYMD(plan.date) : "");
 
   const now = new Date().toISOString();
-  const record = {
+  const record = Object.assign({
     id: uid(),
     uploader: uploaderSelect.value,
     project: projectSelect.value,
@@ -1108,6 +1435,7 @@ function submitRecord() {
     period: f_period.value,
     amount: Number(f_amount.value),
     vendor: f_vendor.value.trim(),
+    invoiceNumber: f_invoiceNo.value.trim() ? normalizeInvoiceNo(f_invoiceNo.value) : "",
     purpose: f_purpose.value.trim(),
     budgetItem: f_budgetItem.value,
     docType: docType,
@@ -1129,27 +1457,36 @@ function submitRecord() {
     reviewedAt: "",
     rejectReason: "",
     receiptComplete: false,
-  };
+  }, payExtra);
   record.fileName = suggestFileName(record, record.originalFileName || "receipt.jpg");
 
   const saveResult = upsertRecord(record);
   if (!saveResult.ok) {
     // 真的救不回來：不要清空表單，讓使用者可以重試或先手動清理舊紀錄，資料不會憑空消失
-    showToast("送出失敗：瀏覽器本機儲存空間已滿，請到「上傳紀錄」清理較舊的項目後再試一次");
-    return;
+    return showFormError("送出失敗：瀏覽器本機儲存空間已滿，請到「上傳紀錄」按「清除本機暫存」後再試一次");
   }
   if (saveResult.prunedAll) {
-    showToast("已送出，但本機空間不足，已自動清除本機縮圖（雲端資料不受影響，已同步的可到雲端硬碟查看）");
-  } else if (saveResult.pruned) {
-    showToast("已送出，等待主管審核（已自動清理部分舊縮圖騰出空間）");
+    showToast("已送出，但本機空間不足，已自動清除本機縮圖（雲端資料不受影響）");
   } else {
     showToast("已送出，等待主管審核");
   }
 
+  lastSubmission = {
+    docType: docType, project: record.project, budgetItem: record.budgetItem, payOption: opt,
+    payee: opt === "reimb" ? payee : "",
+    accName: payExtra.payeeAccountName, branch: payExtra.payeeBranchCode, account: payExtra.payeeAccountNo,
+    fixed: payExtra.fixedExpense, fixedDate: f_fixedDate.value,
+    paidBy: opt === "paid" ? payMethod : "", cardForm: cardForm,
+  };
+  document.getElementById("keepNextText").textContent =
+    `${record.project}・${record.budgetItem}・${PAY_OPTIONS[opt].label}`;
+
   confirmCard.hidden = true;
   resetFileSelection();
   resetUrgency(); // 避免「緊急」殘留到下一筆
-  uploaderSelect.value = uploaderSelect.value; // 保留上傳人，方便連續上傳
+  const done = document.getElementById("doneCard");
+  done.hidden = false;
+  done.scrollIntoView({ behavior: "smooth", block: "start" });
 
   syncRecordToCloud(record, "create").then((res) => {
     // 送出成功的話，順手在背景把「上傳紀錄」的快取刷新一次（不擋畫面、不用等），
@@ -1157,6 +1494,17 @@ function submitRecord() {
     if (res && res.ok) loadAllRecordsFromCloud();
   });
 }
+
+function startNextUpload(keep) {
+  carryOver = keep ? lastSubmission : null;
+  if (keep && lastSubmission) docTypeSelect.value = lastSubmission.docType;
+  updateStartButtonState();
+  document.getElementById("doneCard").hidden = true;
+  document.getElementById("view-upload").scrollIntoView({ behavior: "smooth", block: "start" });
+  showToast(keep ? "已沿用上一筆的專案、預算項目和付款方式，選好下一張檔案就會開始辨識" : "請選擇下一張單據");
+}
+document.getElementById("keepNextBtn").addEventListener("click", () => startNextUpload(true));
+document.getElementById("freshNextBtn").addEventListener("click", () => startNextUpload(false));
 
 /* ============================================================
    上傳紀錄（唯讀。實際審核動作在 Google 試算表的各專案審核表進行）
@@ -1279,14 +1627,18 @@ function renderMineView() {
     loadAllRecordsFromCloud();
     return;
   }
-  const all = mergedRecords();
+  const everything = mergedRecords();
+  const all = mineScope === "mine" ? everything.filter(isMyRecord) : everything;
   populateRecordFilterOptionsFrom(all);
 
-  document.getElementById("statPending").textContent = all.filter(r => recStatusKey(r) === "pending").length;
-  document.getElementById("statApproved").textContent = all.filter(r => recStatusKey(r) === "approved").length;
-  document.getElementById("statRejected").textContent = all.filter(r => recStatusKey(r) === "rejected").length;
+  const stages = all.map(recordStage);
+  const countOf = (...keys) => stages.filter(st => keys.includes(st)).length;
+  document.getElementById("statPending").textContent = countOf("pending");
+  document.getElementById("statApproved").textContent = countOf("approved", "held");
+  document.getElementById("statPaid").textContent = countOf("paid");
+  document.getElementById("statRejected").textContent = countOf("rejected");
 
-  const fU = document.getElementById("mineUploaderFilter").value;
+  const fU = mineScope === "all" ? document.getElementById("mineUploaderFilter").value : "";
   const fP = document.getElementById("mineProjectFilter").value;
   const fFrom = document.getElementById("mineDateFrom").value;
   const fTo = document.getElementById("mineDateTo").value;
@@ -1296,7 +1648,7 @@ function renderMineView() {
   if (fFrom) records = records.filter(r => uploadDateOf(r) && uploadDateOf(r) >= fFrom);
   if (fTo) records = records.filter(r => uploadDateOf(r) && uploadDateOf(r) <= fTo);
 
-  renderQuoteCases(all); // 報價單案子用未篩選的全部算，才不會因篩選漏算已付
+  renderQuoteCases(everything); // 報價單案子用未篩選的全部算，才不會因篩選漏算已付
 
   mineDisplay = records;
   const listEl = document.getElementById("mineList");
@@ -1304,14 +1656,104 @@ function renderMineView() {
   if (records.length === 0) {
     listEl.innerHTML = "";
     emptyEl.hidden = false;
-    emptyEl.textContent = all.length === 0 ? "目前還沒有任何上傳紀錄" : "沒有符合篩選條件的紀錄";
+    emptyEl.textContent = all.length === 0
+      ? (mineScope === "mine" ? "你還沒有上傳過單據" : "目前還沒有任何上傳紀錄")
+      : "沒有符合篩選條件的紀錄";
     return;
   }
   emptyEl.hidden = true;
-  listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: !fU })).join("");
+  listEl.innerHTML = records.map(r => recordItemHtml(r, { showUploader: mineScope === "all" && !fU })).join("");
   listEl.querySelectorAll(".record-item").forEach(el => {
     el.addEventListener("click", () => openDetailModal(el.dataset.id));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetailModal(el.dataset.id); }
+    });
   });
+}
+
+/* ---- 上傳紀錄 v2：我的單據／全部同仁、進度條、付款說明 ---- */
+let mineScope = "mine";
+document.querySelectorAll("#mineScope .scope-btn").forEach(btn => btn.addEventListener("click", () => {
+  mineScope = btn.dataset.scope;
+  document.querySelectorAll("#mineScope .scope-btn").forEach(b => {
+    const on = b === btn;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  document.getElementById("mineUploaderField").hidden = mineScope !== "all";
+  if (mineScope !== "all") document.getElementById("mineUploaderFilter").value = "";
+  renderMineView();
+}));
+
+function myName() { return (currentUser && currentUser.name) || uploaderSelect.value || ""; }
+// 「我的單據」＝我上傳的，或是別人幫我送、錢要匯還給我的代墊款
+function isMyRecord(r) {
+  const me = myName();
+  return !!me && (r.uploader === me || (payOptionOf(r) === "reimb" && r.payee === me));
+}
+
+// 這筆走到哪一步：pending 待審核／approved 已核准等撥款／held 放行時沒有付款／paid 已付款／rejected 已退回
+function recordStage(r) {
+  const sk = recStatusKey(r);
+  if (sk === "rejected") return "rejected";
+  if (sk === "pending") return "pending";
+  if (r.paidAt || r.payStatus === PAY_STATUS_PAID) return "paid";
+  if (r.releaseNote) return "held";
+  return "approved";
+}
+// 放行備註「2026-11-04 不放行：原因」、紙本核對備註「2026-11-04：原因」→ { date, text }
+function parseDatedNote(note) {
+  const m = String(note || "").match(/^(\d{4}-\d{2}-\d{2})\s*(?:不放行)?\s*[：:]\s*([\s\S]*)$/);
+  const text = (m ? m[2] : String(note || "")).trim().replace(/[。．.\s]+$/, "");
+  return { date: m ? m[1] : "", text: text };
+}
+function shortMD(ymd) {
+  const m = String(ymd || "").match(/^\d{4}-(\d{2})-(\d{2})/);
+  return m ? `${Number(m[1])}/${Number(m[2])}` : String(ymd || "");
+}
+function stageBadge(r, stage) {
+  if (stage === "pending") return { cls: "pending", text: "待審核" };
+  if (stage === "rejected") return { cls: "rejected", text: "已退回" };
+  if (stage === "held") return { cls: "held", text: "這次沒有付款" };
+  if (stage === "paid") return { cls: "paid", text: r.paidAt ? `已付款 ${shortMD(r.paidAt)}` : "已付款" };
+  return { cls: "approved", text: r.expectedPayoutDate ? `已核准・預計 ${shortMD(r.expectedPayoutDate)} 撥款` : "已核准" };
+}
+function progressSteps(r, stage) {
+  const sent = { label: "送出", date: shortMD(uploadDateOf(r)), state: "done" };
+  const reviewed = shortMD(String(r.reviewedAt || "").slice(0, 10));
+  const paidBefore = r.payStatus === PAY_STATUS_PAID; // 上傳時就已經用信用卡／零用金付掉了
+  const paidBeforeStep = { label: "上傳前已付款", date: "", state: "done" };
+  if (stage === "pending") {
+    return [sent, { label: "主管審核中", date: "每月 10–13 號", state: "current" },
+      paidBefore ? paidBeforeStep : { label: "付款", date: r.expectedPayoutDate ? "預計 " + shortMD(r.expectedPayoutDate) : "—", state: "upcoming" }];
+  }
+  if (stage === "rejected") return [sent, { label: "已退回", date: reviewed, state: "rejected" }, { label: "付款", date: "—", state: "upcoming" }];
+  const approvedStep = { label: "主管核准", date: reviewed, state: "done" };
+  if (stage === "paid") return [sent, approvedStep, paidBefore ? paidBeforeStep : { label: "已付款", date: shortMD(r.paidAt), state: "done" }];
+  if (stage === "held") return [sent, approvedStep, { label: "這次沒有付款", date: shortMD(parseDatedNote(r.releaseNote).date), state: "held" }];
+  return [sent, approvedStep, { label: "預計付款", date: shortMD(r.expectedPayoutDate) || "—", state: "upcoming" }];
+}
+function progressHtml(steps) {
+  return `<ol class="progress-steps" aria-label="進度">${steps.map((st, i) => `
+    <li class="ps ps-${st.state}${i === steps.length - 1 ? " ps-last" : ""}">
+      <div class="ps-track" aria-hidden="true"><span class="ps-dot"></span><span class="ps-line"></span></div>
+      <span class="ps-label">${escapeHtml(st.label)}</span>
+      <span class="ps-date">${escapeHtml(st.date || "")}</span>
+    </li>`).join("")}</ol>`;
+}
+// 付款方式的白話說明。收款帳號只會拿到末 4 碼（後端已遮蔽）。
+function payInfoText(r) {
+  const opt = payOptionOf(r);
+  const me = myName();
+  if (opt === "reimb") return r.payee && r.payee !== me ? `代墊款：匯還給${r.payee}（兆豐登記的帳號）` : "代墊款：匯到你在兆豐登記的帳號";
+  if (opt === "transfer") {
+    const acct = [r.payeeAccountName || r.payee, r.payeeBankName, r.payeeAccountMasked].filter(Boolean).join(" ");
+    return `直接匯款給對方：${acct || "—"}${r.fixedExpense ? "（每月固定支出）" : ""}`;
+  }
+  if (opt === "bill") return `繳費單：會計用網銀代繳${r.billDueDate ? `，繳費期限 ${r.billDueDate}` : ""}`;
+  if (opt === "paid") return `已經用${r.payMethod || "組織信用卡或零用金"}付掉了`;
+  if (opt === "card") return `需要組織刷卡（${r.cardForm === CARD_FORM_PAPER ? "紙本刷卡" : "線上刷卡連結"}）`;
+  return [r.payStatus, r.payMethod, r.cardForm, r.repayTarget].filter(Boolean).join(" · ");
 }
 
 // 報價單案子：一張報價單（母）＋所有掛在它底下的後續款。顯示報價總額／已付／尚欠；
@@ -1423,37 +1865,42 @@ function statusLabel(status) {
 // 已核准、有期望撥款日期、但憑證正本還沒送到後勤（單據完備=false）時，在紀錄卡片上直接顯示提醒
 function receiptReminderHtml(r, sk) {
   if (r.docType === DOC_TYPE_NONE) return ""; // 沒有單據（例如房租）本來就沒有憑證要繳，不提醒
-  if (sk !== "approved" || r.receiptComplete || !r.expectedPayoutDate) return "";
-  return `<div class="confidence-banner mid" style="margin-top:8px;">✅ 已收到您的審核，請於 ${escapeHtml(r.expectedPayoutDate)} 前繳交憑證至後勤人員處</div>`;
+  if (sk !== "approved" || r.receiptComplete || r.paperNote || !r.expectedPayoutDate || r.paidAt) return "";
+  return `<p class="record-note record-note-info">已核准，請在 ${escapeHtml(r.expectedPayoutDate)} 前把單據正本交給後勤。</p>`;
 }
 
 function recordItemHtml(r, { showUploader }) {
-  const sk = recStatusKey(r);
+  const stage = recordStage(r);
+  const badge = stageBadge(r, stage);
   const lowConfidence = r.confidence && r.confidence < CONFIDENCE_THRESHOLD;
-  // 從後端撈回來的紀錄一定是已經同步的（不然不會在清單裡）；本機這台瀏覽器剛送出、
-  // 還沒出現在後端清單裡的（_localOnly），要看 r.cloudSynced 才知道實際同不同步。
-  // 之前拿掉的只是「（清單尚待整理）」那句過渡文字，不是整個「已同步」圖示，這裡補回來。
-  const cloudBadge = (r._localOnly && !r.cloudSynced)
-    ? `<span class="cloud-badge unsynced">☁ 未同步</span>`
-    : `<span class="cloud-badge synced">☁ 已同步</span>`;
+  // 本機剛送出、還沒同步成功的才標出來；從後端撈回來的一定已經同步，不用每張都掛「已同步」
+  const cloudBadge = (r._localOnly && !r.cloudSynced) ? ` <span class="cloud-badge unsynced">☁ 未同步</span>` : "";
   // 一般的「發票 / 收據」不特別標；報價單、沒有單據才加徽章提醒
   const docBadge = (r.docType && r.docType !== DOC_TYPE_RECEIPT) ? `<span class="doc-badge">${escapeHtml(r.docType)}</span> ` : "";
+  const title = r.vendor || r.purpose || "未命名單據";
+  const meta = [showUploader ? r.uploader : "", r.project, r.invoiceDate ? "單據日期 " + r.invoiceDate : "無日期"].filter(Boolean);
+  const pay = stage === "rejected" ? "" : payInfoText(r);
+  const held = stage === "held" ? parseDatedNote(r.releaseNote) : null;
+  const paper = r.paperNote ? parseDatedNote(r.paperNote) : null;
   return `
-    <div class="record-item" data-id="${escapeHtml(r.id)}">
-      <div class="record-main">
-        <div class="record-title">${docBadge}${escapeHtml(r.vendor || r.purpose || "未命名單據")}</div>
-        <div class="record-meta">
-          ${showUploader ? `<span>${escapeHtml(r.uploader)}</span>` : ""}
-          <span>${escapeHtml(r.project)}</span>
-          <span>${escapeHtml(r.invoiceDate || "無日期")}</span>
-          ${lowConfidence ? `<span style="color:var(--warn)">⚠ 信心分數偏低</span>` : ""}
+    <div class="record-item" data-id="${escapeHtml(r.id)}" tabindex="0" role="button" aria-label="${escapeHtml(title)}，${escapeHtml(badge.text)}，按一下看詳情">
+      <div class="record-head">
+        <div class="record-main">
+          <div class="record-title">${docBadge}${escapeHtml(title)}</div>
+          ${r.vendor && r.purpose ? `<div class="record-purpose">${escapeHtml(r.purpose)}</div>` : ""}
+          <div class="record-meta">${meta.map(m => `<span>${escapeHtml(m)}</span>`).join("")}${lowConfidence ? `<span style="color:var(--warn)">⚠ 信心分數偏低</span>` : ""}</div>
         </div>
-        ${receiptReminderHtml(r, sk)}
+        <div class="record-side">
+          <div class="record-amount">${fmtMoney(r.amount)}</div>
+          <div class="record-badges">${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${badge.cls}">${escapeHtml(badge.text)}</span>${cloudBadge}</div>
+        </div>
       </div>
-      <div style="text-align:right;flex-shrink:0;">
-        <div class="record-amount">${fmtMoney(r.amount)}</div>
-        <div>${r.urgent ? `<span class="urgent-badge">緊急</span> ` : ""}<span class="status-badge ${sk}">${statusLabel(sk)}</span>${r.paidAt ? ` <span class="paid-badge">💰 已付款</span>` : ""} ${cloudBadge}</div>
-      </div>
+      ${progressHtml(progressSteps(r, stage))}
+      ${pay ? `<p class="record-note record-note-info">${escapeHtml(pay)}</p>` : ""}
+      ${stage === "rejected" && r.rejectReason ? `<p class="record-note record-note-bad">退回原因：${escapeHtml(r.rejectReason)}</p>` : ""}
+      ${held ? `<p class="record-note record-note-warn">放行時沒有付款：${escapeHtml(held.text)}。處理好之後會排進下一批。</p>` : ""}
+      ${paper ? `<p class="record-note record-note-warn">紙本單據要補：${escapeHtml(paper.text)}</p>` : ""}
+      ${receiptReminderHtml(r, recStatusKey(r))}
     </div>`;
 }
 
@@ -1484,8 +1931,11 @@ function openDetailModal(id) {
        </div>`
     : "";
 
-  const payDesc = [r.payStatus, r.payMethod, r.cardForm, r.repayTarget].filter(Boolean).join(" · ") || "—";
+  const payDesc = payInfoText(r) || "—";
   const isQuote = r.docType === DOC_TYPE_QUOTE;
+  const stage = recordStage(r);
+  const badge = stageBadge(r, stage);
+  const opt = payOptionOf(r);
 
   modalBody.innerHTML = `
     ${imgHtml}
@@ -1500,14 +1950,18 @@ function openDetailModal(id) {
       ${(isQuote || r.linkedQuoteId) ? `<dt>報價總額</dt><dd>${fmtMoney(Number(r.quoteTotal) || 0)}</dd>` : ""}
       <dt>用途說明</dt><dd>${escapeHtml(r.purpose || "—")}</dd>
       <dt>預算項目</dt><dd>${escapeHtml(r.budgetItem || "—")}</dd>
+      ${r.invoiceNumber ? `<dt>發票號碼</dt><dd>${escapeHtml(r.invoiceNumber)}</dd>` : ""}
+      <dt>目前進度</dt><dd><span class="status-badge ${badge.cls}">${escapeHtml(badge.text)}</span></dd>
       <dt>付款方式</dt><dd>${escapeHtml(payDesc)}</dd>
-      ${r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
-      ${r.paymentDetail ? `<dt>付款資訊</dt><dd>${escapeHtml(r.paymentDetail)}</dd>` : ""}
+      ${opt === "transfer" && r.payeeBranchCode ? `<dt>分行代碼</dt><dd>${escapeHtml(r.payeeBranchCode)}</dd>` : ""}
+      ${opt !== "transfer" && opt !== "reimb" && r.payee ? `<dt>收款對象</dt><dd>${escapeHtml(r.payee)}</dd>` : ""}
+      ${r.paymentDetail && opt !== "transfer" ? `<dt>付款資訊</dt><dd>${escapeHtml(r.paymentDetail)}</dd>` : ""}
       ${r.confirmNote ? `<dt>確認事項</dt><dd>${escapeHtml(r.confirmNote)}</dd>` : ""}
       <dt>期望撥款日期</dt><dd>${escapeHtml(r.expectedPayoutDate || "—")}</dd>
-      <dt>付款日期</dt><dd>${r.paidAt ? escapeHtml(r.paidAt) : "尚未付款"}</dd>
+      <dt>付款日期</dt><dd>${r.paidAt ? escapeHtml(r.paidAt) : (r.payStatus === PAY_STATUS_PAID ? "上傳前已付款" : "尚未付款")}</dd>
+      ${r.releaseNote ? `<dt>放行備註</dt><dd>${escapeHtml(r.releaseNote)}</dd>` : ""}
       <dt>急迫性</dt><dd>${r.urgent ? '<span class="urgent-badge">緊急</span>' : "一般"}</dd>
-      <dt>單據完備</dt><dd>${r.receiptComplete ? "✅ 已收到正本" : "尚未收到正本"}</dd>
+      <dt>單據正本</dt><dd>${r.receiptComplete ? "✅ 已收到正本" : (r.paperNote ? "⚠️ " + escapeHtml(r.paperNote) : "尚未收到正本")}</dd>
       <dt>上傳時間</dt><dd>${fmtDateTime(r.uploadedAt)}</dd>
     </div>
     ${reviewInfo}
@@ -1561,8 +2015,10 @@ function downloadRecordFile(r) {
 function exportCsv() {
   const records = mineDisplay.length ? mineDisplay : mergedRecords(); // 匯出目前篩選後的清單
   if (records.length === 0) { showToast("目前沒有資料可匯出"); return; }
-  // 欄位順序對齊 google-sync/Code.gs 的 HEADERS（31 欄），貼上收支表時才會對到同一欄
-  const headers = ["上傳時間", "上傳者", "所屬專案", "單據類型", "發票日期", "本次金額", "報價總額", "用途", "公司名稱", "付款狀態", "付款方式", "信用卡形式", "還款對象", "收款對象", "付款資訊", "確認事項", "關聯報價單", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "會計科目", "預算項目", "所屬期間", "憑證檔名", "憑證雲端連結", "紀錄ID"];
+  // 欄位順序對齊 google-sync/Code.gs 的 HEADERS（41 欄），貼上收支表時才會對到同一欄。
+  // 收款帳號只有末 4 碼（「上傳紀錄」本來就拿不到完整帳號，完整的只在總表和財務作業）。
+  const headers = ["上傳時間", "上傳者", "所屬專案", "單據類型", "發票日期", "本次金額", "報價總額", "用途", "公司名稱", "付款狀態", "付款方式", "信用卡形式", "還款對象", "收款對象", "付款資訊", "確認事項", "關聯報價單", "急迫性", "期望撥款日期", "狀態", "審核人", "審核時間", "退回原因", "單據完備", "付款日期", "會計科目", "預算項目", "所屬期間", "憑證檔名", "憑證雲端連結", "紀錄ID",
+    "收款戶名", "收款銀行", "分行代碼", "收款帳號（末 4 碼）", "發票號碼", "每月固定支出", "繳費期限", "付款批次", "放行備註", "紙本核對備註"];
   const rows = records.map(r => [
     fmtDateTimeForSheet(r.uploadedAt), r.uploader, r.project, r.docType || "發票 / 收據", r.invoiceDate,
     r.amount, r.quoteTotal || "", r.purpose, r.vendor,
@@ -1571,6 +2027,8 @@ function exportCsv() {
     r.reviewer, fmtDateTimeForSheet(r.reviewedAt), r.rejectReason,
     r.receiptComplete ? "是" : "否", r.paidAt || "", r.glCode || "",
     r.budgetItem || "", r.period, r.fileName, r.fileUrl || "", r.id,
+    r.payeeAccountName || "", r.payeeBankName || "", r.payeeBranchCode || "", r.payeeAccountMasked || "",
+    r.invoiceNumber || "", r.fixedExpense ? "是" : "", r.billDueDate || "", r.batchId || "", r.releaseNote || "", r.paperNote || "",
   ]);
   const csv = [headers, ...rows]
     .map(row => row.map(cellToCsv).join(","))
@@ -1597,7 +2055,25 @@ function cellToCsv(v) {
 /* v2 起改用「用 Google 帳號登入」驗證身分，取代舊的網址＋密碼＋一次性連結。
    部署網址直接寫死在這裡（它不是機密）；每次請求都帶上 Google 發的登入證明(ID token)，
    後端 Code.gs 驗證它是不是組織帳號（@skillsforu.org）才准寫資料。 */
-const DEPLOY_URL = "https://script.google.com/macros/s/AKfycbyliWKUmaMXLkAVyHPXhdF2lQVZGJOreZyWz-Us2ktCwl_ZsmFaTy1lDq21gGQyUaOy/exec";
+// 正式網址、Vercel 預覽網址都連正式後端（正式總表）。預覽網址只是新版介面先給少數人看，資料是同一份。
+// 選用：要在「總表副本」上測試、不碰正式資料時，把副本部署的 /exec 網址填進 PREVIEW_DEPLOY_URL，
+// 預覽網址就改連副本（見 Code.gs 的「預覽測試模式」）；這時登入會檢查後端真的是預覽測試模式，不是就停下來。
+const PRODUCTION_HOSTS = ["skills-for-u-receipt-helper.vercel.app"];
+const PRODUCTION_DEPLOY_URL = "https://script.google.com/macros/s/AKfycbyliWKUmaMXLkAVyHPXhdF2lQVZGJOreZyWz-Us2ktCwl_ZsmFaTy1lDq21gGQyUaOy/exec";
+const PREVIEW_DEPLOY_URL = ""; // 平常留空
+const IS_PRODUCTION_HOST = PRODUCTION_HOSTS.includes(location.hostname);
+const USES_PREVIEW_BACKEND = !IS_PRODUCTION_HOST && !!PREVIEW_DEPLOY_URL;
+const DEPLOY_URL = USES_PREVIEW_BACKEND ? PREVIEW_DEPLOY_URL : PRODUCTION_DEPLOY_URL;
+if (!IS_PRODUCTION_HOST) {
+  const badge = document.getElementById("envBadge");
+  if (badge) {
+    badge.hidden = false;
+    if (USES_PREVIEW_BACKEND) {
+      badge.textContent = "預覽測試版";
+      badge.title = "這個網址連的是總表副本，不會動到正式總表，Slack 也不會真的發";
+    }
+  }
+}
 const GOOGLE_CLIENT_ID = "367734743259-m1si6lu02113c1e53v80t4gnf40poop0.apps.googleusercontent.com";
 
 let idToken = null;      // 這次登入的 Google 身分證明；每次請求都會帶上（約 1 小時後過期）
@@ -1673,6 +2149,12 @@ async function onSignedIn() {
     idToken = null;
     return;
   }
+  // 設定成連「總表副本」時，後端一定要是預覽測試模式；接到正式總表就停下來，不讓測試資料寫進去。
+  if (USES_PREVIEW_BACKEND && data.previewMode !== true) {
+    idToken = null;
+    showLoginError("這是預覽測試版，但連到的後端不是「預覽測試用的總表副本」。為了不動到正式資料，已經停下來，請通知偉翔。");
+    return;
+  }
   hideLoginStatus();
   applyCloudConfig(data);
   const gate = document.getElementById("loginGate");
@@ -1680,6 +2162,7 @@ async function onSignedIn() {
   const chip = document.getElementById("accountChip");
   if (chip) chip.hidden = false;
   scheduleTokenRefresh();
+  route(); // 登入前網址可能已經帶著 #（例如從 Slack 點進來的 #finance/ops/release），這時候才真的切過去
 }
 
 // 中性狀態（登入中…／正在確認…），跟下面的錯誤訊息共用同一個元素但顏色不同，避免看起來像出錯了
@@ -1727,6 +2210,13 @@ function signOut() {
   idToken = null;
   currentUser = null;
   stopTokenRefresh();
+  // 同一台電腦換人登入時，不能看到上一個人的紀錄、對話和財務資料
+  serverRecords = null;
+  lastRecordsLoadedAt = 0;
+  quoteRecordsSnapshot = [];
+  openQuotesCache = [];
+  try { if (window.Portal && window.Portal.reset) window.Portal.reset(); } catch (e) { console.error(e); }
+  try { if (window.FinanceOps && window.FinanceOps.reset) window.FinanceOps.reset(); } catch (e) { console.error(e); }
   const chip = document.getElementById("accountChip");
   if (chip) chip.hidden = true;
   const gate = document.getElementById("loginGate");
@@ -1747,6 +2237,7 @@ function applyCloudConfig(data) {
   const nameEl = document.getElementById("accountName");
   if (nameEl && currentUser) nameEl.textContent = currentUser.name + (currentUser.unknownPerson ? "（不在名單）" : "");
   applyCurrentUserAsUploader();
+  applyRoleVisibility();
 }
 
 // 上傳人＝登入者本人（後端也會強制覆蓋，這裡只是讓畫面顯示一致、不再讓人手選）
@@ -1886,112 +2377,11 @@ async function cloudOcrRecognize(data) {
   }
 }
 
-/* ============================================================
-   名單設定（上傳人 / 專案）
-   ============================================================ */
-function renderListsView() {
-  // 啟用雲端同步時名單由試算表管理，這裡只做唯讀呈現，避免兩邊各改一份造成不一致
-  const cloud = listsManagedByCloud();
-  document.getElementById("listsCloudBanner").hidden = !cloud;
-  document.getElementById("listsRefreshRow").hidden = !cloud;
-  document.getElementById("listsSubtitle").textContent = cloud
-    ? "名單來自 Google 試算表，這裡僅供檢視"
-    : "管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼";
-  document.querySelectorAll("#view-lists .add-item-row").forEach(el => { el.hidden = cloud; });
-  document.querySelector("#view-lists .list-hint").hidden = cloud;
-
-  renderTagList("uploaderTagList", loadUploaders(), cloud ? null : removeUploader);
-  renderTagList("projectTagList", loadProjects(), cloud ? null : removeProject);
-}
-
-document.getElementById("refreshListsBtn").addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  btn.disabled = true;
-  const original = btn.textContent;
-  btn.textContent = "抓取中…";
-  const res = await fetchListsFromCloud();
-  btn.textContent = original;
-  btn.disabled = false;
-  renderListsView();
-  showToast(res.ok ? "已從試算表更新名單" : "抓取失敗：" + res.error);
-});
-
-// onRemove 傳 null＝唯讀模式（名單由試算表管理時），不顯示刪除按鈕
-function renderTagList(containerId, items, onRemove) {
-  const el = document.getElementById(containerId);
-  if (items.length === 0) {
-    el.innerHTML = '<div class="tag-list-empty">' +
-      (onRemove ? "目前沒有任何項目，請在下面新增" : "目前沒有任何項目，請到 Google 試算表的設定分頁新增") + "</div>";
-    return;
-  }
-  el.innerHTML = items.map(item => `
-    <span class="tag-chip" data-value="${escapeHtml(item)}">
-      ${escapeHtml(item)}
-      ${onRemove ? '<button type="button" title="刪除">✕</button>' : ""}
-    </span>
-  `).join("");
-  if (!onRemove) return;
-  el.querySelectorAll(".tag-chip button").forEach(btn => {
-    btn.addEventListener("click", () => onRemove(btn.closest(".tag-chip").dataset.value));
-  });
-}
-
-function addUploader(name) {
-  name = name.trim();
-  if (!name) return;
-  const list = loadUploaders();
-  if (list.includes(name)) { showToast("這個人已經在名單裡了"); return; }
-  list.push(name);
-  saveUploaders(list);
-  renderListsView();
-  populateUploaderAndProjectSelects();
-}
-function removeUploader(name) {
-  saveUploaders(loadUploaders().filter(u => u !== name));
-  renderListsView();
-  populateUploaderAndProjectSelects();
-}
-function addProject(name) {
-  name = name.trim();
-  if (!name) return;
-  const list = loadProjects();
-  if (list.includes(name)) { showToast("這個專案已經在名單裡了"); return; }
-  list.push(name);
-  saveProjects(list);
-  renderListsView();
-  populateUploaderAndProjectSelects();
-}
-function removeProject(name) {
-  saveProjects(loadProjects().filter(p => p !== name));
-  renderListsView();
-  populateUploaderAndProjectSelects();
-}
-
-document.getElementById("addUploaderBtn").addEventListener("click", () => {
-  const input = document.getElementById("newUploaderInput");
-  addUploader(input.value);
-  input.value = "";
-  input.focus();
-});
-document.getElementById("newUploaderInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("addUploaderBtn").click();
-});
-document.getElementById("addProjectBtn").addEventListener("click", () => {
-  const input = document.getElementById("newProjectInput");
-  addProject(input.value);
-  input.value = "";
-  input.focus();
-});
-document.getElementById("newProjectInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("addProjectBtn").click();
-});
-
 /* ---------------- 初始化 ---------------- */
 const signOutBtn = document.getElementById("signOutBtn");
 if (signOutBtn) signOutBtn.addEventListener("click", signOut);
 
 populateUploaderAndProjectSelects(); // 先用本機快取把畫面鋪好（登入畫面會蓋在最上面）
 populateBudgetItemOptions(projectSelect.value);
-switchView("upload");
-// 顯示登入畫面、等使用者用組織帳號登入；登入成功後才會抓名單、把畫面打開（見 onSignedIn）
+// 顯示登入畫面、等使用者用組織帳號登入；登入成功後才會抓名單、依網址的 # 切到對應的頁面（見 onSignedIn → route）
 initGoogleAuth();
