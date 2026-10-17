@@ -3312,6 +3312,7 @@ function newsKnowledgeText_() {
 const PROFILE_SHEET_NAME = '團隊個性化';
 const PROFILE_TEXT_LIMIT = 300;
 const PROFILE_ABOUT_LIMIT = 1000;
+const PROFILE_EXTRA_MAX = 10;   // 自己加的欄位（例如「常被問的問題」「我的地雷」）最多讀 10 欄，一樣給虛擬分身參考
 // 依序比對（例如「可以找我幫忙的事」要先算「幫忙」，不能被「找我」搶走）
 const PROFILE_FIELDS = [
   { key: 'email', match: /email|信箱/i },
@@ -3363,12 +3364,14 @@ function loadProfiles_() {
   }
   if (hi < 0) return [];
   const col = {};
+  const extraCols = []; // 對不到固定欄位的標題：同仁自己加的欄位
   values[hi].map(trim).forEach(function (h, i) {
     if (!h) return;
     for (let f = 0; f < PROFILE_FIELDS.length; f++) {
       const field = PROFILE_FIELDS[f];
-      if (!(field.key in col) && field.match.test(h)) { col[field.key] = i; break; }
+      if (!(field.key in col) && field.match.test(h)) { col[field.key] = i; return; }
     }
+    if (extraCols.length < PROFILE_EXTRA_MAX) extraCols.push({ i: i, label: h.slice(0, 30) });
   });
   if (!('name' in col)) return [];
   const seen = {};
@@ -3378,6 +3381,8 @@ function loadProfiles_() {
     const email = at('email', 120).toLowerCase();
     const p = { id: email || name, name: name, email: email };
     Object.keys(PROFILE_LABELS).forEach(function (k) { p[k] = at(k, k === 'about' ? PROFILE_ABOUT_LIMIT : PROFILE_TEXT_LIMIT); });
+    p.extra = extraCols.map(function (c) { return { label: c.label, value: trim(r[c.i]).slice(0, PROFILE_TEXT_LIMIT) }; })
+      .filter(function (x) { return x.value; });
     p.consent = 'consent' in col ? isYes_(r[col.consent]) : false;
     return p;
   }).filter(function (p) {
@@ -3392,6 +3397,7 @@ function profileManualText_(p) {
   return ['title', 'mbti', 'blood', 'zodiac', 'hours', 'contact', 'feedback', 'help', 'life', 'voice', 'about']
     .filter(function (k) { return p[k]; })
     .map(function (k) { return '（' + PROFILE_LABELS[k] + '）' + p[k]; })
+    .concat((p.extra || []).map(function (x) { return '（' + x.label + '）' + x.value; }))
     .join('\n');
 }
 
@@ -3419,11 +3425,13 @@ const COLLEAGUE_PERSONA = [
   '你是 Skills for U 同事「{name}」的虛擬分身，在團隊後台的「同事使用手冊」陪同仁聊天，讓大家更認識{name}、知道怎麼跟{name}合作。',
   '規則：',
   '1. 只能根據下面〈{name} 的使用說明書〉和〈在團隊後台的角色〉回答，這些是本人自己寫的。說明書沒寫到的事不要猜、不要編，直接說說明書沒寫、建議直接問本人，並說用什麼方式找本人比較好。',
-  '2. 用第一人稱，像{name}本人在 Slack 回同事；語氣照〈說話風格〉和〈自我描述〉，簡短自然，可以打招呼、閒聊兩句。',
-  '3. 不能替本人答應任何事（例如幫忙、時間、金額、核准、請假），也不能替本人做決定；遇到這類事，請對方直接找本人。',
-  '4. 不評論其他同事、不八卦，不透露說明書以外的個人資訊；不寫任何密碼。',
-  '5. 有人問你是不是本人，要誠實說你是照本人填的使用說明書回答的虛擬分身。',
-  '6. 用繁體中文（台灣用語），不要用 Markdown 標題或表格。',
+  '2. 針對這一題回答：先用一句話直接回答對方問的那一點（例如問「週末會回訊息嗎」就先說會不會、什麼時候會回），再從說明書挑一兩個跟這題有關的細節補充。不要把說明書整段照貼，也不要每次都從頭自我介紹。',
+  '3. 用第一人稱，像{name}本人在 Slack 回同事：語氣、用詞照〈說話風格〉（有口頭禪就自然帶一點），篇幅看問題大小，一般 2～4 句；可以打招呼、閒聊兩句。',
+  '4. 知道對方是誰（名字、職稱）時，可以照對方的工作舉例、說明跟對方最有關的合作方式，但不要假裝跟對方很熟。',
+  '5. 不能替本人答應任何事（例如幫忙、時間、金額、核准、請假），也不能替本人做決定；遇到這類事，請對方直接找本人。',
+  '6. 不評論其他同事、不八卦，不透露說明書以外的個人資訊；不寫任何密碼。',
+  '7. 有人問你是不是本人，要誠實說你是照本人填的使用說明書回答的虛擬分身。',
+  '8. 用繁體中文（台灣用語），不要用 Markdown 標題或表格。',
   '只輸出 JSON：{"answer": "回答內容"}',
 ].join('\n');
 
@@ -3432,13 +3440,18 @@ function askColleague_(body, auth) {
   const question = String(body.question || '').trim().slice(0, 500);
   if (!question) return { ok: false, error: '請先輸入問題。' };
   const id = String(body.colleague || '').trim().toLowerCase();
-  const p = loadProfiles_().filter(function (x) { return x.id.toLowerCase() === id; })[0];
+  const profiles = loadProfiles_();
+  const p = profiles.filter(function (x) { return x.id.toLowerCase() === id; })[0];
   if (!p) return { ok: false, error: '找不到這位同事的使用說明書（可能還沒填，或還沒同意放上網站）。' };
   const roles = profileRolesText_(p);
   const askerName = String((auth && auth.name) || '').trim();
+  const askerEmail = String((auth && auth.email) || '').trim().toLowerCase();
+  const askerProfile = profiles.filter(function (x) { return (askerEmail && x.email === askerEmail) || (askerName && x.name === askerName); })[0];
+  const askerTitle = askerProfile && askerProfile !== p ? askerProfile.title : '';
   let system = COLLEAGUE_PERSONA.replace(/\{name\}/g, p.name);
   if (askerName) {
-    system += '\n現在跟你說話的同仁是「' + askerName + '」' + (askerName === p.name ? '，就是本人在試用自己的虛擬分身' : '') + '。';
+    system += '\n現在跟你說話的同仁是「' + askerName + '」' + (askerTitle ? '（' + askerTitle.slice(0, 60) + '）' : '') +
+      (askerProfile === p || askerName === p.name ? '，就是本人在試用自己的虛擬分身' : '') + '。';
   }
   system += '\n\n〈' + p.name + ' 的使用說明書〉\n' + (profileManualText_(p) || '（還沒寫內容）');
   if (roles) system += '\n\n〈在團隊後台的角色〉\n' + roles;
