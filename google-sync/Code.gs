@@ -2,7 +2,7 @@
  * Skills for U｜核銷小幫手 — Google Sheets / Drive 同步 + 中心審核 + Slack 通知
  *
  * ── 組織架構 ───────────────────────────────────────────────
- * 「中心」是最上層（例如組織發展中心、組織行銷中心、人才培育中心），審核表現在「一個中心一份」，
+ * 「中心」是最上層（例如組織發展中心、品牌行銷中心、人才培育中心），審核表現在「一個中心一份」，
  * 底下的「專案」共用同一份審核表，靠「所屬專案」欄分辨每一列屬於哪個專案。審核人也是設在中心層級，
  * 一個中心底下所有專案都由同一批人審核。Drive 資料夾結構是「中心／專案／年月」。
  *
@@ -70,6 +70,29 @@ const SECRET_TOKEN = '';           // 已停用（保留常數避免其他參照
 // 下面兩個同名常數只是舊作法的相容備援（指令碼屬性沒設時才會用到），請永遠保持空白。
 const GEMINI_API_KEY = '';         // 請保持空白，改用指令碼屬性 GEMINI_API_KEY（兩邊都空 = 不啟用雲端 OCR）
 const SLACK_WEBHOOK_URL = '';      // 請保持空白，改用指令碼屬性 SLACK_WEBHOOK_URL（兩邊都空 = 不發 Slack，其他功能不受影響）
+// 2026-10 起 Slack 分兩個頻道：
+//   SLACK_WEBHOOK_URL         → #組織布告欄-組織事項宣布用（全體同仁：審核提醒、退件、已匯出、補件通知）
+//   SLACK_WEBHOOK_URL_ORGDEV  → #team-組織發展中心（財務內部：放行請求、已放行、整批退回）
+// 財務內部的訊息有整批金額，沒設定 SLACK_WEBHOOK_URL_ORGDEV 時「不會」改發到布告欄，只會不發（見 postToSlack_）。
+
+// 前端網址（不是機密）。Slack 訊息裡的「到核銷小幫手核對」連結用它，前端換網址時這裡要跟著改。
+const APP_URL = 'https://skills-for-u-receipt-helper.vercel.app/';
+
+/* ── 預覽測試模式 ─────────────────────────────────────────────
+   正式上線前，在「總表的副本」上試用新版，完全不碰正式資料：
+   1. 正式總表 →「檔案 → 建立副本」（Apps Script 會一起複製），副本名稱要有「預覽」或「測試」。
+   2. 在副本貼上新版程式碼，重新整理後執行選單「🧪 設成預覽測試用副本」。
+   之後這份副本：
+   • Slack 一律不真的發，改寫進「Slack預覽」分頁（看得到原本會發什麼）
+   • 上傳的檔案、各中心審核表都放在新的「核銷小幫手（預覽測試）」資料夾，不進正式資料夾
+   • 新建的審核表不會自動分享給審核人（不會寄共用通知給大家）
+   正式總表永遠不會有 PREVIEW_MODE 這個指令碼屬性，所以這段在正式環境完全不作用。 */
+const PREVIEW_MODE_PROP_ = 'PREVIEW_MODE';
+// 正式總表的 ID（交接文件第 8 節也有）：預覽測試模式在這份上「永遠」不會開，就算有人誤按選單或誤加屬性也一樣
+const PRODUCTION_MASTER_SPREADSHEET_ID = '13WKP764RsWJdBFs-yGvDdkQzbzqMzrnzZ6BWNb9__Rk';
+const PREVIEW_ROOT_FOLDER_PROP_ = 'PREVIEW_ROOT_FOLDER_ID';
+const PREVIEW_APP_URL = ''; // 預覽網站網址（只影響「Slack預覽」分頁裡訊息的連結），留空就用 APP_URL
+const SLACK_PREVIEW_SHEET_NAME = 'Slack預覽';
 
 // 預設用 gemini-flash-latest 這個別名，它會自動指向目前最新的 Flash 模型，
 // 不會因為 Google 淘汰舊版本（回傳 404 no longer available）而突然失效。
@@ -98,7 +121,23 @@ function secretSource_(name, legacyValue) {
   return 'none';
 }
 function geminiApiKey_() { return getSecret_('GEMINI_API_KEY', GEMINI_API_KEY); }
-function slackWebhookUrl_() { return getSecret_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL); }
+function isPreviewMode_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    if (props.getProperty(MASTER_SPREADSHEET_ID_PROP_) === PRODUCTION_MASTER_SPREADSHEET_ID) return false;
+    return props.getProperty(PREVIEW_MODE_PROP_) === 'on';
+  } catch (e) {
+    return false;
+  }
+}
+function appUrl_() {
+  return (isPreviewMode_() && PREVIEW_APP_URL) ? PREVIEW_APP_URL : APP_URL;
+}
+// target：'finance' → 財務內部頻道；其他（預設）→ 全體同仁的布告欄頻道
+function slackWebhookUrl_(target) {
+  if (target === 'finance') return getSecret_('SLACK_WEBHOOK_URL_ORGDEV', '');
+  return getSecret_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL);
+}
 
 /* ============================================================
    種子名單：只有「第一次」建立設定分頁時會用到，
@@ -121,14 +160,14 @@ const SEED_PEOPLE = [
 const SEED_CENTERS = [
   // [中心名稱, 審核人Email（逗號分隔）, 狀態, 主資料夾ID]
   ['組織發展中心', 'ceo@skillsforu.org, rosyhu@skillsforu.org', '進行中', ''],
-  ['組織行銷中心', 'ceo@skillsforu.org', '進行中', ''],
+  ['品牌行銷中心', 'ceo@skillsforu.org', '進行中', ''],
   ['人才培育中心', 'ceo@skillsforu.org', '進行中', ''],
 ];
 const SEED_PROJECTS = [
   // [專案名稱, 所屬中心, 狀態, 憑證資料夾ID]
   // 每個中心先各自帶一個跟中心同名的「一般行政」專案，代表「不屬於任何特定專案、算中心的一般開銷」。
   ['組織發展中心', '組織發展中心', '進行中', ''],
-  ['組織行銷中心', '組織行銷中心', '進行中', ''],
+  ['品牌行銷中心', '品牌行銷中心', '進行中', ''],
   ['人才培育中心', '人才培育中心', '進行中', ''],
 ];
 
@@ -141,12 +180,19 @@ const SEED_PROJECTS = [
 // 欄位順序＝ Rosy 2026-09-17 在總表上排好的版本（財務要看的欄位集中在一起）。
 // 「單據內容/發票內容」已拿掉（看憑證即可）；「確認事項」一欄身兼「信用卡紙本兩項確認」與
 // 「報價金額不符原因」（兩者幾乎不會同時發生，真的同時就把兩段文字接在一起）。
+// 2026-10 起在最後面（AF 欄起）追加 7 欄結構化的付款資料，給之後的「付款批次」與兆豐整批付款檔直接取用：
+// 以前匯款帳號只有一格自由填寫的「付款資訊」，會出現「帳號請參考網銀記錄」這類會計沒辦法直接用的內容。
+// 新欄位一律加在最後面、不插在中間，既有 31 欄的位置完全不動（舊資料不用搬）；既有總表第一次跑到新版程式時，
+// ensureMasterHeaders_ 會自動補上這幾欄的標題。
 const HEADERS = [
   '上傳時間', '上傳者', '所屬專案', '單據類型', '發票日期', '本次金額', '報價總額', '用途', '公司名稱',
   '付款狀態', '付款方式', '信用卡形式', '還款對象', '收款對象', '付款資訊', '確認事項', '關聯報價單',
   '急迫性', '期望撥款日期', '狀態', '審核人', '審核時間', '退回原因', '單據完備', '付款日期', '會計科目',
   '預算項目', '所屬期間', '憑證檔名', '憑證雲端連結', '紀錄ID',
+  '收款戶名', '收款銀行', '分行代碼', '收款帳號', '發票號碼', '每月固定支出', '繳費期限',
+  '付款批次', '放行備註', '紙本核對備註',
 ];
+const MASTER_LEGACY_COL_COUNT = 31; // 2026-10 以前的欄數；這之後的欄位是後來追加的，見 ensureMasterHeaders_
 // ⚠️ 欄位位置一律用下面這些常數，程式各處都不要再直接寫死數字。
 // 這樣之後調整 HEADERS 順序時，只要改這一區的數字，其他地方會自動跟著對；
 // 漏改一個寫死的數字會讓資料靜靜寫到隔壁欄，而且完全不會報錯——這裡是唯一的真相來源。
@@ -182,6 +228,20 @@ const MASTER_PERIOD_COL = 28;    // 所屬期間，決定憑證存到哪個年�
 const MASTER_FILE_NAME_COL = 29;
 const MASTER_FILE_URL_COL = 30;  // 憑證雲端連結，退回時要靠它找到檔案搬到「已退回」資料夾
 const MASTER_RECORD_ID_COL = 31;
+// ↓ 2026-10 追加（AF～AL）。分行代碼、收款帳號、繳費期限一律存成純文字，
+//   不然 Sheets 會把開頭的 0 吃掉（0081234 → 81234），或把長帳號變成科學記號、把日期轉成日期格式。
+const MASTER_PAYEE_ACCOUNT_NAME_COL = 32; // 收款戶名（匯款給廠商／外部個人時，跟存摺上的戶名一樣）
+const MASTER_PAYEE_BANK_COL = 33;         // 收款銀行（由分行代碼前 3 碼對出來的銀行名稱，方便人看）
+const MASTER_PAYEE_BRANCH_COL = 34;       // 分行代碼（7 碼＝銀行 3 碼＋分行 4 碼），純文字
+const MASTER_PAYEE_ACCOUNT_COL = 35;      // 收款帳號（只有數字），純文字；一定緊接在分行代碼後面（createRow_ 兩欄一起寫）
+const MASTER_INVOICE_NO_COL = 36;         // 發票號碼（AI 辨識後同仁核對，收據可空白）
+const MASTER_FIXED_EXPENSE_COL = 37;      // 每月固定支出：「是」或空白
+const MASTER_BILL_DUE_COL = 38;           // 繳費期限（繳費單才有），純文字 yyyy-MM-dd
+// ↓ 2026-10「財務作業」追加（AM～AO），由網頁的財務作業寫入，不用手動填
+const MASTER_BATCH_ID_COL = 39;           // 付款批次：這筆是在哪一批付掉的（確認已付款時寫入，對應「付款批次」分頁的批次ID）
+const MASTER_RELEASE_NOTE_COL = 40;       // 放行備註：放行人標「不放行」時的原因；之後付款成功會清掉
+const MASTER_PAPER_NOTE_COL = 41;         // 紙本核對備註：會計核對紙本「有問題」時寫的原因；按「紙本相符」或「復原」會清掉
+const MASTER_TEXT_COLS_ADDED_ = [MASTER_PAYEE_BRANCH_COL, MASTER_PAYEE_ACCOUNT_COL, MASTER_BILL_DUE_COL];
 
 // 中心審核表裡實際放單據資料的分頁名稱。程式一律用這個名字去找分頁，
 // 不能假設它是「這份試算表的第一個分頁」——如果有人在前面手動加了別的分頁
@@ -230,12 +290,22 @@ const CENTERS_SHEET_NAME = '中心設定';
 const PROJECTS_SHEET_NAME = '專案設定';
 const BUDGET_SHEET_NAME = '預算項目設定';
 const GLCODE_SHEET_NAME = '會計科目設定';
-const PEOPLE_HEADERS = ['姓名', 'Email', 'Slack個人ID'];
+// 「財務角色」（2026-10 新增）決定誰看得到網頁的「財務作業」分頁：
+//   會計＝產生付款批次、送出放行請求、確認已付款、記到藍途、核對紙本
+//   放行＝在「待放行」核對後放行／不放行／整批退回（Slack 放行請求也會 tag 這些人）
+// 一個人可以兩個都填（用「、」隔開），但系統不讓同一個人放行自己送出的批次（跟兆豐的雙人控管一致）。
+const PEOPLE_HEADERS = ['姓名', 'Email', 'Slack個人ID', '財務角色'];
+const FINANCE_ROLE_ACCOUNTANT = '會計';
+const FINANCE_ROLE_RELEASER = '放行';
+const FINANCE_ROLES = [FINANCE_ROLE_ACCOUNTANT, FINANCE_ROLE_RELEASER];
 const CENTERS_HEADERS = ['中心名稱', '審核人Email（逗號分隔）', '狀態', '主資料夾ID', '審核表ID（自動產生，勿手動修改）', '審核表連結'];
 const CENTERS_REVIEW_SHEET_ID_COL = 5; // 審核表ID、審核表連結＝第 5~6 欄（兩欄連續，saveCenterReviewSheet_ 一次寫入）
 const PROJECTS_HEADERS = ['專案名稱', '所屬中心', '狀態', '憑證資料夾ID'];
-const BUDGET_HEADERS = ['專案/中心', '預算類別', '預算項目', '對應會計科目'];
-const GLCODE_HEADERS = ['會計科目']; // 財務自己維護這張清單，總表「會計科目」欄的下拉選單直接讀這裡（會自動跟著清單增減）
+// 「預算金額」是 2026-10 新增的 E 欄，給「計畫與預算」頁算執行率用（沒填不影響上傳）
+const BUDGET_HEADERS = ['專案/中心', '預算類別', '預算項目', '對應會計科目', '預算金額'];
+// 財務自己維護這張清單，總表「會計科目」欄的下拉選單直接讀 A 欄（會自動跟著清單增減）；
+// B 欄「藍途代碼」是藍途記帳的 4 位數會計項目代碼，產生藍途匯入檔時用來帶入「會計項目代碼」欄。
+const GLCODE_HEADERS = ['會計科目', '藍途代碼'];
 // 上傳時真的不知道該歸哪一項時的保底選項，每個專案的下拉都會自動附加這個，
 // 不需要在「預算項目設定」分頁裡手動幫每個專案各加一列。
 const UNSPECIFIED_BUDGET_ITEM = '不確定預算項目';
@@ -257,6 +327,10 @@ const PAY_STATUS_OPTIONS = [PAY_STATUS_PAID, PAY_STATUS_UNPAID];
 const REPAY_TARGET_MEMBER = '組織人員';  // 還款對象＝內部同仁（多半是代墊款）
 const REPAY_TARGET_VENDOR = '外部廠商';  // 還款對象＝外部廠商
 const REPAY_TARGET_OPTIONS = [REPAY_TARGET_MEMBER, REPAY_TARGET_VENDOR];
+// 付款方式（跟前端 app.js 的 PM_* 一致）。「網銀代繳」是 2026-10 新增的：稅金、健保費這類繳費單，
+// 會計用網路銀行代繳，不經過整批匯款，所以也不需要填收款帳號。
+const PAY_METHOD_TRANSFER = '組織匯款';
+const PAY_METHOD_BILL = '網銀代繳';
 
 /* ============================================================
    設定分頁讀寫（人員設定 / 專案設定）
@@ -317,14 +391,16 @@ function loadConfig_() {
   const budgetSheet = getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []);
 
   const people = [];
-  const peopleLast = peopleSheet.getLastRow();
-  if (peopleLast >= 2) {
-    peopleSheet.getRange(2, 1, peopleLast - 1, PEOPLE_HEADERS.length).getValues().forEach(function (r) {
-      const name = String(r[0] || '').trim();
-      if (!name) return;
-      people.push({ name: name, email: String(r[1] || '').trim(), slackId: String(r[2] || '').trim() });
+  readSheetRows_(peopleSheet, PEOPLE_HEADERS.length).forEach(function (r) {
+    const name = String(r[0] || '').trim();
+    if (!name) return;
+    people.push({
+      name: name,
+      email: String(r[1] || '').trim(),
+      slackId: String(r[2] || '').trim(),
+      financeRoles: parseFinanceRoles_(r[3]),
     });
-  }
+  });
 
   // 中心是新的最上層：審核表、審核人現在都設在這一層，專案只是底下的分類標籤。
   const centers = [];
@@ -362,20 +438,20 @@ function loadConfig_() {
 
   // 依「專案/中心」分組，一個專案對到一份預算項目清單；找不到對應專案的列不會擋住其他資料，單純略過。
   const budgetItemsByProject = {};
-  const budgetLast = budgetSheet.getLastRow();
-  if (budgetLast >= 2) {
-    budgetSheet.getRange(2, 1, budgetLast - 1, BUDGET_HEADERS.length).getValues().forEach(function (r) {
-      const project = String(r[0] || '').trim();
-      const item = String(r[2] || '').trim();
-      if (!project || !item) return; // 專案/中心、預算項目都是必填，缺一就跳過這列
-      if (!budgetItemsByProject[project]) budgetItemsByProject[project] = [];
-      budgetItemsByProject[project].push({
-        category: String(r[1] || '').trim(),
-        item: item,
-        glCode: String(r[3] || '').trim(),
-      });
+  readSheetRows_(budgetSheet, BUDGET_HEADERS.length).forEach(function (r) {
+    const project = String(r[0] || '').trim();
+    const item = String(r[2] || '').trim();
+    if (!project || !item) return; // 專案/中心、預算項目都是必填，缺一就跳過這列
+    if (!budgetItemsByProject[project]) budgetItemsByProject[project] = [];
+    budgetItemsByProject[project].push({
+      category: String(r[1] || '').trim(),
+      item: item,
+      glCode: String(r[3] || '').trim(),
+      // 預算金額可以打「150,000」「150000元」，只取數字；沒填＝0（計畫與預算頁會顯示「未設定」）
+      budget: Number(String(r[4] === null || r[4] === undefined ? '' : r[4]).replace(/[^\d.]/g, '')) || 0,
+      rawBudget: r[4],
     });
-  }
+  });
 
   _configCache = {
     people: people, centers: centers, projects: projects,
@@ -383,6 +459,53 @@ function loadConfig_() {
     budgetItemsByProject: budgetItemsByProject,
   };
   return _configCache;
+}
+
+// 讀設定分頁第 2 列起的資料。欄數以「表格實際有的欄數」為上限再補空字串，
+// 這樣設定分頁新增欄位（例如人員設定的「財務角色」）時，就算舊表格欄數不夠也不會因為範圍超出而整個讀取失敗。
+function readSheetRows_(sheet, numCols) {
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const cols = Math.min(numCols, sheet.getMaxColumns());
+  return sheet.getRange(2, 1, last - 1, cols).getValues().map(function (r) {
+    const padded = r.slice();
+    while (padded.length < numCols) padded.push('');
+    return padded;
+  });
+}
+
+// 「財務角色」欄：可以填「會計」「放行」，或兩個都填（「會計、放行」）；其他字一律忽略
+function parseFinanceRoles_(value) {
+  return String(value || '').split(/[、,，\/\s]+/).map(function (s) { return s.trim(); })
+    .filter(function (s, i, arr) { return FINANCE_ROLES.indexOf(s) !== -1 && arr.indexOf(s) === i; });
+}
+
+// 設定分頁升級用：第 1 列只補「空白」的標題格，已經有字的一律不覆蓋。回傳有衝突（被別的標題佔用）的欄位說明。
+function ensureSettingsHeaders_(sheet, headers) {
+  if (sheet.getMaxColumns() < headers.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+  }
+  const row1 = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const conflicts = [];
+  headers.forEach(function (h, i) {
+    const current = String(row1[i] || '').trim();
+    if (current === h) return;
+    if (current === '') {
+      sheet.getRange(1, i + 1).setValue(h);
+    } else {
+      conflicts.push('「' + sheet.getName() + '」第 ' + (i + 1) + ' 欄是「' + current + '」，系統預期是「' + h + '」');
+    }
+  });
+  return conflicts;
+}
+
+// 預算項目 → 對應會計科目（「預算項目設定」D 欄）。上傳時自動帶進總表「會計科目」欄，財務之後仍可在總表改。
+function glCodeForBudgetItem_(projectName, budgetItem) {
+  const list = loadConfig_().budgetItemsByProject[projectName] || [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].item === budgetItem) return list[i].glCode || '';
+  }
+  return '';
 }
 
 // 給網頁「預算項目」下拉用：該專案設定表裡的項目，永遠加上「不確定預算項目」保底選項。
@@ -444,7 +567,10 @@ function verifyRequestIdentity_(body) {
     email.slice(-(ALLOWED_EMAIL_DOMAIN.length + 1)) === '@' + ALLOWED_EMAIL_DOMAIN;
   if (!domainOk) return { ok: false, error: '請用組織帳號（@' + ALLOWED_EMAIL_DOMAIN + '）登入，這個帳號無法使用本系統。' };
   const person = personByEmail_(email);
-  return { ok: true, email: email, name: person ? person.name : email, unknownPerson: !person };
+  return {
+    ok: true, email: email, name: person ? person.name : email, unknownPerson: !person,
+    financeRoles: person ? person.financeRoles : [],
+  };
 }
 function personByName_(name) {
   const list = loadConfig_().people;
@@ -481,14 +607,25 @@ function doPost(e) {
       return jsonOut_(recognizeReceipt_(images));
     }
     if (body.action === 'getConfig') {
-      // 一併回傳「你是誰」，讓前端顯示登入者、並把上傳人自動帶成本人（不再手選）
+      // 一併回傳「你是誰」，讓前端顯示登入者、並把上傳人自動帶成本人（不再手選）；
+      // financeRoles 決定前端要不要顯示「財務作業」分頁（真正的權限檢查在後端每個財務動作裡，見 requireFinanceRole_）
       const cfg = getConfigForApp_();
-      cfg.me = { email: auth.email, name: auth.name, unknownPerson: auth.unknownPerson };
+      cfg.me = {
+        email: auth.email, name: auth.name, unknownPerson: auth.unknownPerson, financeRoles: auth.financeRoles,
+        canViewBudget: canViewBudget_(auth.email), // 「計畫與預算」只開放給中心審核人和有財務角色的人
+      };
       return jsonOut_(cfg);
+    }
+    if (String(body.action || '').indexOf('finance') === 0) {
+      return jsonOut_(handleFinanceAction_(body, auth));
     }
     if (body.action === 'getStatuses') {
       return jsonOut_(getAllStatuses_());
     }
+    // 團隊後台的三個頁面（首頁問手冊、認識組織、計畫與預算）
+    if (body.action === 'askHandbook') return jsonOut_(askHandbook_(body));
+    if (body.action === 'getAbout') return jsonOut_(getAbout_());
+    if (body.action === 'getBudgetOverview') return jsonOut_(getBudgetOverview_(auth));
     if (body.action === 'getAllRecords') {
       // 「上傳紀錄」頁查全部：回傳收支總表整份，前端自己依上傳人/日期篩選、算報價單分期已付尚欠
       return jsonOut_(getAllRecords_());
@@ -517,9 +654,12 @@ function doGet(e) {
     model: GEMINI_MODEL,
     geminiKeySet: geminiApiKey_() ? true : false,
     slackSet: slackWebhookUrl_() ? true : false,
-    // 機密值從哪裡讀到（只回來源、不回值）：部署後打開 /exec 網址，兩個都顯示 scriptProperties 就代表設定正確
+    slackFinanceSet: slackWebhookUrl_('finance') ? true : false,
+    // 機密值從哪裡讀到（只回來源、不回值）：部署後打開 /exec 網址，三個都顯示 scriptProperties 就代表設定正確
     geminiKeySource: secretSource_('GEMINI_API_KEY', GEMINI_API_KEY),
     slackSource: secretSource_('SLACK_WEBHOOK_URL', SLACK_WEBHOOK_URL),
+    slackFinanceSource: secretSource_('SLACK_WEBHOOK_URL_ORGDEV', ''),
+    previewMode: isPreviewMode_(),
   });
 }
 
@@ -548,6 +688,8 @@ function getConfigForApp_() {
     projectsByCenter: projectsByCenter,
     projects: activeProjects_().map(function (p) { return p.name; }), // 保留完整清單，供舊版快取／簡單比對用
     budgetItemsByProject: budgetItemsByProject,
+    // 預覽網站會檢查這個：接到的後端不是預覽測試模式（＝正式總表）就停下來，不讓測試資料寫進正式總表
+    previewMode: isPreviewMode_(),
   };
 }
 
@@ -580,6 +722,7 @@ function recognizeReceipt_(images) {
     '"amount": 總金額數字（不要加逗號或幣別符號），找不到則為 null, ' +
     '"vendor": "店家或憑證抬頭名稱，找不到則為 null", ' +
     '"items": "品項或用途摘要，找不到則為 null", ' +
+    '"invoiceNumber": "台灣統一發票號碼（2 個英文字母＋8 位數字，例如 AB-12345678），收據或找不到則為 null", ' +
     '"confidence": 你對這次辨識結果整體正確性的信心百分比，0 到 100 的整數}';
 
   const payload = {
@@ -652,6 +795,10 @@ function getSheet_() {
   const ss = getMasterSpreadsheet_(); // 理由同 getOrCreateSheet_：不能假設「使用中的試算表」一定是總表
   let sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
+  // 欄數不夠就先在最後面補欄（新建的分頁預設只有 26 欄），後面讀寫第 2 列標題才不會超出表格範圍
+  if (sheet.getMaxColumns() < HEADERS.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), HEADERS.length - sheet.getMaxColumns());
+  }
   if (headerRowBlank_(sheet, HEADERS.length)) {
     // 第 1 列刻意留空，給人工填寫「自動帶入／手動填寫（誰）」的標註用；標題直接寫在第 2 列，
     // 不用 appendRow（那樣會把標題寫到第 1 列去）。真正的資料從第 3 列開始寫入。
@@ -664,7 +811,7 @@ function getSheet_() {
     [
       MASTER_INVOICE_DATE_COL, MASTER_PERIOD_COL, MASTER_EXPECTED_PAYOUT_COL,
       MASTER_REVIEWED_AT_COL, MASTER_PAYDATE_COL,
-    ].forEach(function (col) {
+    ].concat(MASTER_TEXT_COLS_ADDED_).forEach(function (col) {
       sheet.getRange(3, col, sheet.getMaxRows() - 2, 1).setNumberFormat('@');
     });
     // 「單據完備」勾選框改成「每寫入一列才對那一列設定」（見 createRow_ 的 setCompleteCheckbox_），
@@ -672,7 +819,42 @@ function getSheet_() {
     // 新資料接到最後一列後面，而不是接在真正資料該開始的那一列。
     applyGlCodeDropdown_(sheet);
   }
+  ensureMasterHeaders_(sheet);
   return sheet;
+}
+
+// 既有總表升級到「有追加欄位」的新版程式時，第 2 列只有舊的 31 個標題——上面 headerRowBlank_ 的防線
+// 不會動它（第 2 列不是空的）。這裡專門補「追加欄位」的標題，規則很保守：
+//   • 只補「空白」的標題格，已經有字的格子一律不覆蓋。
+//   • 追加欄位的位置如果已經被別的標題佔用（例如有人在 AE 欄後面手動加了「備註」欄），就直接報錯停下來，
+//     不寫入任何資料——不然新欄位的值會靜靜寫進別人的欄位，付款資料錯欄是最不能發生的事。
+//   • 欄數不夠就先在最後面加欄，再設定純文字格式（分行代碼、帳號、繳費期限）。
+// 每次寫入前都會跑一次，但標題都在的時候只讀一列，很快。
+function ensureMasterHeaders_(sheet) {
+  const need = HEADERS.length;
+  if (sheet.getMaxColumns() < need) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), need - sheet.getMaxColumns());
+  }
+  const row2 = sheet.getRange(2, 1, 1, need).getValues()[0];
+  let wrote = false;
+  for (let i = MASTER_LEGACY_COL_COUNT; i < need; i++) {
+    const current = String(row2[i] || '').trim();
+    if (current === HEADERS[i]) continue;
+    if (current !== '') {
+      throw new Error(
+        '總表「' + SHEET_NAME + '」第 2 列第 ' + (i + 1) + ' 欄已經有標題「' + current + '」，' +
+        '但系統要在這一欄放「' + HEADERS[i] + '」。為了避免付款資料寫錯欄，這次先不寫入。' +
+        '請把手動加的欄位移到所有系統欄位的後面（第 ' + (need + 1) + ' 欄之後），再重新送出。'
+      );
+    }
+    sheet.getRange(2, i + 1).setValue(HEADERS[i]);
+    wrote = true;
+  }
+  if (wrote) {
+    MASTER_TEXT_COLS_ADDED_.forEach(function (col) {
+      sheet.getRange(3, col, sheet.getMaxRows() - 2, 1).setNumberFormat('@');
+    });
+  }
 }
 
 // 「會計科目」欄的下拉選單，來源是「會計科目設定」分頁那張清單本身（活的範圍參照）——
@@ -692,6 +874,11 @@ function setCompleteCheckbox_(sheet, row, col) {
 }
 
 function getRootFolder_() {
+  if (isPreviewMode_()) {
+    const previewId = getSecret_(PREVIEW_ROOT_FOLDER_PROP_, '');
+    if (!previewId) throw new Error('預覽測試模式還沒設定好資料夾，請在總表副本執行選單「🧪 設成預覽測試用副本」。');
+    return DriveApp.getFolderById(previewId);
+  }
   if (DRIVE_FOLDER_ID) return DriveApp.getFolderById(DRIVE_FOLDER_ID);
   const name = '核銷小幫手';
   const it = DriveApp.getFoldersByName(name);
@@ -702,7 +889,7 @@ function getRootFolder_() {
 // 中心審核表要放進哪個資料夾：有指定 REVIEW_SHEETS_FOLDER_ID 就用那個現成資料夾（最穩，
 // 不會靠名字找而生出重複資料夾）；沒指定才退回「在主資料夾底下用名字找/建『中心審核表』子資料夾」。
 function getReviewSheetsFolder_() {
-  if (REVIEW_SHEETS_FOLDER_ID) return DriveApp.getFolderById(REVIEW_SHEETS_FOLDER_ID);
+  if (!isPreviewMode_() && REVIEW_SHEETS_FOLDER_ID) return DriveApp.getFolderById(REVIEW_SHEETS_FOLDER_ID);
   return findOrCreateSubfolder_(getRootFolder_(), '中心審核表');
 }
 
@@ -715,7 +902,7 @@ function findOrCreateSubfolder_(parent, name) {
 // 依中心找資料夾：「中心設定」有填主資料夾ID 就用那個現成資料夾，沒填就在主資料夾底下建同名資料夾
 function getCenterFolder_(centerName) {
   const center = findCenter_(centerName);
-  if (center && center.folderId) return DriveApp.getFolderById(center.folderId);
+  if (center && center.folderId && !isPreviewMode_()) return DriveApp.getFolderById(center.folderId);
   return findOrCreateSubfolder_(getRootFolder_(), centerName || '未分類中心');
 }
 
@@ -723,7 +910,7 @@ function getCenterFolder_(centerName) {
 // 沒填就在該專案所屬中心的資料夾底下建一個同名子資料夾。
 function getProjectFolder_(projectName) {
   const project = findProject_(projectName);
-  if (project && project.folderId) return DriveApp.getFolderById(project.folderId);
+  if (project && project.folderId && !isPreviewMode_()) return DriveApp.getFolderById(project.folderId);
   const centerFolder = getCenterFolder_(project ? project.center : '');
   return findOrCreateSubfolder_(centerFolder, projectName || '未分類專案');
 }
@@ -755,23 +942,76 @@ function saveFile_(record) {
   return getMonthFolder_(record.project, record.period).createFile(blob).getUrl();
 }
 
+// 把網頁送來的付款欄位整理乾淨（分行代碼、帳號只留數字，補上銀行名稱），並組出一行人看得懂的「付款資訊」，
+// 給總表「付款資訊」欄跟各中心審核表顯示用；結構化的欄位另外寫在總表最後面（AF～AL）給程式用。
+// 舊版網頁（還沒更新的瀏覽器快取）只會送自由填寫的 paymentDetail，這裡照原樣保留，不會擋。
+function normalizePaymentFields_(record) {
+  const digits = function (v, max) { return String(v || '').replace(/\D/g, '').slice(0, max); };
+  const branch = digits(record.payeeBranchCode, 7);
+  const account = digits(record.payeeAccountNo, 20);
+  const accountName = String(record.payeeAccountName || '').trim();
+  const bankName = branch
+    ? (String(record.payeeBankName || '').trim() || (branch.length >= 3 ? '銀行代碼 ' + branch.slice(0, 3) : ''))
+    : '';
+  const billDue = /^\d{4}-\d{2}-\d{2}$/.test(String(record.billDueDate || '')) ? String(record.billDueDate) : '';
+  let paymentDetail = String(record.paymentDetail || '').trim();
+  if (branch || account) {
+    paymentDetail = '戶名：' + (accountName || '（未填）') + '｜' + (bankName || '銀行') + '（' + branch + '）｜帳號：' + account;
+  } else if (record.payMethod === PAY_METHOD_BILL) {
+    paymentDetail = '繳費單，會計用網銀代繳';
+  }
+  return {
+    accountName: accountName,
+    bankName: bankName,
+    branch: branch,
+    account: account,
+    billDue: billDue,
+    invoiceNo: String(record.invoiceNumber || '').trim().toUpperCase(),
+    fixedExpense: record.fixedExpense ? '是' : '',
+    paymentDetail: paymentDetail,
+  };
+}
+
 function createRow_(sheet, record) {
   const fileUrl = saveFile_(record);
-  // 欄位順序必須跟 HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 HEADERS，並跑驗證腳本。
-  sheet.appendRow([
-    formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || DOC_TYPE_RECEIPT, record.invoiceDate,
-    record.amount, record.quoteTotal || '', record.purpose, record.vendor,
-    record.payStatus || '', record.payMethod || '', record.cardForm || '', record.repayTarget || '', record.payee || '',
-    record.paymentDetail || '', record.confirmNote || '', record.linkedQuoteId || '',
-    record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
-    record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
-    '', // 單據完備，由後勤人員在總表勾選
-    '', // 付款日期，等財務付款後手動填
-    '', // 會計科目，由財務在總表用下拉選單手動選，網頁上傳時不會帶任何值
-    record.budgetItem || '', record.period,
-    record.fileName, fileUrl, record.id,
-  ]);
-  setCompleteCheckbox_(sheet, sheet.getLastRow(), MASTER_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
+  const pay = normalizePaymentFields_(record);
+  record.paymentDetail = pay.paymentDetail; // 審核表的「付款資訊」也用同一份整理好的文字
+
+  // 上鎖：兩個人同時送出時，appendRow 跟後面「補寫分行代碼／帳號到剛剛那一列」之間如果被插隊，
+  // 帳號會寫到別人的那一列——付款資料錯列是不能發生的事，所以這一段一次只讓一個請求進來。
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    // 欄位順序必須跟 HEADERS 完全一致（見上方常數區）。改這裡一定要跟著改 HEADERS，並跑驗證腳本。
+    sheet.appendRow([
+      formatDateTime_(record.uploadedAt), record.uploader, record.project, record.docType || DOC_TYPE_RECEIPT, record.invoiceDate,
+      record.amount, record.quoteTotal || '', record.purpose, record.vendor,
+      record.payStatus || '', record.payMethod || '', record.cardForm || '', record.repayTarget || '', record.payee || '',
+      pay.paymentDetail, record.confirmNote || '', record.linkedQuoteId || '',
+      record.urgent ? '緊急' : '一般', record.expectedPayoutDate || '', statusLabel_(record.status),
+      record.reviewer, formatDateTime_(record.reviewedAt), record.rejectReason,
+      '', // 單據完備，由會計在「財務作業 › 單據完備」核對紙本後勾選（也可以直接在總表勾）
+      '', // 付款日期，由「財務作業」確認已付款時寫入（也可以直接在總表填）
+      // 會計科目：依「預算項目設定」D 欄自動帶入；沒設定對應就留空，財務之後在總表下拉選單補選或修改
+      glCodeForBudgetItem_(record.project, record.budgetItem),
+      record.budgetItem || '', record.period,
+      record.fileName, fileUrl, record.id,
+      pay.accountName, pay.bankName,
+      '', '', // 分行代碼、收款帳號：下面用純文字格式另外寫，不交給 appendRow（它會把開頭的 0 吃掉）
+      pay.invoiceNo, pay.fixedExpense,
+      '', // 繳費期限：同上，另外用純文字寫
+    ]);
+    const row = sheet.getLastRow();
+    setCompleteCheckbox_(sheet, row, MASTER_COMPLETE_COL); // 只對剛寫入的這一列設勾選框
+    if (pay.branch || pay.account) {
+      sheet.getRange(row, MASTER_PAYEE_BRANCH_COL, 1, 2).setNumberFormat('@').setValues([[pay.branch, pay.account]]);
+    }
+    if (pay.billDue) {
+      sheet.getRange(row, MASTER_BILL_DUE_COL).setNumberFormat('@').setValue(pay.billDue);
+    }
+  } finally {
+    lock.releaseLock();
+  }
 
   // 同步一份到該中心的審核表，供主管審核
   try {
@@ -861,7 +1101,15 @@ function getAllRecords_() {
       cardForm: row[MASTER_CARDFORM_COL - 1],
       repayTarget: row[MASTER_REPAY_TARGET_COL - 1],
       payee: row[MASTER_PAYEE_COL - 1],
-      paymentDetail: row[MASTER_PAYINFO_COL - 1],
+      // 「上傳紀錄」所有同仁都看得到，帳號類的長數字只留末 4 碼（完整帳號只在總表與「財務作業」）
+      paymentDetail: maskAccountNumbers_(row[MASTER_PAYINFO_COL - 1]),
+      payeeAccountName: row[MASTER_PAYEE_ACCOUNT_NAME_COL - 1],
+      payeeBankName: row[MASTER_PAYEE_BANK_COL - 1],
+      payeeBranchCode: String(row[MASTER_PAYEE_BRANCH_COL - 1] || ''), // 分行代碼不是機密（只認得出哪家分行），可以完整顯示
+      payeeAccountMasked: maskTail_(row[MASTER_PAYEE_ACCOUNT_COL - 1]),
+      invoiceNumber: row[MASTER_INVOICE_NO_COL - 1],
+      fixedExpense: row[MASTER_FIXED_EXPENSE_COL - 1] === '是',
+      billDueDate: formatDateOnly_(row[MASTER_BILL_DUE_COL - 1]),
       confirmNote: row[MASTER_CONFIRM_COL - 1],
       linkedQuoteId: row[MASTER_LINKED_QUOTE_COL - 1],
       urgent: row[MASTER_URGENCY_COL - 1] === '緊急',
@@ -875,9 +1123,27 @@ function getAllRecords_() {
       glCode: row[MASTER_GLCODE_COL - 1],
       fileName: row[MASTER_FILE_NAME_COL - 1],
       fileUrl: row[MASTER_FILE_URL_COL - 1],
+      // 放行時沒有付款的原因、紙本核對有問題的原因：上傳人在「上傳紀錄」看得到，才知道要補什麼
+      releaseNote: maskAccountNumbers_(row[MASTER_RELEASE_NOTE_COL - 1]),
+      paperNote: maskAccountNumbers_(row[MASTER_PAPER_NOTE_COL - 1]),
+      batchId: row[MASTER_BATCH_ID_COL - 1],
     };
   }).filter(function (r) { return r.id; });
   return { ok: true, records: records };
+}
+
+// 帳號遮蔽：8 碼以上的連續數字（中間夾「-」或空格也算）只留末 4 碼，例如 94480081415416 → ****5416。
+// 7 碼的分行代碼、金額不會被遮；yyyy-MM-dd 這種日期刻意略過（雖然也是 8 個數字）。
+function maskAccountNumbers_(text) {
+  return String(text || '').replace(/\d(?:[\d -]*\d)?/g, function (m) {
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(m)) return m;
+    const d = m.replace(/\D/g, '');
+    return d.length >= 8 ? '****' + d.slice(-4) : m;
+  });
+}
+function maskTail_(value) {
+  const d = String(value || '').replace(/\D/g, '');
+  return d ? '****' + d.slice(-4) : '';
 }
 
 // 報價單「補上正式發票」在新做法裡不再是特殊的「換單／自動退審」流程——它就只是「再上傳一筆
@@ -945,7 +1211,17 @@ function setupProjectReviewSheets() {
   // 「會計科目設定」不會被 loadConfig_() 讀到（沒有任何程式邏輯需要讀它的內容，只有下拉選單要用它），
   // 明確在這裡確保它存在，不要只靠總表第一次建立時順便建立——不然像這次一樣，
   // 先跑①、總表還沒建立過的話，會計科目設定根本不會被建出來，讓人以為選單漏做了什麼。
-  getOrCreateSheet_(GLCODE_SHEET_NAME, GLCODE_HEADERS, []);
+  const glSheet = getOrCreateSheet_(GLCODE_SHEET_NAME, GLCODE_HEADERS, []);
+
+  // 設定分頁升級：舊表格補上後來新增的欄位標題（人員設定「財務角色」、會計科目設定「藍途代碼」），
+  // 並建立「付款批次」分頁（財務作業用）。只補空白的標題格，不會覆蓋任何已經有字的格子。
+  loadConfig_(); // 確保人員設定等分頁存在
+  const headerConflicts = []
+    .concat(ensureSettingsHeaders_(getOrCreateSheet_(PEOPLE_SHEET_NAME, PEOPLE_HEADERS, SEED_PEOPLE), PEOPLE_HEADERS))
+    .concat(ensureSettingsHeaders_(getOrCreateSheet_(BUDGET_SHEET_NAME, BUDGET_HEADERS, []), BUDGET_HEADERS))
+    .concat(ensureSettingsHeaders_(glSheet, GLCODE_HEADERS))
+    .concat(ensureSettingsHeaders_(getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []), KNOWLEDGE_HEADERS));
+  getBatchSheet_();
 
   const created = [];
   const skipped = [];
@@ -969,15 +1245,78 @@ function setupProjectReviewSheets() {
       '如果是離職或調動要收回，請到該審核表右上角「共用」裡手動移除。'
     : '';
 
+  // 設定之間對不上的地方（改名沒改完、打錯字）一律講出來：這類問題平常不會報錯，
+  // 只會讓同仁「選不到某個專案」或「寫入審核表失敗」，很難從網頁上看出原因。
+  const configWarnings = headerConflicts.concat(configConsistencyWarnings_());
+  const warningBlock = configWarnings.length > 0
+    ? '\n\n⚠️ 設定需要確認：\n' + configWarnings.map(function (w) { return '• ' + w; }).join('\n')
+    : '';
+
   SpreadsheetApp.getUi().alert(
+    (isPreviewMode_() ? '🧪 預覽測試模式：Slack 不會真的發（寫進「' + SLACK_PREVIEW_SHEET_NAME + '」分頁），審核表不會分享給審核人。\n\n' : '') +
     '設定分頁與審核表已更新。\n\n' +
     '進行中中心（' + created.length + '）：\n' + (created.join('\n') || '（無）') +
     '\n\n已結束、略過的中心（' + skipped.length + '）：\n' + (skipped.join('\n') || '（無）') +
+    warningBlock +
     strayBlock +
     '\n\n各中心審核表的網址可在「' + CENTERS_SHEET_NAME + '」分頁查看，已自動分享給對應的審核人。\n' +
     '要異動人員、專案、中心或預算項目，直接編輯「' + PEOPLE_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME +
     '」「' + CENTERS_SHEET_NAME + '」「' + BUDGET_SHEET_NAME + '」分頁後再執行一次這個選單即可。'
   );
+}
+
+// 設定分頁之間對不上的地方，選單①會一併列出來（只提醒，不會自動改任何設定）
+function configConsistencyWarnings_() {
+  const cfg = loadConfig_();
+  const warnings = [];
+  const centerNames = cfg.centers.map(function (c) { return c.name; });
+  cfg.projects.forEach(function (p) {
+    if (!p.center) {
+      warnings.push('「' + PROJECTS_SHEET_NAME + '」第 ' + p.rowIndex + ' 列「' + p.name + '」沒有填所屬中心，同仁選不到這個專案。');
+    } else if (centerNames.indexOf(p.center) === -1) {
+      warnings.push('「' + PROJECTS_SHEET_NAME + '」第 ' + p.rowIndex + ' 列「' + p.name + '」的所屬中心是「' + p.center +
+        '」，但「' + CENTERS_SHEET_NAME + '」裡沒有這個中心（是不是改名沒改完？）。同仁選不到這個專案，寫入審核表也會失敗。');
+    } else {
+      const c = findCenter_(p.center);
+      if (c.status === PROJECT_STATUS_ENDED && p.status !== PROJECT_STATUS_ENDED) {
+        warnings.push('專案「' + p.name + '」所屬的中心「' + c.name + '」已結束，同仁選不到這個專案。');
+      }
+    }
+  });
+  const projectNames = cfg.projects.map(function (p) { return p.name; });
+  Object.keys(cfg.budgetItemsByProject).forEach(function (name) {
+    if (projectNames.indexOf(name) === -1) {
+      warnings.push('「' + BUDGET_SHEET_NAME + '」裡的「' + name + '」不在「' + PROJECTS_SHEET_NAME + '」裡（是不是改名沒改完？），這幾列預算項目不會出現在上傳的下拉選單。');
+    }
+    cfg.budgetItemsByProject[name].forEach(function (b) {
+      const raw = String(b.rawBudget === null || b.rawBudget === undefined ? '' : b.rawBudget).trim();
+      if (raw && !b.budget) warnings.push('預算項目「' + name + '／' + b.item + '」的預算金額「' + raw + '」看不懂，請只填數字。');
+    });
+  });
+  const glNames = Object.keys(loadGlCodeMap_());
+  if (glNames.length) {
+    Object.keys(cfg.budgetItemsByProject).forEach(function (name) {
+      cfg.budgetItemsByProject[name].forEach(function (b) {
+        if (b.glCode && glNames.indexOf(b.glCode) === -1) {
+          warnings.push('預算項目「' + name + '／' + b.item + '」對應的會計科目「' + b.glCode + '」不在「' + GLCODE_SHEET_NAME + '」的清單裡。');
+        }
+      });
+    });
+  }
+  const withRole = function (role) { return cfg.people.filter(function (p) { return p.financeRoles.indexOf(role) !== -1; }); };
+  if (!withRole(FINANCE_ROLE_RELEASER).length) {
+    warnings.push('「' + PEOPLE_SHEET_NAME + '」還沒有人的「財務角色」是「放行」：放行請求不會 tag 任何人，也沒有人能在網頁上放行。');
+  }
+  if (!withRole(FINANCE_ROLE_ACCOUNTANT).length) {
+    warnings.push('「' + PEOPLE_SHEET_NAME + '」還沒有人的「財務角色」是「會計」：沒有人能操作付款批次。');
+  }
+  cfg.people.forEach(function (p) {
+    if (p.financeRoles.length && !p.email) warnings.push('「' + p.name + '」有財務角色但沒有 Email，登入後系統認不出他。');
+  });
+  if (!loadKnowledgeEntries_().length) {
+    warnings.push('「' + KNOWLEDGE_SHEET_NAME + '」還沒有填任何手冊：首頁的「問手冊」和「認識組織」的手冊區會是空的。');
+  }
+  return warnings;
 }
 
 // 標題列、凍結、日期欄純文字格式——不管是「全新建立」還是「既有但被清空」的審核表都要補上，
@@ -988,6 +1327,10 @@ function setupReviewSheetHeaders_(sheet) {
   // 寫標題前先把「標題列」的舊資料驗證清掉。踩過的坑：欄位重排後，某格（例如 V2）還卡著舊版
   // 「審核狀態」的下拉驗證（只准填 待審核/已核准/已退回），這時要把新標題「審核人」寫進 V2
   // 就會違反舊驗證、直接噴錯，害整個選單①中斷。先清掉這一列的驗證，寫標題就不會撞到。
+  // 新建立的試算表預設只有 26 欄，審核表有 27 欄：不先補欄，下面寫標題會因為範圍超出表格而失敗
+  if (sheet.getMaxColumns() < REVIEW_HEADERS.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), REVIEW_HEADERS.length - sheet.getMaxColumns());
+  }
   sheet.getRange(2, 1, 1, sheet.getMaxColumns()).clearDataValidations();
   sheet.getRange(2, 1, 1, REVIEW_HEADERS.length).setValues([REVIEW_HEADERS]);
   sheet.setFrozenRows(2);
@@ -1063,8 +1406,8 @@ function applyCenterPermissions_(ss, center) {
   //    讓標題一定跟現在的 REVIEW_HEADERS 對齊。
   setupReviewSheetHeaders_(sheet);
 
-  // 1. 分享給審核人（編輯者）
-  center.approverEmails.forEach(function (email) {
+  // 1. 分享給審核人（編輯者）。預覽測試模式不分享，免得寄共用通知給大家。
+  (isPreviewMode_() ? [] : center.approverEmails).forEach(function (email) {
     try {
       ss.addEditor(email);
     } catch (e) {
@@ -1135,12 +1478,20 @@ function strayEditorsOfCenter_(ss, center) {
   } catch (e) {
     // 共用雲端硬碟上的檔案沒有單一擁有者，getOwner() 會失敗；沒有擁有者可以排除也不影響盤點
   }
+  // 系統帳號自己（執行這個選單的 service@）也排除：審核表放在共用雲端硬碟時沒有「擁有者」，
+  // 上面那行排除不到它，選單①就會誤報「service@ 有編輯權但不在名單上」。
+  let selfEmail = '';
+  try {
+    selfEmail = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
+  } catch (e) {
+    // 拿不到就算了，頂多多一行誤報
+  }
   const stray = [];
   try {
     ss.getEditors().forEach(function (user) {
       const email = user.getEmail();
       const key = email.toLowerCase();
-      if (key === ownerEmail || approvers[key]) return;
+      if (key === ownerEmail || key === selfEmail || approvers[key]) return;
       stray.push(email);
     });
   } catch (e) {
@@ -1392,8 +1743,10 @@ function moveReceiptFile_(fileUrl, targetFolder) {
    Slack 通知
    ============================================================ */
 // 回傳 HTTP 狀態碼（200 = 成功；沒設定 webhook 回傳 null）。呼叫端目前都不看回傳值，失敗也不擋主流程。
-function postToSlack_(text) {
-  const webhookUrl = slackWebhookUrl_();
+// target：省略＝#組織布告欄（全體同仁）；'finance'＝#team-組織發展中心（財務內部，見 slackWebhookUrl_）
+function postToSlack_(text, target) {
+  if (isPreviewMode_()) return logSlackPreview_(text, target);
+  const webhookUrl = slackWebhookUrl_(target);
   if (!webhookUrl) return null;
   const res = UrlFetchApp.fetch(webhookUrl, {
     method: 'post',
@@ -1405,6 +1758,21 @@ function postToSlack_(text) {
   const code = res.getResponseCode();
   if (code !== 200) console.warn('Slack 通知送出失敗（HTTP ' + code + '）：' + String(res.getContentText()).slice(0, 200));
   return code;
+}
+
+// 預覽測試模式：訊息不送 Slack，寫進總表副本的「Slack預覽」分頁（最新的在最上面）
+function logSlackPreview_(text, target) {
+  try {
+    const sheet = getOrCreateSheet_(SLACK_PREVIEW_SHEET_NAME,
+      ['時間', '會發到哪個頻道', '訊息內容（預覽測試模式，不會真的發到 Slack）'], []);
+    sheet.insertRowAfter(1);
+    sheet.getRange(2, 1, 1, 3).setNumberFormat('@').setValues([[
+      nowText_(), target === 'finance' ? '#team-組織發展中心' : '#組織布告欄', String(text),
+    ]]);
+  } catch (e) {
+    console.warn('寫入 Slack預覽 分頁失敗：' + e);
+  }
+  return 200;
 }
 
 // 審核人、審核表現在都設在「中心」層級，這些函式的參數還是專案名稱（呼叫端都是拿 record.project 來用），
@@ -1506,10 +1874,17 @@ function onReviewStatusEdit_(e) {
   }
 }
 
-// 每月固定的審核日提醒：不管有沒有待審項目，一律用 <!channel> 發一句提醒 + 各中心審核表連結
+// 每月固定的審核日提醒：tag 各中心的審核人（不再用 <!channel> 吵到全體同仁），附上各中心審核表連結
 // （審核表現在一個中心一份，列中心而不是列專案，不然同中心底下的專案會重複列出同一個連結）
 function sendPendingDigestToSlack() {
-  const lines = ['📋 <!channel> 今天是各位主管的審核日，請記得審核喔！', ''];
+  const approverEmails = [];
+  activeCenters_().forEach(function (center) {
+    center.approverEmails.forEach(function (email) {
+      if (approverEmails.indexOf(email.toLowerCase()) === -1) approverEmails.push(email.toLowerCase());
+    });
+  });
+  const mentions = approverEmails.map(mentionByEmail_).join(' ') || '各位主管';
+  const lines = ['📋 ' + mentions + ' 今天是各位主管的審核日，請記得審核喔！', ''];
   activeCenters_().forEach(function (center) {
     const url = center.reviewSheetId ? (function () {
       try { return SpreadsheetApp.openById(center.reviewSheetId).getUrl(); } catch (e) { return ''; }
@@ -1520,51 +1895,1219 @@ function sendPendingDigestToSlack() {
 }
 
 /**
- * 付款完成通知（手動觸發）。
- * 因為會計是排班制、不一定在固定日子上班，所以不用排程，改由會計在總表填完付款日期後，
- * 從選單自己按一次「立即發送付款通知到 Slack」即可。
- * 統計範圍是「付款日期落在本月」的所有紀錄。
+ * 付款完成通知（手動觸發，備用）。
+ * 2026-10 起，20 號那批在網頁「財務作業」按「確認已付款」時會自動發這則（見 notifyPaid_）；
+ * 這個選單留給「直接在總表填付款日期」的情況手動補發。格式跟自動發的一樣：依中心統計本月付款。
  */
 function sendPaymentDigestToSlack() {
-  const master = getSheet_();
-  const lastRow = master.getLastRow();
   const ui = SpreadsheetApp.getUi();
-  if (lastRow < 3) { // 第 1 列標註、第 2 列標題，資料從第 3 列開始
-    ui.alert('目前總表沒有任何資料。');
-    return;
-  }
-
-  const values = master.getRange(3, 1, lastRow - 2, HEADERS.length).getValues();
-  const thisMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
-  const byProject = {};
-  let total = 0;
-  let totalAmount = 0;
-
-  values.forEach(function (row) {
-    const paid = formatDateOnly_(row[MASTER_PAYDATE_COL - 1]);
-    if (!paid || paid.slice(0, 7) !== thisMonth) return;
-    const project = row[MASTER_PROJECT_COL - 1] || '（未指定專案）';
-    if (!byProject[project]) byProject[project] = { count: 0, amount: 0 };
-    byProject[project].count++;
-    const amount = Number(row[MASTER_AMOUNT_COL - 1]) || 0;
-    byProject[project].amount += amount;
-    total++;
-    totalAmount += amount;
-  });
-
-  if (total === 0) {
+  const thisMonth = Utilities.formatDate(new Date(), TZ, 'yyyy-MM');
+  const summary = monthlySummary_(thisMonth);
+  if (summary.total === 0) {
     ui.alert('本月（' + thisMonth + '）還沒有任何已填付款日期的紀錄，未發送通知。');
     return;
   }
+  postToSlack_(summary.text);
+  ui.alert('已發送付款通知：本月共 ' + summary.total + ' 筆，合計 ' + fmtNt_(summary.totalAmount) + '。');
+}
 
-  const lines = ['💰 <!channel> 本月（' + thisMonth + '）已完成付款 ' + total + ' 筆，合計 NT$ ' + totalAmount.toLocaleString('en-US'), ''];
-  Object.keys(byProject).forEach(function (project) {
-    lines.push('• ' + project + '：' + byProject[project].count + ' 筆，NT$ ' + byProject[project].amount.toLocaleString('en-US'));
+/* ============================================================
+   共用小工具（財務作業、團隊後台用）
+   ============================================================ */
+const TZ = 'Asia/Taipei';
+
+function nowText_() {
+  return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm');
+}
+function todayText_() {
+  return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+}
+// 儲存格內容一律轉成文字：Sheets 有時會把文字自動轉成 Date 物件，讀回來要轉回我們原本的格式
+function cellText_(v) {
+  if (v === null || v === undefined) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm');
+  return String(v);
+}
+function parseYmd_(s) {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? { y: Number(m[1]), m0: Number(m[2]) - 1, d: Number(m[3]) } : null;
+}
+// 用 UTC 做純日期加減（月份超過 12 會自動進位到下一年），不受伺服器時區影響
+function ymd_(y, m0, d) {
+  return Utilities.formatDate(new Date(Date.UTC(y, m0, d)), 'UTC', 'yyyy-MM-dd');
+}
+// 2026-11-05 → 11/5（Slack 訊息用）
+function shortDate_(ymd) {
+  const p = parseYmd_(ymd);
+  return p ? (p.m0 + 1) + '/' + p.d : String(ymd || '');
+}
+function fmtNt_(n) {
+  return 'NT$ ' + Math.round(Number(n) || 0).toLocaleString('en-US');
+}
+// Slack 訊息裡 & < > 有特殊意義，使用者打的文字要先跳脫
+function slackEscape_(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function slackLink_(url, text) {
+  return '<' + url + '|' + slackEscape_(text) + '>';
+}
+// tag 一個人：人員設定有 Slack ID 就 tag（對方會跳通知），沒有就只寫名字
+function mentionByEmail_(email) {
+  const p = personByEmail_(email);
+  if (p && p.slackId) return '<@' + p.slackId + '>';
+  return slackEscape_(p ? p.name : (email || ''));
+}
+function mentionByName_(name) {
+  const p = personByName_(name);
+  if (p && p.slackId) return '<@' + p.slackId + '>';
+  return slackEscape_(name || '');
+}
+function withScriptLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+// 一次把收支總表讀進來，並建一個「紀錄ID → 列」的索引
+function readMasterTable_() {
+  const sheet = getSheet_();
+  const last = sheet.getLastRow();
+  const rows = last >= 3 ? sheet.getRange(3, 1, last - 2, HEADERS.length).getValues() : [];
+  const byId = {};
+  rows.forEach(function (row, i) {
+    const id = row[MASTER_RECORD_ID_COL - 1];
+    if (id) byId[id] = { row: row, rowIndex: i + 3 };
+  });
+  return { sheet: sheet, rows: rows, byId: byId };
+}
+// 寫一格純文字（先設純文字格式，避免 Sheets 把日期、帳號自動轉格式）
+function setMasterText_(sheet, rowIndex, col, value) {
+  sheet.getRange(rowIndex, col).setNumberFormat('@').setValue(value === null || value === undefined ? '' : String(value));
+}
+
+/* ============================================================
+   財務作業（2026-10 新增）：付款批次、放行、單據完備
+   ============================================================
+   會計 ① 選批次 → ② 核對清單 → ③ 匯入兆豐、送出放行請求（新增一筆「付款批次」，狀態＝待放行）
+   放行人 在網頁「待放行」逐筆核對 → 確認放行（可以部分不放行，狀態＝已放行）或整批退回（狀態＝已退回）
+   會計 ④ 確認已付款（寫總表付款日期、發 Slack，狀態＝已付款）→ ⑤ 記到藍途（狀態＝已完成）
+   批次本身只記在總表的「付款批次」分頁；每筆單據的付款日期、付款批次、放行備註寫回收支總表。
+   ⚠️ 薪資跟代墊款在兆豐是「同一筆轉帳」，所以放行人不能只把某筆代墊款標不放行就放行——
+      要整批退回給會計，請會計先把那位同仁的金額改掉（見 financeRelease_）。 */
+
+const BATCH_SHEET_NAME = '付款批次';
+const BATCH_HEADERS = [
+  '批次ID', '付款日', '類型', '狀態', '紀錄ID', '不放行（紀錄ID→原因）', '薪資總額', '合計金額',
+  '送出人', '送出時間', '放行人', '放行時間', '退回原因', '實際匯出日期', '確認付款人', '確認付款時間', '完成人', '完成時間',
+];
+const BATCH_COL = {
+  id: 1, payDate: 2, type: 3, status: 4, recordIds: 5, held: 6, salaryTotal: 7, total: 8,
+  sentBy: 9, sentAt: 10, releasedBy: 11, releasedAt: 12, returnReason: 13,
+  paidDate: 14, confirmedBy: 15, confirmedAt: 16, doneBy: 17, doneAt: 18,
+};
+const BATCH_STATUS_PENDING = '待放行';
+const BATCH_STATUS_RELEASED = '已放行';
+const BATCH_STATUS_RETURNED = '已退回';
+const BATCH_STATUS_WITHDRAWN = '已撤回';
+const BATCH_STATUS_PAID = '已付款';
+const BATCH_STATUS_DONE = '已完成';
+const BATCH_OPEN_STATUSES = [BATCH_STATUS_PENDING, BATCH_STATUS_RELEASED]; // 這兩種狀態的批次裡的單據，不能再被放進別的批次
+const GROUP_ORDER = { reimb: 0, transfer: 1, bill: 2 };                     // 付款順序：代墊款 → 匯款 → 繳費單
+
+function getBatchSheet_() {
+  const ss = getMasterSpreadsheet_();
+  let sheet = ss.getSheetByName(BATCH_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(BATCH_SHEET_NAME);
+    if (sheet.getMaxColumns() < BATCH_HEADERS.length) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), BATCH_HEADERS.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, BATCH_HEADERS.length).setValues([BATCH_HEADERS]);
+    sheet.setFrozenRows(1);
+    // 整張存成純文字：日期、時間、金額讀回來才會跟寫進去的一模一樣
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, BATCH_HEADERS.length).setNumberFormat('@');
+  }
+  return sheet;
+}
+
+function batchFromRow_(r, rowIndex) {
+  const t = function (key) { return cellText_(r[BATCH_COL[key] - 1]).trim(); };
+  let held = {};
+  try {
+    held = t('held') ? JSON.parse(t('held')) : {};
+  } catch (e) {
+    held = {};
+  }
+  return {
+    rowIndex: rowIndex,
+    id: t('id'), payDate: formatDateOnly_(t('payDate')), type: t('type'), status: t('status'),
+    recordIds: t('recordIds').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+    held: held && typeof held === 'object' ? held : {},
+    salaryTotal: Number(t('salaryTotal')) || 0, total: Number(t('total')) || 0,
+    sentBy: t('sentBy'), sentAt: t('sentAt'), releasedBy: t('releasedBy'), releasedAt: t('releasedAt'),
+    returnReason: t('returnReason'), paidDate: formatDateOnly_(t('paidDate')),
+    confirmedBy: t('confirmedBy'), confirmedAt: t('confirmedAt'), doneBy: t('doneBy'), doneAt: t('doneAt'),
+  };
+}
+
+function readBatches_() {
+  return readSheetRows_(getBatchSheet_(), BATCH_HEADERS.length)
+    .map(function (r, i) { return batchFromRow_(r, i + 2); })
+    .filter(function (b) { return b.id; });
+}
+function findBatch_(id) {
+  const list = readBatches_();
+  for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+function batchCellValue_(key, v) {
+  if (key === 'held') return JSON.stringify(v || {});
+  if (key === 'recordIds') return (v || []).join(',');
+  return v === null || v === undefined ? '' : String(v);
+}
+function appendBatch_(fields) {
+  const sheet = getBatchSheet_();
+  const row = Math.max(sheet.getLastRow(), 1) + 1;
+  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 20);
+  const values = BATCH_HEADERS.map(function () { return ''; });
+  Object.keys(fields).forEach(function (key) { values[BATCH_COL[key] - 1] = batchCellValue_(key, fields[key]); });
+  sheet.getRange(row, 1, 1, BATCH_HEADERS.length).setNumberFormat('@').setValues([values]);
+  return batchFromRow_(values, row);
+}
+function updateBatch_(batch, fields) {
+  const sheet = getBatchSheet_();
+  Object.keys(fields).forEach(function (key) {
+    sheet.getRange(batch.rowIndex, BATCH_COL[key]).setNumberFormat('@').setValue(batchCellValue_(key, fields[key]));
+    batch[key] = fields[key];
+  });
+  return batch;
+}
+// 給網頁的批次資料：加上人名、筆數，拿掉內部用的列號
+function batchForClient_(b) {
+  return {
+    id: b.id, payDate: b.payDate, type: b.type, status: b.status,
+    count: b.recordIds.length, total: b.total, salaryTotal: b.salaryTotal,
+    sentBy: b.sentBy, sentByName: b.sentBy ? approverDisplayName_(b.sentBy) : '', sentAt: b.sentAt,
+    releasedBy: b.releasedBy, releasedByName: b.releasedBy ? approverDisplayName_(b.releasedBy) : '', releasedAt: b.releasedAt,
+    returnReason: b.returnReason, held: b.held, heldCount: Object.keys(b.held || {}).length,
+    paidDate: b.paidDate, confirmedBy: b.confirmedBy, confirmedByName: b.confirmedBy ? approverDisplayName_(b.confirmedBy) : '',
+    confirmedAt: b.confirmedAt, doneAt: b.doneAt, recordIds: b.recordIds,
+  };
+}
+
+function batchTypeOf_(payDate) {
+  const p = parseYmd_(payDate);
+  if (p && p.d === 5) return '5號';
+  if (p && p.d === 20) return '20號';
+  return '臨時';
+}
+// 今天之後（含今天）最近的 5 號、20 號
+function upcomingPayDates_(todayYmd) {
+  const t = parseYmd_(todayYmd);
+  const c5 = t.d <= 5 ? ymd_(t.y, t.m0, 5) : ymd_(t.y, t.m0 + 1, 5);
+  const c20 = t.d <= 20 ? ymd_(t.y, t.m0, 20) : ymd_(t.y, t.m0 + 1, 20);
+  return [c5, c20].sort();
+}
+// 某個日期當天或之前最近的付款日（5 號或 20 號），繳費單用：要在繳費期限前付掉
+function latestPayDayOnOrBefore_(ymd) {
+  const p = parseYmd_(ymd);
+  if (!p) return '';
+  if (p.d >= 20) return ymd_(p.y, p.m0, 20);
+  if (p.d >= 5) return ymd_(p.y, p.m0, 5);
+  return ymd_(p.y, p.m0 - 1, 20);
+}
+
+function paymentGroupOf_(payMethod, repayTarget) {
+  if (payMethod === PAY_METHOD_BILL) return 'bill';
+  if (payMethod === PAY_METHOD_TRANSFER) return repayTarget === REPAY_TARGET_MEMBER ? 'reimb' : 'transfer';
+  return '';
+}
+
+// 會計科目名稱 → 藍途 4 位數代碼（「會計科目設定」B 欄）
+function loadGlCodeMap_() {
+  const sheet = getOrCreateSheet_(GLCODE_SHEET_NAME, GLCODE_HEADERS, []);
+  const map = {};
+  readSheetRows_(sheet, GLCODE_HEADERS.length).forEach(function (r) {
+    const name = String(r[0] || '').trim();
+    if (name) map[name] = String(r[1] || '').replace(/\D/g, '');
+  });
+  return map;
+}
+
+// 一列總表 → 財務作業用的單據資料（含完整帳號，只回給有財務角色的人）
+function financeRecord_(row, glMap) {
+  const raw = function (col) { return row[col - 1]; };
+  const s = function (col) { return cellText_(raw(col)).trim(); };
+  const project = findProject_(s(MASTER_PROJECT_COL));
+  const payMethod = s(MASTER_PAYMETHOD_COL);
+  const repayTarget = s(MASTER_REPAY_TARGET_COL);
+  const group = paymentGroupOf_(payMethod, repayTarget);
+  const glCode = s(MASTER_GLCODE_COL);
+  const fileUrl = s(MASTER_FILE_URL_COL);
+  const branch = s(MASTER_PAYEE_BRANCH_COL).replace(/\D/g, '');
+  const account = s(MASTER_PAYEE_ACCOUNT_COL).replace(/\D/g, '');
+  const completeRaw = raw(MASTER_COMPLETE_COL);
+  return {
+    id: s(MASTER_RECORD_ID_COL),
+    group: group,
+    uploader: s(MASTER_UPLOADER_COL),
+    person: group === 'reimb' ? s(MASTER_PAYEE_COL) : '',
+    payee: s(MASTER_PAYEE_COL) || s(MASTER_PAYEE_ACCOUNT_NAME_COL) || s(MASTER_VENDOR_COL),
+    project: s(MASTER_PROJECT_COL),
+    center: project ? project.center : '',
+    vendor: s(MASTER_VENDOR_COL),
+    purpose: s(MASTER_PURPOSE_COL),
+    budgetItem: s(MASTER_BUDGET_ITEM_COL),
+    glCode: glCode,
+    glCodeNexTrek: glCode && glMap ? (glMap[glCode] || '') : '',
+    amount: Number(raw(MASTER_AMOUNT_COL)) || 0,
+    invoiceDate: formatDateOnly_(raw(MASTER_INVOICE_DATE_COL)),
+    invoiceNumber: s(MASTER_INVOICE_NO_COL),
+    docType: s(MASTER_DOCTYPE_COL) || DOC_TYPE_RECEIPT,
+    payStatus: s(MASTER_PAYSTATUS_COL),
+    payMethod: payMethod,
+    repayTarget: repayTarget,
+    accountName: s(MASTER_PAYEE_ACCOUNT_NAME_COL),
+    bankName: s(MASTER_PAYEE_BANK_COL),
+    branch: branch,
+    account: account,
+    paymentDetail: s(MASTER_PAYINFO_COL),
+    billDueDate: formatDateOnly_(raw(MASTER_BILL_DUE_COL)),
+    fixedExpense: s(MASTER_FIXED_EXPENSE_COL) === '是',
+    urgent: s(MASTER_URGENCY_COL) === '緊急',
+    expectedPayoutDate: formatDateOnly_(raw(MASTER_EXPECTED_PAYOUT_COL)),
+    uploadedAt: s(MASTER_UPLOAD_TIME_COL),
+    status: s(MASTER_STATUS_COL),
+    reviewer: s(MASTER_REVIEWER_COL),
+    reviewedAt: s(MASTER_REVIEWED_AT_COL),
+    complete: completeRaw === true || String(completeRaw).toUpperCase() === 'TRUE' || completeRaw === '是',
+    paidAt: formatDateOnly_(raw(MASTER_PAYDATE_COL)),
+    batchId: s(MASTER_BATCH_ID_COL),
+    releaseNote: s(MASTER_RELEASE_NOTE_COL),
+    paperNote: s(MASTER_PAPER_NOTE_COL),
+    fileName: s(MASTER_FILE_NAME_COL),
+    fileUrl: fileUrl,
+    hasFile: !!fileIdFromUrl_(fileUrl),
+    legacy: group === 'transfer' && !(branch && account), // 舊格式：帳號只是一段自由文字
+    firstTime: false,                                      // 由 candidateRecords_ 依付款紀錄補上
+  };
+}
+
+// 預計撥款日：上傳時算好存在總表；舊資料沒有就用同一套規則現算（規則同前端 computeExpectedPayoutDate）
+function expectedPayoutOf_(rec) {
+  if (rec.expectedPayoutDate) return rec.expectedPayoutDate;
+  const up = parseYmd_(rec.uploadedAt);
+  if (!up) return '';
+  if (rec.group === 'reimb') return ymd_(up.y, up.m0 + (up.d <= 9 ? 1 : 2), 5);
+  if (rec.group === 'bill' && rec.billDueDate) return latestPayDayOnOrBefore_(rec.billDueDate) || rec.billDueDate;
+  return ymd_(up.y, up.m0 + (up.d <= 9 ? 0 : 1), 20);
+}
+
+function paymentOrderCompare_(a, b) {
+  const g = (GROUP_ORDER[a.group] || 0) - (GROUP_ORDER[b.group] || 0);
+  if (g) return g;
+  if (a.group === 'reimb' && a.person !== b.person) return a.person < b.person ? -1 : 1;
+  if (a.expectedPayoutDate !== b.expectedPayoutDate) return a.expectedPayoutDate < b.expectedPayoutDate ? -1 : 1;
+  return a.uploadedAt < b.uploadedAt ? -1 : (a.uploadedAt > b.uploadedAt ? 1 : 0);
+}
+
+// 這個付款日可以付的單據：已核准、還沒付款、要匯款或代繳、預計撥款日在付款日當天或之前、不在其他進行中的批次裡
+function candidateRecords_(table, batches, payDate, glMap) {
+  const inOpenBatch = {};
+  batches.forEach(function (b) {
+    if (BATCH_OPEN_STATUSES.indexOf(b.status) === -1) return;
+    b.recordIds.forEach(function (id) { inOpenBatch[id] = b.id; });
+  });
+  const all = table.rows.map(function (row) { return financeRecord_(row, glMap); }).filter(function (r) { return r.id; });
+  const paidAccounts = {};
+  all.forEach(function (r) { if (r.paidAt && r.account) paidAccounts[r.account] = true; });
+  return all
+    .filter(function (r) {
+      return r.status === STATUS_OPTIONS[1] && !r.paidAt && r.payStatus === PAY_STATUS_UNPAID && r.group && !inOpenBatch[r.id];
+    })
+    .map(function (r) {
+      r.expectedPayoutDate = expectedPayoutOf_(r);
+      r.firstTime = r.group === 'transfer' && !!r.account && !paidAccounts[r.account];
+      return r;
+    })
+    .filter(function (r) { return !r.expectedPayoutDate || r.expectedPayoutDate <= payDate; })
+    .sort(paymentOrderCompare_);
+}
+
+function groupTotals_(records) {
+  const out = { reimb: { count: 0, total: 0 }, transfer: { count: 0, total: 0 }, bill: { count: 0, total: 0 } };
+  records.forEach(function (r) {
+    if (!out[r.group]) return;
+    out[r.group].count++;
+    out[r.group].total += r.amount;
+  });
+  return out;
+}
+function sumAmount_(records) {
+  return records.reduce(function (t, r) { return t + (Number(r.amount) || 0); }, 0);
+}
+
+function requireFinanceRole_(auth, role) {
+  if ((auth.financeRoles || []).indexOf(role) === -1) {
+    throw new Error('這個動作需要「' + role + '」的財務角色（總表「人員設定」的「財務角色」欄）。');
+  }
+}
+
+function handleFinanceAction_(body, auth) {
+  if (!(auth.financeRoles || []).length) {
+    return { ok: false, error: '你沒有財務作業的權限。需要的話，請管理員在總表「人員設定」的「財務角色」欄幫你填上「會計」或「放行」。' };
+  }
+  try {
+    switch (body.action) {
+      case 'financeOverview': return financeOverview_();
+      case 'financeCandidates': return financeCandidates_(body);
+      case 'financeSendRelease':
+        requireFinanceRole_(auth, FINANCE_ROLE_ACCOUNTANT);
+        return financeSendRelease_(auth, body);
+      case 'financeWithdraw':
+        requireFinanceRole_(auth, FINANCE_ROLE_ACCOUNTANT);
+        return financeWithdraw_(auth, body);
+      case 'financeGetBatch': return financeGetBatch_(body);
+      case 'financeRelease':
+        requireFinanceRole_(auth, FINANCE_ROLE_RELEASER);
+        return financeRelease_(auth, body);
+      case 'financeReturn':
+        requireFinanceRole_(auth, FINANCE_ROLE_RELEASER);
+        return financeReturn_(auth, body);
+      case 'financeConfirmPaid':
+        requireFinanceRole_(auth, FINANCE_ROLE_ACCOUNTANT);
+        return financeConfirmPaid_(auth, body);
+      case 'financeFile': return financeFile_(body);
+      case 'financeCompleteBatch':
+        requireFinanceRole_(auth, FINANCE_ROLE_ACCOUNTANT);
+        return financeCompleteBatch_(auth, body);
+      case 'financeCompleteness': return financeCompleteness_();
+      case 'financeMarkPaper': return financeMarkPaper_(auth, body);
+      default: return { ok: false, error: 'unknown action: ' + body.action };
+    }
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+function financeOverview_() {
+  const table = readMasterTable_();
+  const batches = readBatches_();
+  const glMap = loadGlCodeMap_();
+  const today = todayText_();
+  const suggestions = upcomingPayDates_(today).map(function (payDate) {
+    const recs = candidateRecords_(table, batches, payDate, glMap);
+    return { payDate: payDate, type: batchTypeOf_(payDate), count: recs.length, total: sumAmount_(recs), groups: groupTotals_(recs) };
+  });
+  const newestFirst = batches.slice().sort(function (a, b) { return a.id < b.id ? 1 : -1; });
+  const active = newestFirst.filter(function (b) {
+    return [BATCH_STATUS_PENDING, BATCH_STATUS_RELEASED, BATCH_STATUS_PAID].indexOf(b.status) !== -1;
+  });
+  const recent = newestFirst.filter(function (b) { return active.indexOf(b) === -1; }).slice(0, 10);
+  return {
+    ok: true, today: today, suggestions: suggestions,
+    activeBatches: active.map(batchForClient_), recentBatches: recent.map(batchForClient_),
+  };
+}
+
+function financeCandidates_(body) {
+  const payDate = String(body.payDate || '');
+  if (!parseYmd_(payDate)) throw new Error('付款日格式不對（要 yyyy-MM-dd）');
+  const table = readMasterTable_();
+  const batches = readBatches_();
+  const records = candidateRecords_(table, batches, payDate, loadGlCodeMap_());
+  const returned = batches
+    .filter(function (b) { return b.payDate === payDate && b.status === BATCH_STATUS_RETURNED; })
+    .sort(function (a, b) { return a.id < b.id ? 1 : -1; })[0];
+  return {
+    ok: true, payDate: payDate, type: batchTypeOf_(payDate), records: records,
+    lastReturned: returned ? batchForClient_(returned) : null,
+  };
+}
+
+function financeSendRelease_(auth, body) {
+  const payDate = String(body.payDate || '');
+  if (!parseYmd_(payDate)) throw new Error('付款日格式不對（要 yyyy-MM-dd）');
+  const ids = (Array.isArray(body.recordIds) ? body.recordIds : []).map(String).filter(Boolean);
+  if (!ids.length) throw new Error('沒有勾選任何單據。');
+  if (ids.length !== Object.keys(ids.reduce(function (o, id) { o[id] = 1; return o; }, {})).length) throw new Error('清單裡有重複的單據。');
+  const salaryTotal = Math.max(0, Math.round(Number(body.salaryTotal) || 0));
+  return withScriptLock_(function () {
+    const table = readMasterTable_();
+    const batches = readBatches_();
+    const allowed = {};
+    candidateRecords_(table, batches, payDate, loadGlCodeMap_()).forEach(function (r) { allowed[r.id] = r; });
+    const bad = ids.filter(function (id) { return !allowed[id]; });
+    if (bad.length) {
+      throw new Error('有 ' + bad.length + ' 筆單據現在不能付款（可能剛被退回、已經付款，或已經在別的批次裡）。請重新整理清單再送一次。');
+    }
+    const records = ids.map(function (id) { return allowed[id]; });
+    // 批次ID＝B＋付款日＋送出時間；同一秒內又送一次（例如撤回後馬上重送）就在後面加 -2、-3，確保不重複
+    const baseId = 'B' + payDate.replace(/-/g, '') + '-' + Utilities.formatDate(new Date(), TZ, 'HHmmss');
+    let batchId = baseId;
+    for (let n = 2; batches.some(function (b) { return b.id === batchId; }); n++) batchId = baseId + '-' + n;
+    const batch = appendBatch_({
+      id: batchId,
+      payDate: payDate, type: batchTypeOf_(payDate), status: BATCH_STATUS_PENDING,
+      recordIds: ids, held: {}, salaryTotal: salaryTotal, total: sumAmount_(records),
+      sentBy: auth.email, sentAt: nowText_(),
+    });
+    try {
+      notifyReleaseRequest_(batch, records);
+    } catch (err) {
+      console.error('放行請求 Slack 通知失敗：' + err);
+    }
+    return { ok: true, batch: batchForClient_(batch) };
+  });
+}
+
+function financeWithdraw_(auth, body) {
+  return withScriptLock_(function () {
+    const batch = findBatch_(String(body.batchId || ''));
+    if (!batch) throw new Error('找不到這一批。');
+    if (batch.status !== BATCH_STATUS_PENDING) throw new Error('這一批目前是「' + batch.status + '」，只有「待放行」的批次可以撤回。');
+    updateBatch_(batch, { status: BATCH_STATUS_WITHDRAWN });
+    try {
+      postToSlack_(
+        '↩️ ' + slackEscape_(approverDisplayName_(auth.email)) + ' 撤回了 ' + shortDate_(batch.payDate) + ' 付款批次的放行請求（' +
+        batch.recordIds.length + ' 筆，' + fmtNt_(batch.total) + '），這一批不用放行了。',
+        'finance'
+      );
+    } catch (err) {
+      console.error('撤回通知失敗：' + err);
+    }
+    return { ok: true, batch: batchForClient_(batch) };
+  });
+}
+
+function batchRecords_(batch, table, glMap) {
+  return batch.recordIds
+    .map(function (id) { return table.byId[id] ? financeRecord_(table.byId[id].row, glMap) : null; })
+    .filter(Boolean);
+}
+
+function financeGetBatch_(body) {
+  const batch = findBatch_(String(body.batchId || ''));
+  if (!batch) throw new Error('找不到這一批。');
+  const records = batchRecords_(batch, readMasterTable_(), loadGlCodeMap_());
+  return { ok: true, batch: batchForClient_(batch), records: records };
+}
+
+// 放行人送來的「不放行」清單：每一筆都要在這一批裡、而且要寫原因
+function cleanHeld_(held, batch) {
+  const out = {};
+  const src = held && typeof held === 'object' ? held : {};
+  Object.keys(src).forEach(function (id) {
+    if (batch.recordIds.indexOf(id) === -1) throw new Error('不放行的單據不在這一批裡，請重新整理後再試。');
+    const reason = String(src[id] || '').trim().slice(0, 200);
+    if (!reason) throw new Error('每一筆不放行的單據都要寫原因。');
+    out[id] = reason;
+  });
+  return out;
+}
+function writeReleaseNotes_(table, held) {
+  const today = todayText_();
+  Object.keys(held).forEach(function (id) {
+    const entry = table.byId[id];
+    if (entry) setMasterText_(table.sheet, entry.rowIndex, MASTER_RELEASE_NOTE_COL, today + ' 不放行：' + held[id]);
+  });
+}
+
+function financeRelease_(auth, body) {
+  return withScriptLock_(function () {
+    const batch = findBatch_(String(body.batchId || ''));
+    if (!batch) throw new Error('找不到這一批。');
+    if (batch.status !== BATCH_STATUS_PENDING) throw new Error('這一批目前是「' + batch.status + '」，不能放行。');
+    if (batch.sentBy && batch.sentBy.toLowerCase() === String(auth.email).toLowerCase()) {
+      throw new Error('這一批是你自己送出的，要由另一位放行人放行（跟兆豐網銀的雙人控管一樣）。');
+    }
+    const held = cleanHeld_(body.held, batch);
+    const table = readMasterTable_();
+    const records = batchRecords_(batch, table, loadGlCodeMap_());
+    const heldReimb = records.filter(function (r) { return held[r.id] && r.group === 'reimb'; });
+    if (heldReimb.length) {
+      throw new Error('代墊款跟薪資在兆豐是同一筆轉帳。不放行代墊款，要先請會計把那位同仁的金額改掉：請用「整批退回給會計」，這筆會排到下一循環。');
+    }
+    updateBatch_(batch, { status: BATCH_STATUS_RELEASED, held: held, releasedBy: auth.email, releasedAt: nowText_() });
+    writeReleaseNotes_(table, held);
+    try {
+      notifyReleased_(batch, records, held, auth.email);
+      if (Object.keys(held).length) notifyHeldToUploaders_(batch, records, held);
+    } catch (err) {
+      console.error('放行 Slack 通知失敗：' + err);
+    }
+    return { ok: true, batch: batchForClient_(batch) };
+  });
+}
+
+function financeReturn_(auth, body) {
+  const reason = String(body.reason || '').trim().slice(0, 300);
+  if (!reason) throw new Error('請寫退回的原因，會計才知道要改什麼。');
+  return withScriptLock_(function () {
+    const batch = findBatch_(String(body.batchId || ''));
+    if (!batch) throw new Error('找不到這一批。');
+    if (batch.status !== BATCH_STATUS_PENDING) throw new Error('這一批目前是「' + batch.status + '」，不能退回。');
+    const held = cleanHeld_(body.held, batch);
+    const table = readMasterTable_();
+    const records = batchRecords_(batch, table, loadGlCodeMap_());
+    updateBatch_(batch, {
+      status: BATCH_STATUS_RETURNED, held: held, returnReason: reason, releasedBy: auth.email, releasedAt: nowText_(),
+    });
+    writeReleaseNotes_(table, held);
+    try {
+      notifyReturned_(batch, records, held, auth.email);
+    } catch (err) {
+      console.error('退回 Slack 通知失敗：' + err);
+    }
+    return { ok: true, batch: batchForClient_(batch) };
+  });
+}
+
+function financeConfirmPaid_(auth, body) {
+  const paidDate = String(body.paidDate || '');
+  if (!parseYmd_(paidDate)) throw new Error('實際匯出日期格式不對（要 yyyy-MM-dd）。');
+  return withScriptLock_(function () {
+    const batch = findBatch_(String(body.batchId || ''));
+    if (!batch) throw new Error('找不到這一批。');
+    if (batch.status !== BATCH_STATUS_RELEASED) {
+      throw new Error('這一批目前是「' + batch.status + '」。要等放行人在網頁上按了「確認放行」，才能確認已付款。');
+    }
+    const table = readMasterTable_();
+    const glMap = loadGlCodeMap_();
+    const warnings = [];
+    const paid = [];
+    batch.recordIds.forEach(function (id) {
+      if (batch.held[id]) return;
+      const entry = table.byId[id];
+      if (!entry) {
+        warnings.push('紀錄 ' + id + ' 在總表找不到了，略過。');
+        return;
+      }
+      const rec = financeRecord_(entry.row, glMap);
+      if (rec.paidAt) {
+        warnings.push(rec.payee + '｜' + rec.purpose + ' 總表上已經有付款日期（' + rec.paidAt + '），沒有覆蓋。');
+        return;
+      }
+      setMasterText_(table.sheet, entry.rowIndex, MASTER_PAYDATE_COL, paidDate);
+      setMasterText_(table.sheet, entry.rowIndex, MASTER_BATCH_ID_COL, batch.id);
+      setMasterText_(table.sheet, entry.rowIndex, MASTER_RELEASE_NOTE_COL, '');
+      rec.paidAt = paidDate;
+      paid.push(rec);
+    });
+    updateBatch_(batch, { status: BATCH_STATUS_PAID, paidDate: paidDate, confirmedBy: auth.email, confirmedAt: nowText_() });
+    try {
+      syncRowsToReviewSheets_(paid.map(function (r) { return r.id; }));
+    } catch (err) {
+      warnings.push('付款日期同步到中心審核表失敗，今晚的自動同步會再補上。（' + err + '）');
+    }
+    let posted = [];
+    try {
+      posted = notifyPaid_(batch, paid, paidDate);
+    } catch (err) {
+      warnings.push('Slack 通知送出失敗：' + err);
+    }
+    return { ok: true, batch: batchForClient_(batch), posted: posted, warnings: warnings };
+  });
+}
+
+function financeFile_(body) {
+  const batch = findBatch_(String(body.batchId || ''));
+  if (!batch) throw new Error('找不到這一批。');
+  const recordId = String(body.recordId || '');
+  if (batch.recordIds.indexOf(recordId) === -1) throw new Error('這筆單據不在這一批裡。');
+  const entry = readMasterTable_().byId[recordId];
+  if (!entry) throw new Error('總表找不到這筆單據。');
+  const fileId = fileIdFromUrl_(entry.row[MASTER_FILE_URL_COL - 1]);
+  if (!fileId) throw new Error('這筆單據沒有憑證檔案。');
+  const file = DriveApp.getFileById(fileId);
+  const size = file.getSize();
+  if (size > 20 * 1024 * 1024) {
+    throw new Error('「' + file.getName() + '」有 ' + Math.round(size / 1024 / 1024) + ' MB，太大了，請到雲端硬碟手動下載。');
+  }
+  const blob = file.getBlob();
+  return { ok: true, name: file.getName(), mimeType: blob.getContentType(), base64: Utilities.base64Encode(blob.getBytes()), size: size };
+}
+
+function financeCompleteBatch_(auth, body) {
+  return withScriptLock_(function () {
+    const batch = findBatch_(String(body.batchId || ''));
+    if (!batch) throw new Error('找不到這一批。');
+    if (batch.status !== BATCH_STATUS_PAID) throw new Error('這一批目前是「' + batch.status + '」，要先確認已付款，才能完成。');
+    updateBatch_(batch, { status: BATCH_STATUS_DONE, doneBy: auth.email, doneAt: nowText_() });
+    return { ok: true, batch: batchForClient_(batch) };
+  });
+}
+
+function completenessRecord_(rec) {
+  return {
+    id: rec.id, uploader: rec.uploader, center: rec.center, project: rec.project, vendor: rec.vendor, purpose: rec.purpose,
+    amount: rec.amount, invoiceDate: rec.invoiceDate, invoiceNumber: rec.invoiceNumber, reviewer: rec.reviewer,
+    reviewedAt: rec.reviewedAt, complete: rec.complete, paperNote: rec.paperNote, fileUrl: rec.fileUrl,
+    fileName: rec.fileName, hasFile: rec.hasFile,
+  };
+}
+
+// 單據完備：主管核准、有單據的。還沒核對的全部列出；已核對的只列最近 90 天（不然會越積越長）
+function financeCompleteness_() {
+  const table = readMasterTable_();
+  const glMap = loadGlCodeMap_();
+  const cutoff = Utilities.formatDate(new Date(Date.now() - 90 * 24 * 3600 * 1000), TZ, 'yyyy-MM-dd');
+  const records = table.rows
+    .map(function (row) { return financeRecord_(row, glMap); })
+    .filter(function (r) { return r.id && r.status === STATUS_OPTIONS[1] && r.docType !== DOC_TYPE_NONE; })
+    .filter(function (r) { return !r.complete || String(r.reviewedAt).slice(0, 10) >= cutoff; })
+    .sort(function (a, b) {
+      if (a.complete !== b.complete) return a.complete ? 1 : -1;
+      return a.complete ? (a.reviewedAt < b.reviewedAt ? 1 : -1) : (a.reviewedAt < b.reviewedAt ? -1 : 1);
+    })
+    .map(completenessRecord_);
+  return { ok: true, records: records };
+}
+
+function financeMarkPaper_(auth, body) {
+  const result = String(body.result || '');
+  if (['ok', 'issue', 'undo'].indexOf(result) === -1) throw new Error('不認得的核對結果：' + result);
+  const note = String(body.note || '').trim().slice(0, 300);
+  if (result === 'issue' && !note) throw new Error('請寫下哪裡有問題，上傳人才知道要補什麼。');
+  return withScriptLock_(function () {
+    const table = readMasterTable_();
+    const entry = table.byId[String(body.recordId || '')];
+    if (!entry) throw new Error('總表找不到這筆單據。');
+    const sheet = table.sheet;
+    const completeCell = sheet.getRange(entry.rowIndex, MASTER_COMPLETE_COL);
+    setCompleteCheckbox_(sheet, entry.rowIndex, MASTER_COMPLETE_COL);
+    if (result === 'ok') {
+      completeCell.setValue(true);
+      setMasterText_(sheet, entry.rowIndex, MASTER_PAPER_NOTE_COL, '');
+    } else if (result === 'issue') {
+      completeCell.setValue(false);
+      setMasterText_(sheet, entry.rowIndex, MASTER_PAPER_NOTE_COL, todayText_() + '：' + note);
+    } else {
+      completeCell.setValue(false);
+      setMasterText_(sheet, entry.rowIndex, MASTER_PAPER_NOTE_COL, '');
+    }
+    const fresh = sheet.getRange(entry.rowIndex, 1, 1, HEADERS.length).getValues()[0];
+    const rec = financeRecord_(fresh, null);
+    try {
+      syncRowsToReviewSheets_([rec.id]);
+    } catch (err) {
+      console.error('單據完備同步到審核表失敗（今晚的自動同步會再補）：' + err);
+    }
+    if (result === 'issue') {
+      try {
+        postToSlack_([
+          '📎 ' + mentionByName_(rec.uploader) + ' 你上傳的單據，會計核對紙本時發現問題，請補件：',
+          '• ' + slackEscape_(rec.vendor || rec.purpose) + '｜' + fmtNt_(rec.amount) + '｜單據日期 ' + (rec.invoiceDate || '—'),
+          '問題：' + slackEscape_(note),
+          '請把正確的紙本交給會計，或跟會計確認怎麼補。',
+        ].join('\n'));
+      } catch (err) {
+        console.error('補件通知失敗：' + err);
+      }
+    }
+    return { ok: true, record: completenessRecord_(rec) };
+  });
+}
+
+// 把總表的「付款日期」「單據完備」寫到對應中心審核表的那幾列（財務作業按下去之後馬上看得到，不用等晚上的同步）
+function syncRowsToReviewSheets_(recordIds) {
+  if (!recordIds || !recordIds.length) return;
+  const table = readMasterTable_();
+  const byCenter = {};
+  recordIds.forEach(function (id) {
+    const entry = table.byId[id];
+    if (!entry) return;
+    const center = centerOfProject_(entry.row[MASTER_PROJECT_COL - 1]);
+    if (!center || !center.reviewSheetId) return;
+    if (!byCenter[center.name]) byCenter[center.name] = { center: center, ids: {} };
+    byCenter[center.name].ids[id] = entry.row;
+  });
+  Object.keys(byCenter).forEach(function (name) {
+    const info = byCenter[name];
+    const sheet = getReviewSheet_(SpreadsheetApp.openById(info.center.reviewSheetId));
+    const last = sheet.getLastRow();
+    if (last < 3) return;
+    const ids = sheet.getRange(3, REVIEW_RECORD_ID_COL, last - 2, 1).getValues();
+    ids.forEach(function (r, i) {
+      const row = info.ids[r[0]];
+      if (!row) return;
+      const rowIndex = i + 3;
+      sheet.getRange(rowIndex, REVIEW_PAYDATE_COL).setNumberFormat('@').setValue(formatDateOnly_(row[MASTER_PAYDATE_COL - 1]));
+      setCompleteCheckbox_(sheet, rowIndex, REVIEW_COMPLETE_COL);
+      sheet.getRange(rowIndex, REVIEW_COMPLETE_COL).setValue(row[MASTER_COMPLETE_COL - 1] === true);
+    });
+  });
+}
+
+/* ---------- 財務作業的 Slack 訊息（格式見示意版「Slack 通知格式」）---------- */
+function releaserMentions_(exceptEmail) {
+  const list = loadConfig_().people.filter(function (p) {
+    return p.financeRoles.indexOf(FINANCE_ROLE_RELEASER) !== -1 && p.email.toLowerCase() !== String(exceptEmail || '').toLowerCase();
+  });
+  if (!list.length) return '（還沒有設定放行人：請到總表「人員設定」的「財務角色」填「放行」）';
+  return list.map(function (p) { return p.slackId ? '<@' + p.slackId + '>' : slackEscape_(p.name); }).join(' ');
+}
+function peopleOrder_(records) {
+  const names = [];
+  records.forEach(function (r) { if (names.indexOf(r.person) === -1) names.push(r.person); });
+  return names;
+}
+
+function notifyReleaseRequest_(batch, records) {
+  const reimb = records.filter(function (r) { return r.group === 'reimb'; });
+  const transfer = records.filter(function (r) { return r.group === 'transfer'; });
+  const bill = records.filter(function (r) { return r.group === 'bill'; });
+  const lines = [releaserMentions_(batch.sentBy) + ' ' + shortDate_(batch.payDate) + ' 付款批次已在兆豐建檔，請到團隊後台核對後放行'];
+  if (batch.salaryTotal) lines.push('• 薪資：' + fmtNt_(batch.salaryTotal) + '（Swingvy 總額，不列個人金額）');
+  if (reimb.length) {
+    const people = peopleOrder_(reimb);
+    lines.push('• 代墊款：' + people.length + ' 人、' + reimb.length + ' 筆，' + fmtNt_(sumAmount_(reimb)));
+    people.forEach(function (name) {
+      const mine = reimb.filter(function (r) { return r.person === name; });
+      lines.push('　－ ' + slackEscape_(name) + ' ' + mine.length + ' 筆 ' + fmtNt_(sumAmount_(mine)));
+    });
+  }
+  if (transfer.length) lines.push('• 匯款給廠商／外部個人：' + transfer.length + ' 筆，' + fmtNt_(sumAmount_(transfer)));
+  if (bill.length) lines.push('• 網銀代繳（繳費單）：' + bill.length + ' 筆，' + fmtNt_(sumAmount_(bill)));
+  lines.push('→ ' + slackLink_(appUrl_() + '#finance/ops/release/' + batch.id, '核對並放行：團隊後台「財務 › 財務作業 › 待放行」'));
+  postToSlack_(lines.join('\n'), 'finance');
+}
+
+function heldLines_(records, held) {
+  return records.filter(function (r) { return held[r.id]; }).map(function (r) {
+    return '　－ ' + slackEscape_(r.payee || r.vendor) + '｜' + slackEscape_(r.purpose) + '｜' + fmtNt_(r.amount) + '　原因：' + slackEscape_(held[r.id]);
+  });
+}
+
+function notifyReleased_(batch, records, held, releaserEmail) {
+  const paid = records.filter(function (r) { return !held[r.id]; });
+  const heldCount = Object.keys(held).length;
+  const lines = [
+    '✅ ' + mentionByEmail_(batch.sentBy) + ' ' + slackEscape_(approverDisplayName_(releaserEmail)) + ' 已放行 ' +
+    shortDate_(batch.payDate) + ' 付款批次：' + paid.length + ' 筆' + (batch.salaryTotal ? '＋薪資' : '') +
+    '，合計 ' + fmtNt_(sumAmount_(paid) + batch.salaryTotal),
+  ];
+  if (heldCount) {
+    lines.push('• 不放行 ' + heldCount + ' 筆，已移出這批（下一批會再列出）：');
+    heldLines_(records, held).forEach(function (l) { lines.push(l); });
+  }
+  lines.push('請到兆豐確認交易都成功，再做第 4 步「確認已付款」 → ' + slackLink_(appUrl_() + '#finance/ops/batch/' + batch.id, '打開這一批'));
+  postToSlack_(lines.join('\n'), 'finance');
+}
+
+function notifyReturned_(batch, records, held, releaserEmail) {
+  const lines = [
+    '↩️ ' + mentionByEmail_(batch.sentBy) + ' ' + slackEscape_(approverDisplayName_(releaserEmail)) + ' 把 ' +
+    shortDate_(batch.payDate) + ' 付款批次退回了',
+    '原因：' + slackEscape_(batch.returnReason),
+  ];
+  if (Object.keys(held).length) {
+    lines.push('其中這幾筆這次先不付（回到清單時會先取消勾選）：');
+    heldLines_(records, held).forEach(function (l) { lines.push(l); });
+  }
+  lines.push('這一批已經回到第 2 步「核對清單」，改好再送出放行請求 → ' + slackLink_(appUrl_() + '#finance/ops/batches', '打開付款批次'));
+  postToSlack_(lines.join('\n'), 'finance');
+}
+
+// 不放行的單據：在布告欄 tag 上傳人說明原因（跟主管退件用同一個頻道）
+function notifyHeldToUploaders_(batch, records, held) {
+  const lines = ['↩️ 下面這幾筆 ' + shortDate_(batch.payDate) + ' 這批沒有付款，處理好之後會排進下一批：'];
+  records.filter(function (r) { return held[r.id]; }).forEach(function (r) {
+    lines.push('• ' + mentionByName_(r.uploader) + ' ' + slackEscape_(r.payee || r.vendor) + '｜' + slackEscape_(r.purpose) +
+      '｜' + fmtNt_(r.amount) + '　原因：' + slackEscape_(held[r.id]));
+  });
+  lines.push('進度請到 ' + slackLink_(appUrl_() + '#finance/mine', '團隊後台「上傳紀錄」') + ' 查看。');
+  postToSlack_(lines.join('\n'));
+}
+
+// 確認已付款後的通知：代墊款已匯出、廠商款已匯出；20 號那批另外發月付款總結
+function notifyPaid_(batch, paid, paidDate) {
+  const posted = [];
+  const short = shortDate_(paidDate);
+  const recordsLink = '明細請到 ' + slackLink_(appUrl_() + '#finance/mine', '團隊後台「上傳紀錄」') + ' 查看';
+  const reimb = paid.filter(function (r) { return r.group === 'reimb'; });
+  if (reimb.length) {
+    const people = peopleOrder_(reimb);
+    const lines = ['✅ ' + short + ' 代墊款已匯出：' + people.length + ' 人、' + reimb.length + ' 筆，合計 ' + fmtNt_(sumAmount_(reimb))];
+    people.forEach(function (name) {
+      const mine = reimb.filter(function (r) { return r.person === name; });
+      lines.push('• ' + mentionByName_(name) + '　' + mine.length + ' 筆　' + fmtNt_(sumAmount_(mine)));
+    });
+    lines.push(recordsLink);
+    postToSlack_(lines.join('\n'));
+    posted.push('代墊款已匯出');
+  }
+  const ext = paid.filter(function (r) { return r.group !== 'reimb'; });
+  if (ext.length) {
+    const lines = ['✅ ' + short + ' 廠商款已匯出：' + ext.length + ' 筆，合計 ' + fmtNt_(sumAmount_(ext))];
+    ext.forEach(function (r) {
+      lines.push('• ' + slackEscape_(r.payee || r.vendor) + '｜' + slackEscape_(r.purpose) + '｜' + fmtNt_(r.amount) +
+        '（提交人 ' + mentionByName_(r.uploader) + '）');
+    });
+    lines.push(recordsLink);
+    postToSlack_(lines.join('\n'));
+    posted.push('廠商款已匯出');
+  }
+  if (batch.type === '20號') {
+    postToSlack_(monthlySummary_(paidDate.slice(0, 7)).text);
+    posted.push('月付款總結');
+  }
+  return posted;
+}
+
+// 月付款總結：付款日期在這個月的所有單據，依中心統計（每個進行中的中心都列出，沒有款項的顯示 0 筆）
+function monthlySummary_(month) {
+  const table = readMasterTable_();
+  const byCenter = {};
+  const order = [];
+  activeCenters_().forEach(function (c) { byCenter[c.name] = { count: 0, amount: 0 }; order.push(c.name); });
+  let total = 0;
+  let totalAmount = 0;
+  table.rows.forEach(function (row) {
+    const paid = formatDateOnly_(row[MASTER_PAYDATE_COL - 1]);
+    if (!paid || paid.slice(0, 7) !== month) return;
+    const project = findProject_(row[MASTER_PROJECT_COL - 1]);
+    const center = project && project.center ? project.center : '（未指定中心）';
+    if (!byCenter[center]) { byCenter[center] = { count: 0, amount: 0 }; order.push(center); }
+    const amount = Number(row[MASTER_AMOUNT_COL - 1]) || 0;
+    byCenter[center].count++;
+    byCenter[center].amount += amount;
+    total++;
+    totalAmount += amount;
+  });
+  const lines = ['💰 <!channel> 本月（' + month + '）已完成付款 ' + total + ' 筆，合計 ' + fmtNt_(totalAmount), ''];
+  order.forEach(function (name) {
+    const c = findCenter_(name);
+    let url = '';
+    try { url = c && c.reviewSheetId ? SpreadsheetApp.openById(c.reviewSheetId).getUrl() : ''; } catch (e) { url = ''; }
+    const label = url ? slackLink_(url, name) : slackEscape_(name);
+    lines.push('• ' + label + '：' + byCenter[name].count + ' 筆，' + fmtNt_(byCenter[name].amount));
   });
   lines.push('', '款項已匯出，明細可查看各中心審核表的「付款日期」欄。');
-  postToSlack_(lines.join('\n'));
+  return { text: lines.join('\n'), total: total, totalAmount: totalAmount };
+}
 
-  ui.alert('已發送付款通知：本月共 ' + total + ' 筆，合計 NT$ ' + totalAmount.toLocaleString('en-US') + '。');
+/* ============================================================
+   團隊後台：首頁問手冊、認識組織、計畫與預算（2026-10 新增）
+   ============================================================ */
+// 「知識庫設定」分頁：首頁對話要讀哪些手冊、認識組織要放哪些手冊，由管理員在總表維護（檔案 ID 不寫進程式碼，GitHub 是公開的）
+const KNOWLEDGE_SHEET_NAME = '知識庫設定';
+const KNOWLEDGE_HEADERS = ['名稱', '檔案連結或ID', '用途（對話／認識組織／兩者）', '說明'];
+const KNOWLEDGE_PURPOSE_CHAT = '對話';
+const KNOWLEDGE_PURPOSE_ABOUT = '認識組織';
+const KNOWLEDGE_PURPOSE_BOTH = '兩者';
+const KNOWLEDGE_TEXT_LIMIT = 300000; // 一份手冊最多讀這麼多字，避免太大的檔案拖慢每一次回答
+const QA_LOG_SHEET_NAME = '問手冊紀錄';
+const QA_LOG_HEADERS = ['時間', '問題', '手冊有答案'];
+
+function loadKnowledgeEntries_() {
+  const sheet = getOrCreateSheet_(KNOWLEDGE_SHEET_NAME, KNOWLEDGE_HEADERS, []);
+  return readSheetRows_(sheet, KNOWLEDGE_HEADERS.length).map(function (r) {
+    const link = String(r[1] || '').trim();
+    return {
+      title: String(r[0] || '').trim(),
+      fileId: fileIdFromUrl_(link) || link,
+      purpose: String(r[2] || '').trim() || KNOWLEDGE_PURPOSE_BOTH,
+      description: String(r[3] || '').trim(),
+    };
+  }).filter(function (e) { return e.title && e.fileId; });
+}
+
+function canViewBudget_(email) {
+  const key = String(email || '').toLowerCase();
+  const person = personByEmail_(key);
+  if (person && person.financeRoles.length) return true;
+  return loadConfig_().centers.some(function (c) {
+    return c.approverEmails.some(function (e) { return e.toLowerCase() === key; });
+  });
+}
+
+// 用登入的服務帳號權限呼叫 Google Drive API（不需要另外開進階服務）
+function driveApi_(method, path, payload) {
+  const opts = {
+    method: method,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  };
+  if (payload) {
+    opts.contentType = 'application/json';
+    opts.payload = JSON.stringify(payload);
+  }
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/' + path, opts);
+  return { code: res.getResponseCode(), text: res.getContentText() };
+}
+
+// 從 pptx 的投影片 XML 抽出文字，每一頁前面標「（第 N 頁）」，回答時才能附上頁數
+function pptxText_(blob) {
+  const entries = Utilities.unzip(blob);
+  const slides = entries
+    .filter(function (b) { return /^ppt\/slides\/slide\d+\.xml$/.test(b.getName()); })
+    .sort(function (a, b) {
+      return Number(a.getName().match(/(\d+)\.xml$/)[1]) - Number(b.getName().match(/(\d+)\.xml$/)[1]);
+    });
+  const decode = function (s) {
+    return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  };
+  return slides.map(function (b, i) {
+    const xml = b.getDataAsString('UTF-8');
+    const paragraphs = xml.split('</a:p>').map(function (p) {
+      const texts = [];
+      p.replace(/<a:t>([^<]*)<\/a:t>/g, function (m, t) { texts.push(decode(t)); return m; });
+      return texts.join('').trim();
+    }).filter(Boolean);
+    return '（第 ' + (i + 1) + ' 頁）\n' + paragraphs.join('\n');
+  }).join('\n\n');
+}
+
+// 讀一份手冊的文字：Google 文件／簡報直接匯出純文字；pptx 小檔直接拆，大檔（>40MB）先暫時轉成 Google 簡報再匯出
+function extractKnowledgeText_(fileId) {
+  const file = DriveApp.getFileById(fileId);
+  const mime = file.getMimeType();
+  if (mime === MimeType.GOOGLE_DOCS || mime === MimeType.GOOGLE_SLIDES) {
+    const res = driveApi_('get', 'files/' + fileId + '/export?mimeType=text%2Fplain');
+    if (res.code !== 200) throw new Error('匯出文字失敗（HTTP ' + res.code + '）');
+    return res.text;
+  }
+  if (mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') {
+    if (file.getSize() <= 40 * 1024 * 1024) return pptxText_(file.getBlob());
+    const copy = driveApi_('post', 'files/' + fileId + '/copy?supportsAllDrives=true&fields=id', {
+      name: '（團隊後台暫存，可刪除）' + file.getName(),
+      mimeType: 'application/vnd.google-apps.presentation',
+    });
+    if (copy.code !== 200) throw new Error('檔案太大（' + Math.round(file.getSize() / 1024 / 1024) + ' MB），轉成 Google 簡報也失敗（HTTP ' + copy.code + '）。請把它另存成 Google 簡報，再把那份的連結填進「知識庫設定」。');
+    const tempId = JSON.parse(copy.text).id;
+    try {
+      const res = driveApi_('get', 'files/' + tempId + '/export?mimeType=text%2Fplain');
+      if (res.code !== 200) throw new Error('匯出文字失敗（HTTP ' + res.code + '）');
+      return res.text;
+    } finally {
+      driveApi_('delete', 'files/' + tempId + '?supportsAllDrives=true');
+    }
+  }
+  if (mime === MimeType.PLAIN_TEXT) return file.getBlob().getDataAsString('UTF-8');
+  throw new Error('不支援這種檔案（' + mime + '），請用 Google 文件、Google 簡報或 pptx。');
+}
+
+// 手冊文字快取：同一份檔案沒有改過就不重讀（存在 CacheService，最多 6 小時；中文一個字最多 3 bytes，所以切小塊存）
+function cachedKnowledgeText_(entry) {
+  const cache = CacheService.getScriptCache();
+  const updated = DriveApp.getFileById(entry.fileId).getLastUpdated().getTime();
+  const key = 'kb_' + entry.fileId + '_' + updated;
+  const head = cache.get(key + '_n');
+  if (head) {
+    const n = Number(head);
+    const parts = cache.getAll(Array.apply(null, Array(n)).map(function (_, i) { return key + '_' + i; }));
+    const chunks = [];
+    for (let i = 0; i < n; i++) chunks.push(parts[key + '_' + i]);
+    if (chunks.every(function (c) { return typeof c === 'string'; })) return chunks.join('');
+  }
+  const text = String(extractKnowledgeText_(entry.fileId) || '').replace(/\r\n/g, '\n').slice(0, KNOWLEDGE_TEXT_LIMIT);
+  const CHUNK = 25000;
+  const values = {};
+  let count = 0;
+  for (let i = 0; i < text.length; i += CHUNK) { values[key + '_' + count] = text.slice(i, i + CHUNK); count++; }
+  values[key + '_n'] = String(count);
+  try {
+    cache.putAll(values, 21600);
+  } catch (e) {
+    console.warn('手冊文字快取失敗（不影響回答，只是下次會重讀）：' + e);
+  }
+  return text;
+}
+
+function loadKnowledgeTexts_() {
+  const docs = [];
+  const warnings = [];
+  loadKnowledgeEntries_()
+    .filter(function (e) { return e.purpose === KNOWLEDGE_PURPOSE_CHAT || e.purpose === KNOWLEDGE_PURPOSE_BOTH; })
+    .forEach(function (e) {
+      try {
+        const text = cachedKnowledgeText_(e);
+        if (text.trim()) docs.push({ title: e.title, text: text });
+        else warnings.push('「' + e.title + '」讀不到任何文字。');
+      } catch (err) {
+        warnings.push('「' + e.title + '」讀取失敗：' + ((err && err.message) || err));
+      }
+    });
+  return { docs: docs, warnings: warnings };
+}
+
+// 呼叫 Gemini（同 recognizeReceipt_ 的重試規則：只對 500/503 重打）
+function callGemini_(payload) {
+  const apiKey = geminiApiKey_();
+  if (!apiKey) return { ok: false, error: '尚未設定 GEMINI_API_KEY（請到 Apps Script「專案設定 → 指令碼屬性」新增）' };
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent';
+  const opts = {
+    method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': apiKey },
+    payload: JSON.stringify(payload), muteHttpExceptions: true,
+  };
+  let res = UrlFetchApp.fetch(url, opts);
+  let status = res.getResponseCode();
+  [1000, 2000].forEach(function (delay) {
+    if (status !== 500 && status !== 503) return;
+    Utilities.sleep(delay);
+    res = UrlFetchApp.fetch(url, opts);
+    status = res.getResponseCode();
+  });
+  if (status !== 200) return { ok: false, error: 'Gemini API 錯誤（狀態碼 ' + status + '）' };
+  const data = JSON.parse(res.getContentText());
+  const text = data.candidates && data.candidates[0] && data.candidates[0].content &&
+    data.candidates[0].content.parts && data.candidates[0].content.parts[0].text;
+  if (!text) return { ok: false, error: 'Gemini 沒有回傳可用內容' };
+  return { ok: true, text: text };
+}
+
+function askHandbook_(body) {
+  const question = String(body.question || '').trim().slice(0, 500);
+  if (!question) return { ok: false, error: '請先輸入問題。' };
+  const kb = loadKnowledgeTexts_();
+  if (!kb.docs.length) {
+    return {
+      ok: true, notConfigured: true, found: false, sources: [],
+      answer: '手冊還沒接上對話功能。請管理員到總表「知識庫設定」分頁，填入組織手冊、組織文化手冊的連結，用途填「對話」或「兩者」。' +
+        (kb.warnings.length ? '\n（' + kb.warnings.join('；') + '）' : ''),
+    };
+  }
+  const instruction = [
+    '你是 Skills for U（社團法人國際技能發展協會）團隊後台的小幫手，負責回答同仁關於組織的問題。',
+    '只能根據下面〈手冊〉的內容回答。手冊沒有寫到的，不要自己推測或補充，直接說手冊沒有寫到，並建議可以問誰（例如直屬主管或執行長偉翔）。',
+    '用繁體中文（台灣用語）回答，口吻友善、簡潔：先講結論，需要步驟時用「• 」開頭條列。不要用 Markdown 標題或表格。',
+    '每個答案都要附上出處：手冊名稱，以及頁數（手冊文字裡的「（第 N 頁）」）或段落。',
+    '只輸出 JSON，格式：{"answer": "回答內容", "found": true 或 false, "sources": [{"title": "手冊名稱", "location": "第幾頁或哪一段"}]}',
+  ].join('\n');
+  const handbookText = kb.docs.map(function (d) { return '〈手冊：' + d.title + '〉\n' + d.text; }).join('\n\n');
+  const contents = (Array.isArray(body.history) ? body.history : []).slice(-6)
+    .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim(); })
+    .map(function (m) {
+      return { role: m.role === 'user' ? 'user' : 'model', parts: [{ text: String(m.text).slice(0, 2000) }] };
+    });
+  contents.push({ role: 'user', parts: [{ text: question }] });
+  const result = callGemini_({
+    systemInstruction: { parts: [{ text: instruction + '\n\n' + handbookText }] },
+    contents: contents,
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  let parsed;
+  try {
+    parsed = JSON.parse(result.text);
+  } catch (e) {
+    parsed = { answer: result.text, found: true, sources: [] };
+  }
+  const answer = String(parsed.answer || '').trim().slice(0, 4000) || '抱歉，這題我沒辦法從手冊裡找到答案。';
+  const found = parsed.found !== false;
+  const sources = (Array.isArray(parsed.sources) ? parsed.sources : []).slice(0, 6).map(function (s) {
+    return { title: String((s && s.title) || '').slice(0, 60), location: String((s && s.location) || '').slice(0, 60) };
+  }).filter(function (s) { return s.title; });
+  try {
+    logQuestion_(question, found);
+  } catch (e) {
+    console.warn('問手冊紀錄寫入失敗：' + e);
+  }
+  return { ok: true, answer: answer, found: found, sources: sources, notConfigured: false };
+}
+
+// 記下大家問了什麼、手冊有沒有答案（不記是誰問的），用來找出手冊還缺哪些內容
+function logQuestion_(question, found) {
+  const sheet = getOrCreateSheet_(QA_LOG_SHEET_NAME, QA_LOG_HEADERS, []);
+  sheet.appendRow([nowText_(), question, found ? '有' : '沒有']);
+}
+
+function getAbout_() {
+  const cfg = loadConfig_();
+  const handbooks = loadKnowledgeEntries_()
+    .filter(function (e) { return e.purpose === KNOWLEDGE_PURPOSE_ABOUT || e.purpose === KNOWLEDGE_PURPOSE_BOTH; })
+    .map(function (e) {
+      return {
+        title: e.title, description: e.description,
+        openUrl: 'https://drive.google.com/file/d/' + e.fileId + '/view',
+        previewUrl: 'https://drive.google.com/file/d/' + e.fileId + '/preview',
+      };
+    });
+  const centers = activeCenters_().map(function (c) {
+    return {
+      name: c.name,
+      approvers: c.approverEmails.map(approverDisplayName_),
+      projects: activeProjects_().filter(function (p) { return p.center === c.name; }).map(function (p) { return p.name; }),
+    };
+  });
+  const people = cfg.people.map(function (p) {
+    const email = String(p.email || '').toLowerCase();
+    return {
+      name: p.name, email: p.email, financeRoles: p.financeRoles,
+      approverOf: email ? activeCenters_().filter(function (c) {
+        return c.approverEmails.some(function (e) { return e.toLowerCase() === email; });
+      }).map(function (c) { return c.name; }) : [],
+    };
+  });
+  return { ok: true, handbooks: handbooks, centers: centers, people: people };
+}
+
+// 計畫與預算：預算（預算項目設定「預算金額」欄）對照收支總表的實際金額。
+// 已核准（含已付款）＝已用；待審核＝審核中；被退回的不算。只開放給中心審核人和有財務角色的人。
+function getBudgetOverview_(auth) {
+  if (!canViewBudget_(auth.email)) return { ok: false, error: '這一頁只開放給主管和財務。' };
+  const cfg = loadConfig_();
+  const table = readMasterTable_();
+  const blank = function () { return { approved: 0, paid: 0, pending: 0, count: 0 }; };
+  const projectStats = {};
+  const ensureProject = function (name) {
+    if (!projectStats[name]) projectStats[name] = { items: {}, unassigned: blank() };
+    return projectStats[name];
+  };
+  table.rows.forEach(function (row) {
+    const status = String(row[MASTER_STATUS_COL - 1] || '');
+    if (status !== STATUS_OPTIONS[0] && status !== STATUS_OPTIONS[1]) return; // 被退回的不算
+    const name = String(row[MASTER_PROJECT_COL - 1] || '').trim();
+    if (!name) return;
+    const st = ensureProject(name);
+    const item = String(row[MASTER_BUDGET_ITEM_COL - 1] || '').trim();
+    const known = (cfg.budgetItemsByProject[name] || []).some(function (b) { return b.item === item; });
+    const bucket = known ? (st.items[item] = st.items[item] || blank()) : st.unassigned;
+    const amount = Number(row[MASTER_AMOUNT_COL - 1]) || 0;
+    bucket.count++;
+    if (status === STATUS_OPTIONS[1]) {
+      bucket.approved += amount;
+      if (formatDateOnly_(row[MASTER_PAYDATE_COL - 1])) bucket.paid += amount;
+    } else {
+      bucket.pending += amount;
+    }
+  });
+  const totals = { budget: 0, approved: 0, paid: 0, pending: 0 };
+  const buildProject = function (p) {
+    const st = ensureProject(p.name);
+    const items = (cfg.budgetItemsByProject[p.name] || []).map(function (b) {
+      const s = st.items[b.item] || blank();
+      return { category: b.category, item: b.item, budget: b.budget, approved: s.approved, paid: s.paid, pending: s.pending, count: s.count };
+    });
+    const out = {
+      name: p.name, status: p.status,
+      budget: items.reduce(function (t, i) { return t + i.budget; }, 0),
+      approved: items.reduce(function (t, i) { return t + i.approved; }, 0) + st.unassigned.approved,
+      paid: items.reduce(function (t, i) { return t + i.paid; }, 0) + st.unassigned.paid,
+      pending: items.reduce(function (t, i) { return t + i.pending; }, 0) + st.unassigned.pending,
+      items: items, unassigned: st.unassigned,
+    };
+    totals.budget += out.budget;
+    totals.approved += out.approved;
+    totals.paid += out.paid;
+    totals.pending += out.pending;
+    return out;
+  };
+  const centers = cfg.centers.map(function (c) {
+    return { name: c.name, ended: c.status === PROJECT_STATUS_ENDED, projects: cfg.projects.filter(function (p) { return p.center === c.name; }).map(buildProject) };
+  }).filter(function (c) { return !c.ended || c.projects.some(function (p) { return p.approved || p.pending; }); });
+  // 總表裡有資料、但專案設定找不到（或所屬中心對不上）的專案，集中放在「其他」，金額才不會憑空消失
+  const placed = {};
+  centers.forEach(function (c) { c.projects.forEach(function (p) { placed[p.name] = true; }); });
+  const orphans = Object.keys(projectStats).filter(function (name) { return !placed[name]; }).map(function (name) {
+    return buildProject({ name: name, status: '（專案設定找不到）' });
+  });
+  if (orphans.length) centers.push({ name: '其他（專案設定對不上的）', ended: false, projects: orphans });
+  return { ok: true, generatedAt: nowText_(), totals: totals, centers: centers };
 }
 
 /* ============================================================
@@ -1587,8 +3130,8 @@ function setupTriggers() {
   SpreadsheetApp.getUi().alert(
     '已設定自動排程：\n\n' +
     '• 每天晚上 11 點左右同步審核結果與付款日期（Apps Script 只能指定「幾點」，不保證精確到分鐘）\n' +
-    '• 每月 ' + DIGEST_DAY_OF_MONTH + ' 號上午 10 點發送審核提醒到 Slack（@channel；遇週末自動順延到下一個週一）\n\n' +
-    '付款通知沒有排程，請會計填完付款日期後，從選單按「立即發送付款通知到 Slack」。'
+    '• 每月 ' + DIGEST_DAY_OF_MONTH + ' 號上午 10 點發送審核提醒到 Slack（tag 各中心審核人；遇週末自動順延到下一個週一）\n\n' +
+    '付款通知不用排程：會計在團隊後台「財務作業」按「確認已付款」時會自動發（20 號那批另外發月付款總結）。'
   );
 }
 
@@ -1615,15 +3158,89 @@ function onOpen() {
   } catch (e) {
     // 簡單觸發條件的權限較受限，這裡失敗也不影響選單顯示；之後跑選單時 getMasterSpreadsheet_() 還是會自己補上快取
   }
+  const preview = isPreviewMode_();
   SpreadsheetApp.getUi()
-    .createMenu('核銷小幫手')
+    .createMenu(preview ? '核銷小幫手（預覽測試）' : '核銷小幫手')
     .addItem('① 建立/更新設定與審核表', 'setupProjectReviewSheets')
     .addItem('② 設定自動排程', 'setupTriggers')
     .addSeparator()
     .addItem('立即同步審核結果 / 付款日期', 'syncApprovalsNow')
     .addItem('立即發送待審提醒到 Slack', 'sendPendingDigestToSlack')
     .addItem('💰 立即發送付款通知到 Slack', 'sendPaymentDigestToSlack')
+    .addSeparator()
+    .addItem(preview ? '🧪 預覽測試模式：已開啟（再執行一次會重新檢查）' : '🧪 設成預覽測試用副本（只在副本用）', 'setupPreviewCopy')
     .addToUi();
+}
+
+/**
+ * 把「總表的副本」設成預覽測試用（說明見最上面「預覽測試模式」）。只能從選單執行。
+ * 防呆：試算表名稱一定要有「預覽」或「測試」，而且會先跳確認，避免在正式總表上誤按。
+ */
+function setupPreviewCopy() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const name = ss.getName();
+  if (ss.getId() === PRODUCTION_MASTER_SPREADSHEET_ID) {
+    ui.alert('這份是正式總表，不能設成預覽測試用。請先「檔案 → 建立副本」，在副本上執行。');
+    return;
+  }
+  if (!/預覽|測試/.test(name)) {
+    ui.alert('為了避免在正式總表上執行，這個選單只能在名稱有「預覽」或「測試」的試算表上執行。\n\n' +
+      '請確認這份是副本，把名稱改成例如「核銷小幫手總表（預覽測試）」後再執行一次。\n\n目前名稱：' + name);
+    return;
+  }
+  const answer = ui.alert('設成預覽測試用副本',
+    '這會把「' + name + '」設成預覽測試用：\n\n' +
+    '• Slack 不會真的發，改寫進「' + SLACK_PREVIEW_SHEET_NAME + '」分頁\n' +
+    '• 上傳的檔案、各中心審核表改放在新的「核銷小幫手（預覽測試）」資料夾\n' +
+    '• 新建的審核表不會自動分享給審核人\n' +
+    '• 這份副本「' + CENTERS_SHEET_NAME + '」「' + PROJECTS_SHEET_NAME + '」裡的資料夾 ID、審核表 ID 會清空，改用新的（正式總表不受影響）\n\n' +
+    '確定這份是副本、不是正式總表嗎？', ui.ButtonSet.OK_CANCEL);
+  if (answer !== ui.Button.OK) return;
+
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(MASTER_SPREADSHEET_ID_PROP_, ss.getId());
+  props.setProperty(PREVIEW_MODE_PROP_, 'on');
+  // 複製試算表時指令碼屬性可能一起被複製過來：副本一律不留 Slack 網址，雙重保險（不影響正式總表的設定）
+  props.deleteProperty('SLACK_WEBHOOK_URL');
+  props.deleteProperty('SLACK_WEBHOOK_URL_ORGDEV');
+  let folderId = getSecret_(PREVIEW_ROOT_FOLDER_PROP_, '');
+  if (folderId) {
+    try { DriveApp.getFolderById(folderId).getName(); } catch (e) { folderId = ''; }
+  }
+  if (!folderId) props.setProperty(PREVIEW_ROOT_FOLDER_PROP_, DriveApp.createFolder('核銷小幫手（預覽測試）').getId());
+
+  // 副本裡的資料夾 ID、審核表 ID 還指著正式的檔案：清空，讓選單①在預覽資料夾建新的
+  const centersSheet = ss.getSheetByName(CENTERS_SHEET_NAME);
+  if (centersSheet && centersSheet.getLastRow() >= 2) {
+    const n = centersSheet.getLastRow() - 1;
+    const range = centersSheet.getRange(2, 4, n, 3); // 主資料夾ID、審核表ID、審核表連結
+    const values = range.getValues();
+    const keep = values.map(function (row, i) {
+      // 已經是預覽資料夾裡建的審核表（重跑這個選單時）就保留，不要重建一份
+      const id = String(row[1] || '').trim();
+      if (id) {
+        try {
+          const file = DriveApp.getFileById(id);
+          const parents = file.getParents();
+          while (parents.hasNext()) {
+            const parent = parents.next();
+            const grand = parent.getParents();
+            if (grand.hasNext() && grand.next().getId() === getSecret_(PREVIEW_ROOT_FOLDER_PROP_, '')) return ['', row[1], row[2]];
+          }
+        } catch (e) { /* 打不開就當成要重建 */ }
+      }
+      return ['', '', ''];
+    });
+    range.setValues(keep);
+  }
+  const projectsSheet = ss.getSheetByName(PROJECTS_SHEET_NAME);
+  if (projectsSheet && projectsSheet.getLastRow() >= 2) {
+    projectsSheet.getRange(2, 4, projectsSheet.getLastRow() - 1, 1).clearContent(); // 憑證資料夾ID
+  }
+  _configCache = null;
+  getOrCreateSheet_(SLACK_PREVIEW_SHEET_NAME, ['時間', '會發到哪個頻道', '訊息內容（預覽測試模式，不會真的發到 Slack）'], []);
+  setupProjectReviewSheets();
 }
 
 /**
@@ -1652,6 +3269,40 @@ function testSlackWebhook() {
   var code = postToSlack_('✅ 核銷小幫手：Slack 通知設定測試（可忽略這則訊息）');
   Logger.log('Slack 測試結果：HTTP ' + code + '（來源：' + source + '）' +
     (code === 200 ? ' ✅ 成功' : ' ❌ 失敗：請確認 webhook 網址正確、沒有被撤銷'));
+}
+
+/**
+ * 財務頻道 Slack 測試（同上）。在「指令碼屬性」設定好 SLACK_WEBHOOK_URL_ORGDEV 後執行，
+ * 會往 #team-組織發展中心 發一則測試訊息。
+ */
+function testSlackFinanceWebhook() {
+  var source = secretSource_('SLACK_WEBHOOK_URL_ORGDEV', '');
+  if (source === 'none') {
+    Logger.log('尚未設定 SLACK_WEBHOOK_URL_ORGDEV，請到「專案設定 → 指令碼屬性」新增。');
+    return;
+  }
+  var code = postToSlack_('✅ 團隊後台：財務頻道 Slack 通知測試（可忽略這則訊息）', 'finance');
+  Logger.log('財務頻道 Slack 測試結果：HTTP ' + code + (code === 200 ? ' ✅ 成功' : ' ❌ 失敗：請確認 webhook 網址正確、沒有被撤銷'));
+}
+
+/**
+ * 知識庫測試（同上）。填好總表「知識庫設定」後執行：逐份讀取手冊，在記錄印出每一份讀到幾個字、有沒有錯誤。
+ * 第一次執行時 Google 可能會要求授權（讀取雲端硬碟檔案），按允許即可。
+ */
+function testKnowledgeBase() {
+  var entries = loadKnowledgeEntries_();
+  if (!entries.length) {
+    Logger.log('「' + KNOWLEDGE_SHEET_NAME + '」還沒有填任何手冊。');
+    return;
+  }
+  entries.forEach(function (e) {
+    try {
+      var text = cachedKnowledgeText_(e);
+      Logger.log('✅ ' + e.title + '（用途：' + e.purpose + '）：讀到 ' + text.length + ' 個字。開頭：' + text.slice(0, 80).replace(/\n/g, ' '));
+    } catch (err) {
+      Logger.log('❌ ' + e.title + '：' + ((err && err.message) || err));
+    }
+  });
 }
 
 /**

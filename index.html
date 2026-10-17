@@ -3,9 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Skills for U｜核銷小幫手</title>
+<title>Skills for U｜團隊後台</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23c7d92e'/><text x='50' y='68' font-size='58' text-anchor='middle' fill='%230b4870' font-family='sans-serif' font-weight='700'>S</text></svg>">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="portal.css">
+<link rel="stylesheet" href="finance.css">
 </head>
 <body>
 
@@ -13,12 +15,16 @@
   <div class="topbar-inner">
     <div class="brand">
       <span class="brand-mark">S</span>
-      <span class="brand-name">Skills for U<span class="brand-sep">｜</span>核銷小幫手</span>
+      <span class="brand-name"><span class="brand-org">Skills for U</span><span class="brand-sep">｜</span>團隊後台</span>
+      <span class="env-badge" id="envBadge" hidden title="這個網址是預覽測試版：資料寫進總表副本，不會動到正式總表，Slack 也不會真的發">預覽測試版</span>
     </div>
-    <nav class="tabs" id="tabs">
-      <button class="tab-btn active" data-view="upload">上傳單據</button>
-      <button class="tab-btn" data-view="mine">上傳紀錄</button>
-      <button class="tab-btn" data-view="lists">名單設定</button>
+    <!-- 上方主分頁：網址的 # 決定顯示哪一頁（見 app.js 的 route）。人事中心直接連到 Swingvy（另開分頁）。 -->
+    <nav class="tabs" id="tabs" aria-label="主要分頁">
+      <a class="tab-btn" href="#home" data-route="home">首頁</a>
+      <a class="tab-btn" href="#about" data-route="about">認識組織</a>
+      <a class="tab-btn" href="https://secure.swingvy.com" target="_blank" rel="noopener">人事中心<span class="tab-ext" aria-hidden="true">↗</span><span class="sr-only">（在新分頁開啟 Swingvy）</span></a>
+      <a class="tab-btn" href="#finance" data-route="finance">財務</a>
+      <a class="tab-btn" href="#budget" data-route="budget" id="budgetTab" hidden>計畫與預算</a>
     </nav>
     <div class="account-chip" id="accountChip" hidden>
       <span class="account-name" id="accountName"></span>
@@ -29,11 +35,34 @@
 
 <main class="app-main">
 
+  <!-- ============ 首頁：問手冊（portal.js 畫在 #homeRoot）============ -->
+  <section class="view" id="view-home" hidden>
+    <div id="homeRoot"></div>
+  </section>
+
+  <!-- ============ 認識組織（portal.js 畫在 #aboutRoot）============ -->
+  <section class="view" id="view-about" hidden>
+    <div id="aboutRoot"></div>
+  </section>
+
+  <!-- ============ 計畫與預算（portal.js 畫在 #budgetRoot；只開放給主管和財務）============ -->
+  <section class="view" id="view-budget" hidden>
+    <div id="budgetRoot"></div>
+  </section>
+
+  <!-- ============ 財務：上傳單據／上傳紀錄／財務作業 ============ -->
+  <section class="view" id="view-finance" hidden>
+    <nav class="subtabs" id="financeTabs" aria-label="財務">
+      <a class="subtab-btn" href="#finance/upload" data-sub="upload">上傳單據</a>
+      <a class="subtab-btn" href="#finance/mine" data-sub="mine">上傳紀錄</a>
+      <a class="subtab-btn" href="#finance/ops" data-sub="ops" id="opsTab" hidden>財務作業</a>
+    </nav>
+
   <!-- ============ 上傳單據 ============ -->
-  <section class="view" id="view-upload">
+  <section class="subview" id="view-upload">
     <div class="card">
       <h1 class="card-title">上傳單據</h1>
-      <p class="card-sub">拍照或選擇憑證檔案，按一鍵取得辨識結果</p>
+      <p class="card-sub">拍照或選擇憑證檔案，選好專案就會自動辨識</p>
 
       <label class="field-label">上傳人</label>
       <select id="uploaderSelect" class="select-input">
@@ -63,7 +92,7 @@
         <div class="dropzone-inner" id="dropzoneInner">
           <div class="plus-circle"><span>+</span></div>
           <div class="dz-title">點我拍照 / 選擇檔案</div>
-          <div class="dz-sub">支援 JPG・PNG・PDF</div>
+          <div class="dz-sub">支援 JPG・PNG・PDF（PDF 最大 5 MB）</div>
         </div>
         <div class="dz-preview" id="dzPreview" hidden>
           <img id="dzPreviewImg" alt="預覽">
@@ -72,6 +101,9 @@
         </div>
       </div>
 
+      <!-- 選好檔案（而且選好專案）就會自動開始辨識；辨識失敗或想重來時才需要按這個按鈕 -->
+      <div class="confidence-banner low" id="fileTooBig" role="alert" hidden></div>
+      <p class="field-hint" id="ocrWaitHint" hidden>先選好上面的「所屬專案」，就會自動開始辨識。</p>
       <button class="primary-btn" id="startOcrBtn" disabled>開始辨識</button>
 
       <!-- 沒有憑證檔案時的入口：給「房租等本來就沒有憑證的固定支出」或「報價單的後續款（報價單只來一次、這期發票還沒到）」用。
@@ -86,14 +118,16 @@
 
     <!-- ============ 辨識結果確認表單 ============ -->
     <div class="card" id="confirmCard" hidden>
-      <h2 class="card-title-sm">確認辨識結果</h2>
-      <p class="card-sub">AI 已嘗試自動判讀，請核對並補齊欄位後送出</p>
+      <h2 class="card-title-sm">確認內容</h2>
+      <p class="card-sub">標著「AI 已填」的欄位請再核對一次，補齊其他欄位後送出</p>
 
       <div class="confidence-banner" id="confidenceBanner"></div>
+      <!-- 看起來像重複上傳時提醒（不擋送出），見 app.js 的 updateDuplicateWarning -->
+      <div class="confidence-banner mid" id="dupWarning" role="alert" hidden></div>
 
       <div class="form-grid">
         <div class="form-field">
-          <label class="field-label">發票 / 收據日期 <span class="req">*</span> <span class="field-flag" id="flag-date"></span></label>
+          <label class="field-label" for="f_date">發票 / 收據日期 <span class="req">*</span> <span class="ai-tag" data-ai="date" hidden>AI 已填</span> <span class="field-flag" id="flag-date"></span></label>
           <input type="date" id="f_date" class="text-input">
         </div>
         <div class="form-field">
@@ -101,7 +135,7 @@
           <input type="text" id="f_period" class="text-input" readonly placeholder="—">
         </div>
         <div class="form-field">
-          <label class="field-label"><span id="f_amountLabelText">金額</span> <span class="req">*</span> <span class="field-flag" id="flag-amount"></span></label>
+          <label class="field-label" for="f_amount"><span id="f_amountLabelText">金額</span> <span class="req">*</span> <span class="ai-tag" data-ai="amount" hidden>AI 已填</span> <span class="field-flag" id="flag-amount"></span></label>
           <input type="number" id="f_amount" class="text-input" placeholder="0" min="0" step="1">
         </div>
 
@@ -127,9 +161,13 @@
           <input type="number" id="f_quoteTotal" class="text-input" placeholder="這張報價單的總金額" min="0" step="1">
           <p class="field-hint">分次付款時（例如先付訂金、之後再付尾款），這裡請填整張報價的總額。</p>
         </div>
-        <div class="form-field span-2">
-          <label class="field-label">店家 / 憑證抬頭</label>
+        <div class="form-field">
+          <label class="field-label" for="f_vendor">店家 / 憑證抬頭 <span class="ai-tag" data-ai="vendor" hidden>AI 已填</span></label>
           <input type="text" id="f_vendor" class="text-input" placeholder="例如：全家便利商店">
+        </div>
+        <div class="form-field">
+          <label class="field-label" for="f_invoiceNo">發票號碼 <span class="ai-tag" data-ai="invoiceNo" hidden>AI 已填</span></label>
+          <input type="text" id="f_invoiceNo" class="text-input" placeholder="收據沒有發票號碼，可以空白" autocomplete="off">
         </div>
         <div class="form-field span-2">
           <label class="field-label">活動 / 用途說明 <span class="req">*</span></label>
@@ -142,76 +180,94 @@
             <option value="">請先選擇上方的所屬專案</option>
           </select>
         </div>
-        <!-- 付款方式改成連動式：先選付款狀態（組織的錢出去了沒）→ 付款方式 → 視情況再問細節 -->
-        <div class="form-field span-2">
-          <label class="field-label">付款狀態 <span class="req">*</span></label>
-          <select id="f_payStatus" class="select-input">
-            <option value="">請選擇</option>
-            <option value="已付款">已付款（組織的錢已經付出去了）</option>
-            <option value="未付款">未付款（組織還沒付這筆錢）</option>
-          </select>
-        </div>
+        <!-- 2026-10 改版：付款方式改成一題「這筆錢要怎麼付？」五選一，選了之後只問那個選項需要的資料（見 app.js 的 PAY_OPTIONS） -->
+        <fieldset class="form-field span-2 pay-fieldset">
+          <legend class="field-label">這筆錢要怎麼付？ <span class="req">*</span></legend>
+          <div class="pay-options" id="payOptions">
+            <label class="pay-option"><input type="radio" name="payOption" value="reimb"><span><b>我先墊錢了，請匯還給我</b><small>代墊款，每月 5 號撥款</small></span></label>
+            <label class="pay-option"><input type="radio" name="payOption" value="transfer"><span><b>請組織直接匯款給廠商或外部個人</b><small>例如廠商、講師、房東；要填戶名和帳號</small></span></label>
+            <label class="pay-option"><input type="radio" name="payOption" value="bill"><span><b>繳費單（稅金、健保費等）</b><small>會計用網銀代繳，不用填帳號</small></span></label>
+            <label class="pay-option"><input type="radio" name="payOption" value="paid"><span><b>已經用組織信用卡或零用金付掉了</b><small>不用再付款</small></span></label>
+            <label class="pay-option"><input type="radio" name="payOption" value="card"><span><b>需要組織刷卡</b><small>線上刷卡連結，或紙本刷卡</small></span></label>
+          </div>
+        </fieldset>
 
-        <!-- 付款方式：選項依「付款狀態」而定（見 app.js 的 onPayStatusChange） -->
-        <div class="form-field span-2" id="payMethodField" hidden>
-          <label class="field-label">付款方式 <span class="req">*</span></label>
-          <select id="f_payMethod" class="select-input">
-            <option value="">請先選擇付款狀態</option>
-          </select>
-        </div>
-
-        <!-- 信用卡付款方式：僅「未付款・組織信用卡」會出現 -->
-        <div class="form-field span-2" id="cardFormField" hidden>
-          <label class="field-label">信用卡付款方式 <span class="req">*</span></label>
-          <select id="f_cardForm" class="select-input">
-            <option value="">請選擇</option>
-            <option value="連結">線上刷卡連結</option>
-            <option value="紙本">紙本刷卡</option>
-          </select>
-        </div>
-
-        <!-- 還款對象：僅「未付款・組織匯款」會出現 -->
-        <div class="form-field span-2" id="repayTargetField" hidden>
-          <label class="field-label">還款對象 <span class="req">*</span></label>
-          <select id="f_repayTarget" class="select-input">
-            <option value="">請選擇</option>
-            <option value="外部廠商">外部廠商</option>
-            <option value="組織人員">組織人員（代墊款）</option>
-          </select>
-        </div>
-
-        <!-- 未付款・匯款・組織人員：選代墊款的人（預設帶登入者本人，可改成別人） -->
-        <div class="form-field span-2" id="payeePersonField" hidden>
-          <label class="field-label">代墊款的人 <span class="req">*</span></label>
+        <!-- 代墊款：選代墊款的人（預設帶登入者本人，可改成別人） -->
+        <div class="form-field span-2 pay-panel" id="reimbPanel" hidden>
+          <label class="field-label" for="f_payeePerson">代墊款的人 <span class="req">*</span></label>
           <select id="f_payeePerson" class="select-input"></select>
+          <p class="field-hint">幫同事送單時才需要改。錢會匯到同仁在兆豐登記的帳號。</p>
         </div>
 
-        <!-- 未付款・匯款・外部廠商：填對方單位名稱 -->
-        <div class="form-field span-2" id="payeeVendorField" hidden>
-          <label class="field-label">戶名 <span class="req">*</span></label>
-          <input type="text" id="f_payeeVendor" class="text-input" placeholder="例如：震旦行股份有限公司">
-        </div>
-
-        <!-- 共用輸入框：匯款帳號（外部廠商）/ 刷卡連結（信用卡連結），標籤與提示會跟著切換 -->
-        <div class="form-field span-2" id="paymentDetailField" hidden>
-          <label class="field-label" id="paymentDetailLabel">付款資訊 <span class="req">*</span></label>
-          <textarea id="f_paymentDetail" class="textarea-input" rows="2"></textarea>
-          <p class="field-hint" id="paymentDetailHint"></p>
-        </div>
-
-        <!-- 未付款・信用卡・紙本：必須勾選兩項確認才能送出 -->
-        <div class="form-field span-2" id="cardConfirmField" hidden>
+        <!-- 直接匯款：戶名、7 碼分行代碼、帳號分開填；每月固定支出可以選要在哪個 5 號付 -->
+        <div class="form-field span-2 pay-panel" id="transferPanel" hidden>
+          <label class="field-label" for="f_accName">戶名 <span class="req">*</span></label>
+          <input type="text" id="f_accName" class="text-input" placeholder="跟存摺上的戶名一樣，例如：示意事務機股份有限公司">
+          <div class="pay-row">
+            <div>
+              <label class="field-label" for="f_branch">分行代碼（7 碼） <span class="req">*</span></label>
+              <input type="text" id="f_branch" class="text-input mono-input" inputmode="numeric" autocomplete="off" placeholder="例如 0081234" maxlength="9">
+              <p class="field-hint" id="bankHint" aria-live="polite">銀行代碼 3 碼＋分行代碼 4 碼，例如 0081234</p>
+            </div>
+            <div>
+              <label class="field-label" for="f_account">帳號 <span class="req">*</span></label>
+              <input type="text" id="f_account" class="text-input mono-input" inputmode="numeric" autocomplete="off" placeholder="只要數字">
+              <p class="field-hint" id="accountHint">只要數字，「-」和空格會自動拿掉</p>
+            </div>
+          </div>
           <label class="checkbox-row">
-            <input type="checkbox" id="f_cardConfirm1">
-            我已確認對方無法使用匯款付款。
+            <input type="checkbox" id="f_fixed">
+            <span><b>這是每月固定支出</b>　房租、房東代扣稅費、顧問費這類每月固定的款項，改在 5 號付</span>
           </label>
-          <label class="checkbox-row">
-            <input type="checkbox" id="f_cardConfirm2">
-            我已確認對方無法提供線上刷卡連結。
-          </label>
+          <div id="fixedDateField" hidden>
+            <label class="field-label" for="f_fixedDate">要在哪一天付？</label>
+            <select id="f_fixedDate" class="select-input"></select>
+            <p class="field-hint">要先經過主管審核（每月 10–13 號），所以最早只能排到這裡列的日期；更急請標記「緊急」。</p>
+          </div>
         </div>
 
-        <!-- 只有組織零用金會隱藏這一整塊（款項固定且已支出），其餘付款方式都保留（見 app.js 的 methodAllowsUrgency_） -->
+        <!-- 繳費單：會計用網銀代繳，只要繳費期限 -->
+        <div class="form-field span-2 pay-panel" id="billPanel" hidden>
+          <label class="field-label" for="f_billDue">繳費期限 <span class="req">*</span></label>
+          <input type="date" id="f_billDue" class="text-input">
+          <p class="field-hint">不用填帳號。請確認上傳的是繳費單，上面要看得到繳費帳號或條碼。</p>
+        </div>
+
+        <!-- 已經付掉了：用什麼付的 -->
+        <fieldset class="form-field span-2 pay-panel" id="paidPanel" hidden>
+          <legend class="field-label">用什麼付的？ <span class="req">*</span></legend>
+          <div class="pill-options">
+            <label class="pill-option"><input type="radio" name="paidBy" value="組織信用卡"><span>組織信用卡</span></label>
+            <label class="pill-option"><input type="radio" name="paidBy" value="零用金"><span>零用金</span></label>
+          </div>
+        </fieldset>
+
+        <!-- 需要組織刷卡：連結或紙本 -->
+        <div class="form-field span-2 pay-panel" id="cardPanel" hidden>
+          <fieldset>
+            <legend class="field-label">怎麼刷卡？ <span class="req">*</span></legend>
+            <div class="pill-options">
+              <label class="pill-option"><input type="radio" name="cardForm" value="連結"><span>線上刷卡連結</span></label>
+              <label class="pill-option"><input type="radio" name="cardForm" value="紙本"><span>紙本刷卡</span></label>
+            </div>
+          </fieldset>
+          <div id="cardLinkField" hidden>
+            <label class="field-label" for="f_cardLink">刷卡連結 <span class="req">*</span></label>
+            <input type="url" id="f_cardLink" class="text-input" placeholder="貼上對方提供的線上刷卡網址">
+          </div>
+          <div id="cardConfirmField" hidden>
+            <label class="checkbox-row">
+              <input type="checkbox" id="f_cardConfirm1">
+              我已確認對方沒辦法接受匯款。
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="f_cardConfirm2">
+              我已確認對方沒辦法提供線上刷卡連結。
+            </label>
+          </div>
+        </div>
+
+        <!-- 選「已經付掉了」時隱藏這一整塊（錢已經出去了，催審核沒有意義），其餘付款方式都可以標緊急（見 app.js 的 paymentAllowsUrgency_） -->
         <div class="form-field span-2" id="urgencyField">
           <label class="field-label">審核急迫性</label>
           <div class="segmented" id="urgencyToggle">
@@ -233,31 +289,50 @@
         <pre id="rawOcrText" class="raw-ocr-pre"></pre>
       </details>
 
+      <div class="confidence-banner low" id="formError" role="alert" hidden></div>
+
       <div class="btn-row">
         <button class="ghost-btn" id="cancelConfirmBtn">取消</button>
         <button class="primary-btn" id="submitRecordBtn">送出審核</button>
       </div>
     </div>
+
+    <!-- ============ 送出之後：可以沿用這一筆的設定，繼續上傳下一張 ============ -->
+    <div class="card" id="doneCard" hidden>
+      <h2 class="card-title-sm">已送出，等主管審核</h2>
+      <p class="card-sub">審核和付款進度可以到「上傳紀錄」查看。</p>
+      <div class="done-actions">
+        <button class="primary-btn" id="keepNextBtn">上傳下一張，沿用：<span id="keepNextText"></span></button>
+        <button class="ghost-btn" id="freshNextBtn">上傳下一張，全部重填</button>
+        <a class="link-btn done-link" href="#finance/mine">到「上傳紀錄」看進度</a>
+      </div>
+    </div>
   </section>
 
   <!-- ============ 上傳紀錄 ============ -->
-  <section class="view" id="view-mine" hidden>
+  <section class="subview" id="view-mine" hidden>
     <div class="card">
       <h1 class="card-title">上傳紀錄</h1>
-      <p class="card-sub">查看單據上傳與審核狀態。實際的同意／退回請主管到 Google 試算表的專案審核表操作，這裡只顯示結果</p>
+      <p class="card-sub">查看單據的審核和付款進度。收款帳號只顯示末 4 碼。</p>
+
+      <div class="scope-toggle" id="mineScope" role="group" aria-label="要看誰的單據">
+        <button type="button" class="scope-btn active" data-scope="mine" aria-pressed="true">我的單據</button>
+        <button type="button" class="scope-btn" data-scope="all" aria-pressed="false">全部同仁</button>
+      </div>
 
       <div class="confidence-banner mid" id="mineLoadingHint" hidden>🔄 正在讀取最新紀錄…</div>
 
-      <div class="stat-row">
+      <div class="stat-row stat-row-4">
         <div class="stat-pill stat-pending"><span id="statPending">0</span> 待審核</div>
-        <div class="stat-pill stat-approved"><span id="statApproved">0</span> 已核准</div>
+        <div class="stat-pill stat-approved"><span id="statApproved">0</span> 已核准，等撥款</div>
+        <div class="stat-pill stat-paid"><span id="statPaid">0</span> 已付款</div>
         <div class="stat-pill stat-rejected"><span id="statRejected">0</span> 已退回</div>
       </div>
 
       <div class="filter-panel">
         <div class="filter-title">篩選條件</div>
         <div class="filter-fields">
-          <div class="filter-field">
+          <div class="filter-field" id="mineUploaderField" hidden>
             <label class="filter-label" for="mineUploaderFilter">上傳人</label>
             <select id="mineUploaderFilter" class="select-input select-input-sm">
               <option value="">全部上傳人</option>
@@ -297,36 +372,10 @@
     </div>
   </section>
 
-  <!-- ============ 名單設定 ============ -->
-  <section class="view" id="view-lists" hidden>
-    <div class="card">
-      <h1 class="card-title">名單設定</h1>
-      <p class="card-sub" id="listsSubtitle">管理「上傳人」與「所屬專案」的下拉選單，異動後馬上生效，不需要改程式碼</p>
-
-      <div class="confidence-banner mid" id="listsCloudBanner" hidden>
-        名單由 Google 試算表的「人員設定」「專案設定」分頁管理，所有人看到的一致。
-        要新增／異動人員或專案，請到試算表編輯，再回總表點選單的「① 建立/更新設定與審核表」。
-      </div>
-      <div class="btn-row" id="listsRefreshRow" hidden>
-        <button class="ghost-btn" id="refreshListsBtn" style="flex:1;">🔄 從試算表重新抓取名單</button>
-      </div>
-
-      <label class="field-label">上傳人名單</label>
-      <div class="tag-list" id="uploaderTagList"></div>
-      <div class="add-item-row">
-        <input type="text" id="newUploaderInput" class="text-input" placeholder="輸入姓名，例如：王小明">
-        <button class="ghost-btn" id="addUploaderBtn">新增</button>
-      </div>
-
-      <label class="field-label" style="margin-top:28px;">所屬專案名單</label>
-      <div class="tag-list" id="projectTagList"></div>
-      <div class="add-item-row">
-        <input type="text" id="newProjectInput" class="text-input" placeholder="輸入專案名稱，例如：C 專案">
-        <button class="ghost-btn" id="addProjectBtn">新增</button>
-      </div>
-
-      <p class="list-hint">刪除名單上的人員／專案，不會影響已經送出的舊單據紀錄，只會讓「上傳單據」頁面的下拉選單不再顯示它。</p>
-    </div>
+  <!-- ============ 財務作業（finance.js 畫在 #opsRoot；只有人員設定裡有「財務角色」的人看得到）============ -->
+    <section class="subview" id="view-ops" hidden>
+      <div id="opsRoot"></div>
+    </section>
   </section>
 
 </main>
@@ -335,7 +384,7 @@
 <div class="login-gate" id="loginGate">
   <div class="login-card">
     <span class="brand-mark brand-mark-lg">S</span>
-    <h1 class="login-title">Skills for U｜核銷小幫手</h1>
+    <h1 class="login-title">Skills for U｜團隊後台</h1>
     <p class="login-sub">請用組織 Google 帳號（@skillsforu.org）登入後使用</p>
     <div class="login-btn-wrap"><div id="googleSignInBtn"></div></div>
     <p class="login-hint" id="loginHint" hidden></p>
@@ -356,5 +405,7 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="app.js"></script>
+<script src="portal.js"></script>
+<script src="finance.js"></script>
 </body>
 </html>
