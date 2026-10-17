@@ -2029,17 +2029,24 @@ function cellToCsv(v) {
 /* v2 起改用「用 Google 帳號登入」驗證身分，取代舊的網址＋密碼＋一次性連結。
    部署網址直接寫死在這裡（它不是機密）；每次請求都帶上 Google 發的登入證明(ID token)，
    後端 Code.gs 驗證它是不是組織帳號（@skillsforu.org）才准寫資料。 */
-// 正式網站連正式後端；其他網址（Vercel 預覽、本機測試）一律連「預覽測試」後端（總表的副本，見 Code.gs
-// 的「預覽測試模式」），兩邊資料完全分開。預覽後端還沒設定時，預覽網站連不到任何後端，不會誤寫進正式總表。
+// 正式網址、Vercel 預覽網址都連正式後端（正式總表）。預覽網址只是新版介面先給少數人看，資料是同一份。
+// 選用：要在「總表副本」上測試、不碰正式資料時，把副本部署的 /exec 網址填進 PREVIEW_DEPLOY_URL，
+// 預覽網址就改連副本（見 Code.gs 的「預覽測試模式」）；這時登入會檢查後端真的是預覽測試模式，不是就停下來。
 const PRODUCTION_HOSTS = ["skills-for-u-receipt-helper.vercel.app"];
 const PRODUCTION_DEPLOY_URL = "https://script.google.com/macros/s/AKfycbyliWKUmaMXLkAVyHPXhdF2lQVZGJOreZyWz-Us2ktCwl_ZsmFaTy1lDq21gGQyUaOy/exec";
-const PREVIEW_DEPLOY_URL = ""; // 總表副本「新增部署作業」後拿到的 /exec 網址
+const PREVIEW_DEPLOY_URL = ""; // 平常留空
 const IS_PRODUCTION_HOST = PRODUCTION_HOSTS.includes(location.hostname);
-const DEPLOY_URL = IS_PRODUCTION_HOST ? PRODUCTION_DEPLOY_URL
-  : (PREVIEW_DEPLOY_URL || "https://script.google.com/macros/s/PREVIEW_BACKEND_NOT_SET/exec");
+const USES_PREVIEW_BACKEND = !IS_PRODUCTION_HOST && !!PREVIEW_DEPLOY_URL;
+const DEPLOY_URL = USES_PREVIEW_BACKEND ? PREVIEW_DEPLOY_URL : PRODUCTION_DEPLOY_URL;
 if (!IS_PRODUCTION_HOST) {
   const badge = document.getElementById("envBadge");
-  if (badge) badge.hidden = false;
+  if (badge) {
+    badge.hidden = false;
+    if (USES_PREVIEW_BACKEND) {
+      badge.textContent = "預覽測試版";
+      badge.title = "這個網址連的是總表副本，不會動到正式總表，Slack 也不會真的發";
+    }
+  }
 }
 const GOOGLE_CLIENT_ID = "367734743259-m1si6lu02113c1e53v80t4gnf40poop0.apps.googleusercontent.com";
 
@@ -2116,8 +2123,8 @@ async function onSignedIn() {
     idToken = null;
     return;
   }
-  // 預覽網站只准連「預覽測試模式」的後端（總表副本）。接到正式總表就停下來，不讓測試資料寫進去。
-  if (!IS_PRODUCTION_HOST && data.previewMode !== true) {
+  // 設定成連「總表副本」時，後端一定要是預覽測試模式；接到正式總表就停下來，不讓測試資料寫進去。
+  if (USES_PREVIEW_BACKEND && data.previewMode !== true) {
     idToken = null;
     showLoginError("這是預覽測試版，但連到的後端不是「預覽測試用的總表副本」。為了不動到正式資料，已經停下來，請通知偉翔。");
     return;

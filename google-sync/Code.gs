@@ -79,7 +79,7 @@ const SLACK_WEBHOOK_URL = '';      // 請保持空白，改用指令碼屬性 SL
 const APP_URL = 'https://skills-for-u-receipt-helper.vercel.app/';
 
 /* ── 預覽測試模式 ─────────────────────────────────────────────
-   正式上線前，在「總表的副本」上試用新版，完全不碰正式資料：
+   （選用，平常不用）想在「總表的副本」上試用新版、完全不碰正式資料時用：
    1. 正式總表 →「檔案 → 建立副本」（Apps Script 會一起複製），副本名稱要有「預覽」或「測試」。
    2. 在副本貼上新版程式碼，重新整理後執行選單「🧪 設成預覽測試用副本」。
    之後這份副本：
@@ -3159,17 +3159,22 @@ function onOpen() {
     // 簡單觸發條件的權限較受限，這裡失敗也不影響選單顯示；之後跑選單時 getMasterSpreadsheet_() 還是會自己補上快取
   }
   const preview = isPreviewMode_();
-  SpreadsheetApp.getUi()
+  // 「設成預覽測試用副本」只在副本（名稱有「預覽」或「測試」）才出現，正式總表的選單看不到
+  let showPreviewItem = preview;
+  try { showPreviewItem = preview || /預覽|測試/.test(SpreadsheetApp.getActiveSpreadsheet().getName()); } catch (e) { /* 讀不到名稱就不顯示 */ }
+  const menu = SpreadsheetApp.getUi()
     .createMenu(preview ? '核銷小幫手（預覽測試）' : '核銷小幫手')
     .addItem('① 建立/更新設定與審核表', 'setupProjectReviewSheets')
     .addItem('② 設定自動排程', 'setupTriggers')
     .addSeparator()
     .addItem('立即同步審核結果 / 付款日期', 'syncApprovalsNow')
     .addItem('立即發送待審提醒到 Slack', 'sendPendingDigestToSlack')
-    .addItem('💰 立即發送付款通知到 Slack', 'sendPaymentDigestToSlack')
-    .addSeparator()
-    .addItem(preview ? '🧪 預覽測試模式：已開啟（再執行一次會重新檢查）' : '🧪 設成預覽測試用副本（只在副本用）', 'setupPreviewCopy')
-    .addToUi();
+    .addItem('💰 立即發送付款通知到 Slack', 'sendPaymentDigestToSlack');
+  if (showPreviewItem) {
+    menu.addSeparator()
+      .addItem(preview ? '🧪 預覽測試模式：已開啟（再執行一次會重新檢查）' : '🧪 設成預覽測試用副本', 'setupPreviewCopy');
+  }
+  menu.addToUi();
 }
 
 /**
